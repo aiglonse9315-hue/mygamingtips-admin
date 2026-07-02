@@ -1,0 +1,43 @@
+{
+  "_comment": "EXEMPLE — à ne jamais committer avec de vraies valeurs. Ce fichier documente OÙ configurer les identifiants admin côté SERVEUR. Les credentials ne doivent JAMAIS être dans le code front-end (panneau admin) ni dans l'app mobile.",
+
+  "frontend_build_variable": {
+    "_comment": "Le front-end admin reçoit uniquement l'URL du endpoint d'authentification via une variable de build Dart-define. Aucun identifiant n'est inclus.",
+    "MGT_ADMIN_AUTH_ENDPOINT": "https://VOTRE-PROJET.supabase.co/functions/v1/admin-login"
+  },
+
+  "supabase_edge_function": {
+    "_comment": "Déployer une Edge Function (Deno) nommée 'admin-login' qui vérifie les identifiants et renvoie un jeton. Voir admin_login_function.ts fourni.",
+    "name": "admin-login",
+    "method": "POST",
+    "expected_body": { "username": "string", "password": "string" },
+    "response_success": { "token": "jwt_court_terme_signe_serveur" },
+    "response_failure": "HTTP 401"
+  },
+
+  "credentials_storage": {
+    "_comment": "Les identifiants admin DOIVENT être stockés côté serveur de manière protégée. Trois options recommandées :",
+    "option_1_supabase_vault": "Table 'vault.decrypted_secrets' (Supabase Vault) — secrets chiffrés au repos, accessibles uniquement côté serveur (service_role).",
+    "option_2_edge_function_env": "Variables d'environnement de l'Edge Function (tableau de bord Supabase > Edge Functions > Secrets). Hash bcrypt du mot de passe.",
+    "option_3_admins_table": "Table 'admins' (RLS désactivée pour le public) avec login + hash bcrypt, vérifiée côté serveur via service_role. Permet aussi la rotation et l'audit.",
+
+    "recommended": {
+      "method": "Table admins + hash bcrypt + Edge Function de vérification + journalisation",
+      "admin_login_example": "votre-login-admin",
+      "password_hash_example": "$2a$10$N9qo8uLOickgx2ZMRZoMye... (bcrypt, JAMAIS en clair)",
+      "note": "Le mot de passe en clair n'existe nulle part de façon persistante : seul le hash bcrypt est stocké."
+    }
+  },
+
+  "security_best_practices": [
+    "Hash bcrypt (cost >= 10) du mot de passe — jamais de MD5/SHA1.",
+    "Rate-limiting côté Edge Function (ex. 5 tentatives / IP / 2 min).",
+    "Limitation des tentatives côté client (déjà implémentée dans AuthService).",
+    "Journalisation serveur de chaque tentative (IP, horodatage, succès/échec) via table 'admin_auth_logs'.",
+    "Jetons JWT courts (ex. 15 min), signés avec le JWT secret Supabase.",
+    "Verrouillage de compte après N échecs (côté serveur, plus robuste que le client).",
+    "HTTPS obligatoire (Supabase fournit le certificat).",
+    "Rotation régulière du mot de passe admin.",
+    "2FA / TOTP recommandé pour le compte admin (extension possible)."
+  ]
+}

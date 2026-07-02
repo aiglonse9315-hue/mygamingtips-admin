@@ -1,0 +1,72 @@
+# ============================================================================
+# MyGamingTips Admin — Build & Déploiement GitHub Pages
+# ============================================================================
+# Ce workflow build le panneau admin Flutter Web (mode production) et le
+# déploie sur GitHub Pages automatiquement.
+#
+# Déclencheur : chaque push sur main.
+#
+# ⚠️ CONFIGURATION REQUISE (une seule fois) :
+#   - Settings → Pages → Source = "GitHub Actions"
+#   - Settings → Secrets → Actions → New secret :
+#       MGT_SUPABASE_ANON_KEY  = ta clé anon Supabase
+# ============================================================================
+
+name: Deploy Admin
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: deploy-admin
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Récupération des dépendances
+        run: flutter pub get
+
+      - name: Build Web (production)
+        run: |
+          flutter build web --release \
+            --base-href "/" \
+            --dart-define=MGT_ADMIN_AUTH_ENDPOINT="https://odqbazwyjdpppbameype.supabase.co/functions/v1/admin-login" \
+            --dart-define=MGT_SUPABASE_URL="https://odqbazwyjdpppbameype.supabase.co" \
+            --dart-define=MGT_SUPABASE_ANON_KEY="${{ secrets.MGT_SUPABASE_ANON_KEY }}" \
+            --dart-define=MGT_ADMIN_CATALOG_ENDPOINT="https://odqbazwyjdpppbameype.supabase.co/functions/v1/admin-catalog"
+
+      - name: Configuration GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Déploiement GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

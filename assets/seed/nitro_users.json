@@ -1,0 +1,26 @@
+[
+  {
+    "id": "nu-1",
+    "displayName": "Joueur MyGT",
+    "email": "joueur.mygt@gmail.com",
+    "plan": "yearly",
+    "startedAt": "2026-06-10T10:00:00.000Z",
+    "active": true
+  },
+  {
+    "id": "nu-2",
+    "displayName": "SpeedRunnerZk",
+    "email": "speed.zk@gmail.com",
+    "plan": "monthly",
+    "startedAt": "2026-06-20T14:30:00.000Z",
+    "active": true
+  },
+  {
+    "id": "nu-3",
+    "displayName": "LinaGameuse",
+    "email": "lina.gameuse@gmail.com",
+    "plan": "monthly",
+    "startedAt": "2026-06-25T09:15:00.000Z",
+    "active": false
+  }
+]

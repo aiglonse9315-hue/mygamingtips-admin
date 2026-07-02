@@ -1,0 +1,122 @@
+[
+  {
+    "id": "c-er-v1",
+    "gameId": "g-eldenring",
+    "category": "video",
+    "url": "https://www.youtube.com/watch?v=mGfkVLh7p28",
+    "titleSource": "Elden Ring : Guide du débutant",
+    "titleAdmin": "Elden Ring : Guide du débutant",
+    "imageUrl": null,
+    "publishedAt": "2026-06-20T10:00:00.000Z",
+    "validated": true,
+    "isVideo": true
+  },
+  {
+    "id": "c-er-v2",
+    "gameId": "g-eldenring",
+    "category": "video",
+    "url": "https://www.youtube.com/watch?v=kfLnH2qMId8",
+    "titleSource": "Tous les boss de fin de jeu",
+    "titleAdmin": "Tous les boss de fin de jeu",
+    "imageUrl": null,
+    "publishedAt": "2026-06-19T04:00:00.000Z",
+    "validated": true,
+    "isVideo": true
+  },
+  {
+    "id": "c-er-g1",
+    "gameId": "g-eldenring",
+    "category": "guides",
+    "url": "https://www.pcgamer.com/elden-ring-builds/",
+    "titleAdmin": "Meilleurs builds 2026",
+    "publishedAt": "2026-06-18T10:00:00.000Z",
+    "validated": true
+  },
+  {
+    "id": "c-er-l1",
+    "gameId": "g-eldenring",
+    "category": "links",
+    "url": "https://eldenring.wiki.fextralife.com/",
+    "titleAdmin": "Wiki Elden Ring (FR)",
+    "publishedAt": "2026-06-16T10:00:00.000Z",
+    "validated": true
+  },
+  {
+    "id": "c-zl-v1",
+    "gameId": "g-zelda",
+    "category": "video",
+    "url": "https://www.youtube.com/watch?v=OSeGFbR4Zv4",
+    "titleSource": "Les 10 meilleurs sanctuaires",
+    "titleAdmin": "Les 10 meilleurs sanctuaires",
+    "publishedAt": "2026-06-20T00:00:00.000Z",
+    "validated": true,
+    "isVideo": true
+  },
+  {
+    "id": "c-zl-g1",
+    "gameId": "g-zelda",
+    "category": "guides",
+    "url": "https://www.jeuxvideo.com/",
+    "titleAdmin": "Soluce complète des donjons",
+    "publishedAt": "2026-06-19T10:00:00.000Z",
+    "validated": true
+  },
+  {
+    "id": "c-zl-l1",
+    "gameId": "g-zelda",
+    "category": "links",
+    "url": "https://www.zeldadungeon.net/",
+    "titleAdmin": "Zelda Dungeon",
+    "publishedAt": "2026-06-15T10:00:00.000Z",
+    "validated": true
+  },
+  {
+    "id": "c-cp-v1",
+    "gameId": "g-cyberpunk",
+    "category": "video",
+    "url": "https://www.youtube.com/watch?v=pNAxi5fVqJ4",
+    "titleSource": "Cyberpunk : Phantom Liberty soluce",
+    "titleAdmin": "Cyberpunk : Phantom Liberty soluce",
+    "publishedAt": "2026-06-18T14:00:00.000Z",
+    "validated": true,
+    "isVideo": true
+  },
+  {
+    "id": "c-cp-g1",
+    "gameId": "g-cyberpunk",
+    "category": "guides",
+    "url": "https://www.eurogamer.net/",
+    "titleAdmin": "Builds Netrunner expliqués",
+    "publishedAt": "2026-06-17T10:00:00.000Z",
+    "validated": true
+  },
+  {
+    "id": "c-cp-l1",
+    "gameId": "g-cyberpunk",
+    "category": "links",
+    "url": "https://cyberpunk.fandom.com/",
+    "titleAdmin": "Wiki Cyberpunk",
+    "publishedAt": "2026-06-14T10:00:00.000Z",
+    "validated": true
+  },
+  {
+    "id": "c-hd-v1",
+    "gameId": "g-hades",
+    "category": "video",
+    "url": "https://www.youtube.com/watch?v=mMBUfVH3Wv0",
+    "titleSource": "Hades II : early access review",
+    "titleAdmin": "Hades II : early access review",
+    "publishedAt": "2026-06-20T06:00:00.000Z",
+    "validated": true,
+    "isVideo": true
+  },
+  {
+    "id": "c-hd-g1",
+    "gameId": "g-hades",
+    "category": "guides",
+    "url": "https://www.ign.com/",
+    "titleAdmin": "Tier list des armes",
+    "publishedAt": "2026-06-19T04:00:00.000Z",
+    "validated": true
+  }
+]

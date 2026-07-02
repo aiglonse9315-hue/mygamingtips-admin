@@ -1,0 +1,67 @@
+[
+  {
+    "id": "s-1001",
+    "url": "https://www.youtube.com/watch?v=BLANK0SOLUCE",
+    "sharedText": "Regardez cette soluce incroyable pour Elden Ring DLC",
+    "status": "pending",
+    "sharedAt": "2026-06-28T08:42:00.000Z",
+    "author": {
+      "id": "g_user_42",
+      "displayName": "Joueur MyGT",
+      "avatarUrl": null,
+      "email": "joueur.mygt@gmail.com"
+    }
+  },
+  {
+    "id": "s-1002",
+    "url": "https://hades2.fandom.com/wiki/Melinoe",
+    "sharedText": "Wiki très complet pour les armes de Melinoë",
+    "status": "pending",
+    "sharedAt": "2026-06-27T19:15:00.000Z",
+    "author": {
+      "id": "g_user_108",
+      "displayName": "SpeedRunnerZk",
+      "avatarUrl": null,
+      "email": "speed.zk@gmail.com"
+    }
+  },
+  {
+    "id": "s-1003",
+    "url": "https://www.youtube.com/watch?v=ZELDA_SHRINE_42",
+    "sharedText": "Solution du sanctuaire le plus dur du jeu",
+    "status": "pending",
+    "sharedAt": "2026-06-27T11:30:00.000Z",
+    "author": {
+      "id": "g_user_209",
+      "displayName": "LinaGameuse",
+      "avatarUrl": null,
+      "email": "lina.gameuse@gmail.com"
+    }
+  },
+  {
+    "id": "s-1004",
+    "url": "https://www.cyberpunk-guide.com/netrunner",
+    "sharedText": null,
+    "status": "accepted",
+    "sharedAt": "2026-06-26T14:00:00.000Z",
+    "author": {
+      "id": "g_user_42",
+      "displayName": "Joueur MyGT",
+      "avatarUrl": null,
+      "email": "joueur.mygt@gmail.com"
+    }
+  },
+  {
+    "id": "s-1005",
+    "url": "https://youtu.be/EXEMPLE_REFUSE",
+    "sharedText": "Lien spam trompeur",
+    "status": "rejected",
+    "sharedAt": "2026-06-25T09:00:00.000Z",
+    "author": {
+      "id": "g_user_666",
+      "displayName": "SpammerX",
+      "avatarUrl": null,
+      "email": "spammer.x@gmail.com"
+    }
+  }
+]

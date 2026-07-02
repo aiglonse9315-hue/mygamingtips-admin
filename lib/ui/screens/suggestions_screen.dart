@@ -1,0 +1,461 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../../core/theme/colors.dart';
+import '../../domain/models/category.dart';
+import '../../domain/models/game.dart';
+import '../../domain/models/suggestion.dart';
+import '../../state/store_controller.dart';
+import '../widgets/admin_data_table.dart';
+import '../widgets/confirm_dialog.dart';
+import '../widgets/stat_card.dart' show StatusBadge;
+
+/// Modération des suggestions : triées par date de partage, valider / refuser.
+class SuggestionsScreen extends StatefulWidget {
+  const SuggestionsScreen({super.key});
+
+  @override
+  State<SuggestionsScreen> createState() => _SuggestionsScreenState();
+}
+
+class _SuggestionsScreenState extends State<SuggestionsScreen> {
+  SuggestionStatus? _statusFilter; // null = toutes
+
+  @override
+  Widget build(BuildContext context) {
+    final StoreController store = context.watch<StoreController>();
+
+    List<Suggestion> list = store.suggestionsByDate;
+    if (_statusFilter != null) {
+      list = list.where((s) => s.status == _statusFilter).toList();
+    }
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Suggestions utilisateurs',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+              ),
+              if (store.pendingSuggestionsCount > 0)
+                StatusBadge(
+                  label: '${store.pendingSuggestionsCount} en attente',
+                  color: AppColors.nitroGold,
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Classées par date de partage (du plus récent au plus ancien).',
+            style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).textTheme.bodySmall?.color),
+          ),
+          const SizedBox(height: 16),
+          // Filtre statut
+          Wrap(
+            spacing: 8,
+            children: [
+              _StatusTab(
+                  label: 'Toutes (${store.suggestions.length})',
+                  selected: _statusFilter == null,
+                  color: AppColors.neonCyan,
+                  onTap: () => setState(() => _statusFilter = null)),
+              _StatusTab(
+                  label:
+                      'En attente (${store.pendingSuggestionsCount})',
+                  selected: _statusFilter == SuggestionStatus.pending,
+                  color: AppColors.nitroGold,
+                  onTap: () => setState(() =>
+                      _statusFilter = SuggestionStatus.pending)),
+              _StatusTab(
+                  label:
+                      'Acceptées (${store.suggestions.where((s) => s.status == SuggestionStatus.accepted).length})',
+                  selected: _statusFilter == SuggestionStatus.accepted,
+                  color: AppColors.neonGreen,
+                  onTap: () => setState(() =>
+                      _statusFilter = SuggestionStatus.accepted)),
+              _StatusTab(
+                  label:
+                      'Refusées (${store.suggestions.where((s) => s.status == SuggestionStatus.rejected).length})',
+                  selected: _statusFilter == SuggestionStatus.rejected,
+                  color: AppColors.categoryVideo,
+                  onTap: () => setState(() =>
+                      _statusFilter = SuggestionStatus.rejected)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          AdminDataTable(
+            columns: const [
+              'URL',
+              'Auteur',
+              'Message',
+              'Partagée le',
+              'Statut',
+              'Actions'
+            ],
+            rows: list
+                .map((s) => [
+                      InkWell(
+                        onTap: () {},
+                        child: Text(s.url,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 13,
+                                color: AppColors.neonCyan,
+                                decoration: TextDecoration.underline)),
+                      ),
+                      // Colonne Auteur : avatar + pseudo + id + badge banni.
+                      Row(
+                        children: [
+                          CircleAvatar(
+                            radius: 12,
+                            backgroundColor:
+                                AppColors.neonViolet.withValues(alpha: 0.2),
+                            child: Text(
+                              s.author.displayName.isNotEmpty
+                                  ? s.author.displayName[0].toUpperCase()
+                                  : '?',
+                              style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                  color: AppColors.neonViolet),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Flexible(
+                                      child: Text(s.author.displayName,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w700)),
+                                    ),
+                                    if (store.isAuthorBanned(s.author.id)) ...[
+                                      const SizedBox(width: 5),
+                                      StatusBadge(
+                                          label: 'BANNI',
+                                          color: AppColors.categoryVideo),
+                                    ],
+                                  ],
+                                ),
+                                Text(s.author.id,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        fontSize: 10,
+                                        color: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.color)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      Text(s.sharedText ?? '—',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.color)),
+                      Text(_formatDate(s.sharedAt),
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.color)),
+                      StatusBadge(
+                          label: s.status.label,
+                          color: _statusColor(s.status)),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (s.status == SuggestionStatus.pending) ...[
+                            TextButton.icon(
+                              onPressed: () => _showReview(context, s),
+                              icon: const Icon(Icons.check_circle_outline_rounded,
+                                  size: 18),
+                              label: const Text('Valider'),
+                            ),
+                            IconButton(
+                              tooltip: 'Refuser',
+                              icon: const Icon(
+                                  Icons.cancel_outlined,
+                                  size: 20),
+                              color: AppColors.categoryVideo,
+                              onPressed: () => showDialog<void>(
+                                context: context,
+                                builder: (_) => ConfirmDialog(
+                                  title: 'Refuser cette suggestion ?',
+                                  message: s.url,
+                                  confirmLabel: 'Refuser',
+                                  destructive: true,
+                                  onConfirm: () =>
+                                      store.rejectSuggestion(s),
+                                ),
+                              ),
+                            ),
+                          ] else ...[
+                            IconButton(
+                              tooltip: 'Repasser en attente',
+                              icon: const Icon(Icons.restore_rounded,
+                                  size: 20),
+                              onPressed: () {},
+                            ),
+                          ],
+                          // Modération du compte : bannir / débannir l'auteur.
+                          if (store.isAuthorBanned(s.author.id))
+                            IconButton(
+                              tooltip: 'Débannir le compte',
+                              icon: const Icon(Icons.lock_open_rounded,
+                                  size: 20),
+                              color: AppColors.neonGreen,
+                              onPressed: () => store.unban(s.author.id),
+                            )
+                          else
+                            IconButton(
+                              tooltip: 'Bannir le compte',
+                              icon: const Icon(Icons.block_rounded, size: 20),
+                              color: AppColors.categoryVideo,
+                              onPressed: () => showDialog<void>(
+                                context: context,
+                                builder: (_) => ConfirmDialog(
+                                  title:
+                                      'Bannir ${s.author.displayName} ?',
+                                  message:
+                                      'Le compte Google identifié (${s.author.id}) '
+                                      'sera banni. Il ne pourra plus soumettre de '
+                                      'suggestions.',
+                                  confirmLabel: 'Bannir',
+                                  destructive: true,
+                                  onConfirm: () => store.banAuthor(s),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ])
+                .toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showReview(BuildContext context, Suggestion suggestion) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => SuggestionReviewDialog(suggestion: suggestion),
+    );
+  }
+
+  static Color _statusColor(SuggestionStatus s) {
+    switch (s) {
+      case SuggestionStatus.pending:
+        return AppColors.nitroGold;
+      case SuggestionStatus.accepted:
+        return AppColors.neonGreen;
+      case SuggestionStatus.rejected:
+        return AppColors.categoryVideo;
+    }
+  }
+
+  static String _formatDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year} '
+      '${d.hour.toString().padLeft(2, '0')}h${d.minute.toString().padLeft(2, '0')}';
+}
+
+class _StatusTab extends StatelessWidget {
+  const _StatusTab({
+    required this.label,
+    required this.selected,
+    required this.color,
+    required this.onTap,
+  });
+  final String label;
+  final bool selected;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? color.withValues(alpha: 0.18) : null,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+              color: selected ? color : Theme.of(context).dividerColor),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: selected ? color : null)),
+      ),
+    );
+  }
+}
+
+/// Dialog de validation d'une suggestion : choix du jeu + catégorie + titre admin.
+class SuggestionReviewDialog extends StatefulWidget {
+  const SuggestionReviewDialog({super.key, required this.suggestion});
+  final Suggestion suggestion;
+
+  @override
+  State<SuggestionReviewDialog> createState() =>
+      _SuggestionReviewDialogState();
+}
+
+class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
+  String? _gameId;
+  ContentCategory _category = ContentCategory.video;
+  late final TextEditingController _title;
+
+  @override
+  void initState() {
+    super.initState();
+    // Pré-remplissage intelligent du titre.
+    _title = TextEditingController(
+        text: widget.suggestion.sharedText?.trim().isNotEmpty == true
+            ? widget.suggestion.sharedText!
+            : widget.suggestion.url);
+  }
+
+  @override
+  void dispose() {
+    _title.dispose();
+    super.dispose();
+  }
+
+  void _validate() {
+    final StoreController store = context.read<StoreController>();
+    if (_gameId == null || _title.text.trim().isEmpty) return;
+    store.acceptSuggestion(
+      suggestion: widget.suggestion,
+      gameId: _gameId!,
+      category: _category,
+      titleAdmin: _title.text,
+    );
+    Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final StoreController store = context.read<StoreController>();
+    final List<Game> games = store.games;
+    final bool isVideo = widget.suggestion.url.contains('youtube') ||
+        widget.suggestion.url.contains('youtu.be');
+
+    return AlertDialog(
+      title: const Text('Valider la suggestion'),
+      content: SizedBox(
+        width: 480,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Aperçu de l'URL source
+            Container(
+              padding: const EdgeInsets.all(10),
+              margin: const EdgeInsets.only(bottom: 14),
+              decoration: BoxDecoration(
+                color: AppColors.neonCyan.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: AppColors.neonCyan.withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                children: [
+                  Icon(isVideo ? Icons.smart_display_rounded : Icons.link_rounded,
+                      size: 18, color: AppColors.neonCyan),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      widget.suggestion.url,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (games.isEmpty)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 12),
+                child: Text(
+                  'Ajoutez d\'abord un jeu pour pouvoir valider.',
+                  style: TextStyle(color: AppColors.categoryVideo, fontSize: 13),
+                ),
+              ),
+            DropdownButtonFormField<String>(
+              value: _gameId,
+              decoration: const InputDecoration(labelText: 'Jeu cible *'),
+              items: games
+                  .map((g) =>
+                      DropdownMenuItem(value: g.id, child: Text(g.name)))
+                  .toList(),
+              onChanged: (v) => setState(() => _gameId = v),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<ContentCategory>(
+              value: _category,
+              decoration: const InputDecoration(labelText: 'Catégorie *'),
+              items: ContentCategory.values
+                  .map((c) => DropdownMenuItem(
+                        value: c,
+                        child: Row(children: [
+                          Icon(c.icon, size: 18, color: c.color),
+                          const SizedBox(width: 8),
+                          Text(c.label),
+                        ]),
+                      ))
+                  .toList(),
+              onChanged: (v) => setState(() => _category = v ?? _category),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _title,
+              decoration: const InputDecoration(
+                labelText: 'Titre administrateur *',
+                helperText: 'Titre affiché dans l\'app mobile.'),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Annuler'),
+        ),
+        FilledButton.icon(
+          onPressed: _validate,
+          icon: const Icon(Icons.check_rounded),
+          label: const Text('Valider et ajouter'),
+        ),
+      ],
+    );
+  }
+}
