@@ -88,6 +88,8 @@ class StoreController extends ChangeNotifier {
     _games = [..._games, game]..sort(_byName);
     _store.saveGames(_games);
     notifyListeners();
+    // Sync Supabase (optimiste) : on pousse le jeu créé.
+    _syncGame(game);
   }
 
   void updateGame(Game game) {
@@ -95,6 +97,7 @@ class StoreController extends ChangeNotifier {
       ..sort(_byName);
     _store.saveGames(_games);
     notifyListeners();
+    _syncGame(game);
   }
 
   void toggleGameActive(Game game) {
@@ -108,6 +111,34 @@ class StoreController extends ChangeNotifier {
     _store.saveGames(_games);
     _store.saveContents(_contents);
     notifyListeners();
+    // Sync Supabase : supprime le jeu (cascade contenus côté serveur).
+    _syncDeleteGame(id);
+  }
+
+  /// Pousse un jeu vers Supabase (upsert) en arrière-plan.
+  Future<void> _syncGame(Game game) async {
+    if (sync == null) return;
+    try {
+      final created = await sync!.upsertGame(game);
+      // Remplace l'ID temporaire par l'ID serveur (UUID).
+      _games = _games.map((g) => g.id == game.id ? created : g).toList()
+        ..sort(_byName);
+      _store.saveGames(_games);
+      notifyListeners();
+    } catch (e) {
+      syncError = 'Jeu non synchronisé: $e';
+      notifyListeners();
+    }
+  }
+
+  Future<void> _syncDeleteGame(String id) async {
+    if (sync == null) return;
+    try {
+      await sync!.deleteGame(id);
+    } catch (e) {
+      syncError = 'Suppression jeu non synchronisée: $e';
+      notifyListeners();
+    }
   }
 
   // ---------- Contenus ----------
@@ -141,6 +172,7 @@ class StoreController extends ChangeNotifier {
     _contents = [..._contents, content];
     _store.saveContents(_contents);
     notifyListeners();
+    _syncContent(content);
   }
 
   void updateContentTitle(Content content, String titleAdmin) {
@@ -150,12 +182,30 @@ class StoreController extends ChangeNotifier {
         .toList();
     _store.saveContents(_contents);
     notifyListeners();
+    final updated = _contents.firstWhere((c) => c.id == content.id);
+    _syncContent(updated);
   }
 
   void deleteContent(String id) {
     _contents = _contents.where((c) => c.id != id).toList();
     _store.saveContents(_contents);
     notifyListeners();
+    // Pas de route de suppression de contenu dans l'Edge Function actuellement.
+    // TODO: ajouter route "contents/delete" si besoin.
+  }
+
+  /// Pousse un contenu vers Supabase (upsert) en arrière-plan.
+  Future<void> _syncContent(Content content) async {
+    if (sync == null) return;
+    try {
+      final created = await sync!.upsertContent(content);
+      _contents = _contents.map((c) => c.id == content.id ? created : c).toList();
+      _store.saveContents(_contents);
+      notifyListeners();
+    } catch (e) {
+      syncError = 'Contenu non synchronisé: $e';
+      notifyListeners();
+    }
   }
 
   // ---------- Suggestions ----------
@@ -188,6 +238,13 @@ class StoreController extends ChangeNotifier {
         .toList();
     _store.saveSuggestions(_suggestions);
     notifyListeners();
+    // Sync Supabase : crée le contenu + marque la suggestion acceptée.
+    _syncAcceptSuggestion(
+      suggestion: suggestion,
+      gameId: gameId,
+      category: category,
+      titleAdmin: titleAdmin,
+    );
   }
 
   void rejectSuggestion(Suggestion suggestion) {
@@ -198,6 +255,38 @@ class StoreController extends ChangeNotifier {
         .toList();
     _store.saveSuggestions(_suggestions);
     notifyListeners();
+    _syncRejectSuggestion(suggestion.id);
+  }
+
+  Future<void> _syncAcceptSuggestion({
+    required Suggestion suggestion,
+    required String gameId,
+    required ContentCategory category,
+    required String titleAdmin,
+  }) async {
+    if (sync == null) return;
+    try {
+      await sync!.acceptSuggestion(
+        suggestionId: suggestion.id,
+        gameId: gameId,
+        category: category,
+        titleAdmin: titleAdmin,
+        isVideo: category == ContentCategory.video,
+      );
+    } catch (e) {
+      syncError = 'Suggestion non acceptée côté serveur: $e';
+      notifyListeners();
+    }
+  }
+
+  Future<void> _syncRejectSuggestion(String suggestionId) async {
+    if (sync == null) return;
+    try {
+      await sync!.rejectSuggestion(suggestionId);
+    } catch (e) {
+      syncError = 'Suggestion non rejetée côté serveur: $e';
+      notifyListeners();
+    }
   }
 
   // ---------- Bannissement ----------
@@ -207,6 +296,7 @@ class StoreController extends ChangeNotifier {
     _banned = [..._banned, BannedUser.fromAuthor(suggestion.author, reason: reason)];
     _store.saveBanned(_banned);
     notifyListeners();
+    _syncBan(suggestion.author.id, reason: reason);
   }
 
   /// Bannit directement un auteur identifié (depuis un id).
@@ -223,12 +313,14 @@ class StoreController extends ChangeNotifier {
     ];
     _store.saveBanned(_banned);
     notifyListeners();
+    _syncBan(authorId, reason: 'Banni manuellement');
   }
 
   void unban(String id) {
     _banned = _banned.where((b) => b.id != id).toList();
     _store.saveBanned(_banned);
     notifyListeners();
+    _syncUnban(id);
   }
 
   /// Bannit manuellement un compte (sans suggestion associée).
@@ -253,6 +345,34 @@ class StoreController extends ChangeNotifier {
     ];
     _store.saveBanned(_banned);
     notifyListeners();
+    // Pas de sync Supabase : les bans manuels sans user_id valide ne
+    // correspondent à aucun profil en base.
+  }
+
+  /// Pousse un ban vers Supabase (uniquement si l'ID est un UUID valide,
+  /// c'est-à-dire un vrai user_id — pas un ID manuel fictif).
+  Future<void> _syncBan(String userId, {String? reason}) async {
+    if (sync == null) return;
+    // Les UUID Supabase font 36 caractères (format xxxxxxxx-xxxx-...).
+    // Les IDs manuels commencent par 'manual-' et ne sont pas en base.
+    if (userId.length != 36 || !userId.contains('-')) return;
+    try {
+      await sync!.banUser(userId, reason: reason);
+    } catch (e) {
+      syncError = 'Ban non synchronisé: $e';
+      notifyListeners();
+    }
+  }
+
+  Future<void> _syncUnban(String userId) async {
+    if (sync == null) return;
+    if (userId.length != 36 || !userId.contains('-')) return;
+    try {
+      await sync!.unbanUser(userId);
+    } catch (e) {
+      syncError = 'Levée de ban non synchronisée: $e';
+      notifyListeners();
+    }
   }
 
   // ---------- Utilisateurs Nitro ----------
@@ -273,6 +393,8 @@ class StoreController extends ChangeNotifier {
     _nitro = [..._nitro, user];
     _store.saveNitro(_nitro);
     notifyListeners();
+    // Pas de sync Supabase automatique : l'ID est fictif. La gestion réelle
+    // des abonnements se fera via Google Play Billing (Phase 3).
   }
 
   /// Active/désactive un abonnement Nitro.
@@ -282,6 +404,7 @@ class StoreController extends ChangeNotifier {
         .toList();
     _store.saveNitro(_nitro);
     notifyListeners();
+    _syncNitroToggle(user);
   }
 
   /// Change la formule d'un utilisateur Nitro.
@@ -291,12 +414,31 @@ class StoreController extends ChangeNotifier {
         .toList();
     _store.saveNitro(_nitro);
     notifyListeners();
+    _syncNitroToggle(user.copyWith(plan: plan));
   }
 
   void deleteNitroUser(String id) {
     _nitro = _nitro.where((n) => n.id != id).toList();
     _store.saveNitro(_nitro);
     notifyListeners();
+  }
+
+  /// Pousse l'état d'un abonnement vers Supabase (uniquement si l'ID est un
+  /// UUID valide, c'est-à-dire un vrai user_id).
+  Future<void> _syncNitroToggle(NitroUser user) async {
+    if (sync == null) return;
+    if (user.id.length != 36 || !user.id.contains('-')) return;
+    try {
+      await sync!.upsertSubscription(
+        userId: user.id,
+        plan: user.plan,
+        isActive: user.active,
+        startedAt: user.startedAt,
+      );
+    } catch (e) {
+      syncError = 'Abonnement non synchronisé: $e';
+      notifyListeners();
+    }
   }
 
   // ---------- Divers ----------
