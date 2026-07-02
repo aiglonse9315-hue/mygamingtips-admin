@@ -46,7 +46,7 @@ jobs:
       - name: Build Web (production)
         run: |
           flutter build web --release \
-            --base-href "/" \
+            --base-href "/mygamingtips-admin/" \
             --dart-define=MGT_ADMIN_AUTH_ENDPOINT="https://odqbazwyjdpppbameype.supabase.co/functions/v1/admin-login" \
             --dart-define=MGT_SUPABASE_URL="https://odqbazwyjdpppbameype.supabase.co" \
             --dart-define=MGT_SUPABASE_ANON_KEY="${{ secrets.MGT_SUPABASE_ANON_KEY }}" \
@@ -56,7 +56,7 @@ jobs:
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: build/web
 
