@@ -91,6 +91,10 @@ class _AdminShellState extends State<AdminShell> {
               children: [
                 AdminTopbar(
                   title: _title,
+                  showReset: store.sync == null,
+                  onRefresh:
+                      store.sync != null ? () => store.refresh() : null,
+                  isSyncing: store.isSyncing,
                   onReset: () => showDialog<void>(
                     context: context,
                     builder: (_) => ConfirmDialog(

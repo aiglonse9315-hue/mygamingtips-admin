@@ -9,11 +9,26 @@ class AdminTopbar extends StatelessWidget {
     required this.title,
     required this.onReset,
     required this.onLogout,
+    this.showReset = true,
+    this.onRefresh,
+    this.isSyncing = false,
   });
 
   final String title;
   final VoidCallback onReset;
   final VoidCallback onLogout;
+
+  /// Affiche le bouton "Réinitialiser la démo" uniquement en mode aperçu
+  /// local. En production (Supabase connecté), il est masqué car il
+  /// n'a pas de sens d'écraser les données serveur.
+  final bool showReset;
+
+  /// Callback de rafraîchissement (resync Supabase). Si null, le bouton
+  /// n'apparaît pas.
+  final VoidCallback? onRefresh;
+
+  /// Indique qu'une synchronisation est en cours (bouton en loading).
+  final bool isSyncing;
 
   @override
   Widget build(BuildContext context) {
@@ -38,12 +53,26 @@ class AdminTopbar extends StatelessWidget {
             ),
           ),
           const Spacer(),
-          TextButton.icon(
-            onPressed: onReset,
-            icon: const Icon(Icons.restart_alt_rounded, size: 18),
-            label: const Text('Réinitialiser la démo'),
-          ),
-          const SizedBox(width: 8),
+          if (onRefresh != null)
+            TextButton.icon(
+              onPressed: isSyncing ? null : onRefresh,
+              icon: isSyncing
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.sync_rounded, size: 18),
+              label: const Text('Actualiser'),
+            ),
+          if (onRefresh != null) const SizedBox(width: 8),
+          if (showReset)
+            TextButton.icon(
+              onPressed: onReset,
+              icon: const Icon(Icons.restart_alt_rounded, size: 18),
+              label: const Text('Réinitialiser la démo'),
+            ),
+          if (showReset) const SizedBox(width: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
