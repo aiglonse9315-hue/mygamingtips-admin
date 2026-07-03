@@ -195,6 +195,24 @@ serve(async (req) => {
       return json({ content: data });
     }
 
+    if (route === "contents/delete") {
+      const contentId = uuidOrUndefined(body.id);
+      if (!contentId) {
+        return json(
+          { error: "id manquant ou invalide (UUID attendu)." },
+          400
+        );
+      }
+      // Supprime d'abord les favoris liés (cohérence référentielle).
+      await supabase.from("favorite_contents").delete().eq("content_id", contentId);
+      const { error } = await supabase
+        .from("contents")
+        .delete()
+        .eq("id", contentId);
+      if (error) return json({ error: error.message }, 400);
+      return json({ ok: true });
+    }
+
     // ======================================================================
     // SUGGESTIONS — modération
     // ======================================================================

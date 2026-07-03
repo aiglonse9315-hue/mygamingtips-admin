@@ -204,8 +204,9 @@ class StoreController extends ChangeNotifier {
     _contents = _contents.where((c) => c.id != id).toList();
     _store.saveContents(_contents);
     notifyListeners();
-    // Pas de route de suppression de contenu dans l'Edge Function actuellement.
-    // TODO: ajouter route "contents/delete" si besoin.
+    // Sync Supabase : supprime le contenu, puis resync pour garantir la
+    // cohérence (le cache local est écrasé par l'état serveur réel).
+    _syncDeleteContent(id);
   }
 
   /// Pousse un contenu vers Supabase (upsert) en arrière-plan.
@@ -218,6 +219,20 @@ class StoreController extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       syncError = 'Contenu non synchronisé: $e';
+      notifyListeners();
+    }
+  }
+
+  Future<void> _syncDeleteContent(String id) async {
+    if (sync == null) return;
+    try {
+      await sync!.deleteContent(id);
+      // Resync pour garantir la cohérence avec le serveur.
+      await syncFromSupabase();
+    } catch (e) {
+      syncError = 'Suppression contenu non synchronisée: $e';
+      // En cas d'échec (ex: ID temporaire), on resync pour révéler l'état réel.
+      await syncFromSupabase();
       notifyListeners();
     }
   }

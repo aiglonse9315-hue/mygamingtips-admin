@@ -217,6 +217,10 @@ class SupabaseSync {
     return Content.fromJson(data['content'] as Map<String, dynamic>);
   }
 
+  Future<void> deleteContent(String id) async {
+    await _post('contents/delete', {'id': id});
+  }
+
   Future<void> acceptSuggestion({
     required String suggestionId,
     required String gameId,
