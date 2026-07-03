@@ -118,6 +118,8 @@ class StoreController extends ChangeNotifier {
     _store.saveContents(_contents);
     notifyListeners();
     // Sync Supabase : supprime le jeu (cascade contenus côté serveur).
+    // La suppression attend la confirmation serveur, puis resync pour
+    // garantir la cohérence (en cas d'ID temporaire non encore remplacé).
     _syncDeleteGame(id);
   }
 
@@ -141,8 +143,14 @@ class StoreController extends ChangeNotifier {
     if (sync == null) return;
     try {
       await sync!.deleteGame(id);
+      // La suppression a réussi côté serveur : on resync pour garantir
+      // la cohérence (le cache local est écrasé par l'état serveur réel).
+      await syncFromSupabase();
     } catch (e) {
       syncError = 'Suppression jeu non synchronisée: $e';
+      // En cas d'échec (ex: ID temporaire), on resync aussi pour révéler
+      // l'état réel (le jeu réapparaît s'il n'a pas pu être supprimé).
+      await syncFromSupabase();
       notifyListeners();
     }
   }

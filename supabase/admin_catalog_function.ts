@@ -158,8 +158,13 @@ serve(async (req) => {
 
     if (route === "games/delete") {
       // Cascade : supprimer d'abord les contenus liés, puis les favoris.
-      const gameId = body.id;
-      if (!gameId) return json({ error: "id manquant." }, 400);
+      const gameId = uuidOrUndefined(body.id);
+      if (!gameId) {
+        return json(
+          { error: "id manquant ou invalide (UUID attendu)." },
+          400
+        );
+      }
       await supabase.from("contents").delete().eq("game_id", gameId);
       await supabase.from("favorite_games").delete().eq("game_id", gameId);
       const { error } = await supabase.from("games").delete().eq("id", gameId);
