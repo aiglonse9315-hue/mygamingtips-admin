@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/theme/colors.dart';
 
@@ -121,33 +122,99 @@ class AdminTopbar extends StatelessWidget {
           ),
         ),
         if (syncError != null)
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-            color: AppColors.categoryVideo.withValues(alpha: 0.15),
-            child: Row(
-              children: [
-                const Icon(Icons.error_outline_rounded,
-                    size: 18, color: AppColors.categoryVideo),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    syncError!,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.categoryVideo,
-                    ),
-                  ),
-                ),
-                if (onDismissError != null)
-                  IconButton(
-                    icon: const Icon(Icons.close_rounded, size: 16),
-                    onPressed: onDismissError,
-                  ),
-              ],
-            ),
+          _SyncErrorBanner(
+            error: syncError!,
+            onDismiss: onDismissError,
           ),
       ],
+    );
+  }
+}
+
+/// Bannière d'erreur de synchronisation avec boutons Copier et Détails.
+class _SyncErrorBanner extends StatelessWidget {
+  const _SyncErrorBanner({required this.error, this.onDismiss});
+
+  final String error;
+  final VoidCallback? onDismiss;
+
+  Future<void> _copy(BuildContext context) async {
+    await Clipboard.setData(ClipboardData(text: error));
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Erreur copiée dans le presse-papiers'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  void _showDetails(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Détail de l\'erreur'),
+        content: SizedBox(
+          width: 600,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              error,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Fermer'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+      color: AppColors.categoryVideo.withValues(alpha: 0.15),
+      child: Row(
+        children: [
+          const Icon(Icons.error_outline_rounded,
+              size: 18, color: AppColors.categoryVideo),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              error.length > 80 ? '${error.substring(0, 80)}…' : error,
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppColors.categoryVideo,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Copier l\'erreur',
+            icon: const Icon(Icons.copy_rounded, size: 16),
+            onPressed: () => _copy(context),
+          ),
+          IconButton(
+            tooltip: 'Détails',
+            icon: const Icon(Icons.info_outline_rounded, size: 16),
+            onPressed: () => _showDetails(context),
+          ),
+          if (onDismiss != null)
+            IconButton(
+              tooltip: 'Fermer',
+              icon: const Icon(Icons.close_rounded, size: 16),
+              onPressed: onDismiss,
+            ),
+        ],
+      ),
     );
   }
 }
