@@ -17,6 +17,7 @@
 //   POST /contents         → upsert contenu (create/update)
 //   POST /suggestions/accept → valider une suggestion (crée un contenu)
 //   POST /suggestions/reject → rejeter une suggestion
+//   POST /suggestions/ai-recommend → écrire la recommandation IA Sentinelle
 //   POST /profiles/ban     → bannir un utilisateur (is_banned = true)
 //   POST /profiles/unban   → lever un ban (is_banned = false)
 //   POST /subscriptions/upsert → créer/modifier un abonnement Plus manuel
@@ -251,6 +252,29 @@ serve(async (req) => {
         .from("suggestions")
         .update({ status: "rejected" })
         .eq("id", body.id);
+      if (error) return json({ error: error.message }, 400);
+      return json({ ok: true });
+    }
+
+    if (route === "suggestions/ai-recommend") {
+      // Écrit la recommandation de l'IA Sentinelle sur une suggestion.
+      // Le champ ai_recommendation est un JSONB stockant verdict, confidence,
+      // reason, suggested_game, suggested_category, youtube_views, etc.
+      const suggestionId = uuidOrUndefined(body.id);
+      if (!suggestionId) {
+        return json(
+          { error: "id manquant ou invalide (UUID attendu)." },
+          400
+        );
+      }
+      const recommendation = body.recommendation;
+      if (!recommendation) {
+        return json({ error: "recommendation manquant." }, 400);
+      }
+      const { error } = await supabase
+        .from("suggestions")
+        .update({ ai_recommendation: recommendation })
+        .eq("id", suggestionId);
       if (error) return json({ error: error.message }, 400);
       return json({ ok: true });
     }

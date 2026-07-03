@@ -93,6 +93,8 @@ class SupabaseSync {
           out['sharedAt'] = value;
         case 'author_id':
           out['authorId'] = value;
+        case 'ai_recommendation':
+          out['aiRecommendation'] = value;
         default:
           out[key] = value;
       }

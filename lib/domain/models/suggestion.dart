@@ -25,6 +25,9 @@ enum SuggestionStatus {
 ///
 /// [author] identifie le compte Google à l'origine de la suggestion : permet
 /// à l'admin de consulter l'identité de l'auteur et de le bannir si besoin.
+///
+/// [aiRecommendation] contient le verdict de l'IA Sentinelle (nullable tant
+/// que la suggestion n'a pas été analysée).
 @immutable
 class Suggestion {
   final String id;
@@ -33,6 +36,7 @@ class Suggestion {
   final SuggestionStatus status;
   final DateTime sharedAt;
   final SuggestionAuthor author;
+  final AiRecommendation? aiRecommendation;
 
   const Suggestion({
     required this.id,
@@ -41,6 +45,7 @@ class Suggestion {
     required this.status,
     required this.sharedAt,
     required this.author,
+    this.aiRecommendation,
   });
 
   factory Suggestion.fromJson(Map<String, dynamic> json) {
@@ -56,6 +61,10 @@ class Suggestion {
           DateTime.now(),
       author: SuggestionAuthor.fromJson(
           json['author'] as Map<String, dynamic>),
+      aiRecommendation: json['aiRecommendation'] != null
+          ? AiRecommendation.fromJson(
+              json['aiRecommendation'] as Map<String, dynamic>)
+          : null,
     );
   }
 
@@ -66,6 +75,7 @@ class Suggestion {
         'status': status.name,
         'sharedAt': sharedAt.toIso8601String(),
         'author': author.toJson(),
+        if (aiRecommendation != null) 'aiRecommendation': aiRecommendation!.toJson(),
       };
 
   Suggestion copyWith({SuggestionStatus? status}) {
@@ -76,6 +86,7 @@ class Suggestion {
       status: status ?? this.status,
       sharedAt: sharedAt,
       author: author,
+      aiRecommendation: aiRecommendation,
     );
   }
 
@@ -84,4 +95,77 @@ class Suggestion {
 
   @override
   int get hashCode => id.hashCode;
+}
+
+/// Verdict possible de l'IA Sentinelle.
+enum AiVerdict {
+  recommended,
+  caution,
+  reject;
+
+  String get label {
+    switch (this) {
+      case AiVerdict.recommended:
+        return 'Recommandé';
+      case AiVerdict.caution:
+        return 'À vérifier';
+      case AiVerdict.reject:
+        return 'Risqué';
+    }
+  }
+}
+
+/// Recommandation de l'IA Sentinelle sur une suggestion.
+///
+/// L'IA analyse l'URL, la pertinence gaming, le contenu inapproprié, et les
+/// vues YouTube. Elle propose aussi un jeu et une catégorie. **L'IA ne valide
+/// jamais seule** : c'est l'admin qui décide.
+@immutable
+class AiRecommendation {
+  final AiVerdict verdict;
+  final double confidence;
+  final String reason;
+  final String? suggestedGame;
+  final String? suggestedCategory;
+  final int? youtubeViews;
+  final int? youtubeLikes;
+  final DateTime? analyzedAt;
+
+  const AiRecommendation({
+    required this.verdict,
+    required this.confidence,
+    required this.reason,
+    this.suggestedGame,
+    this.suggestedCategory,
+    this.youtubeViews,
+    this.youtubeLikes,
+    this.analyzedAt,
+  });
+
+  factory AiRecommendation.fromJson(Map<String, dynamic> json) {
+    return AiRecommendation(
+      verdict: AiVerdict.values.firstWhere(
+        (e) => e.name == (json['verdict'] as String? ?? 'caution'),
+        orElse: () => AiVerdict.caution,
+      ),
+      confidence: (json['confidence'] as num?)?.toDouble() ?? 0.0,
+      reason: json['reason'] as String? ?? '',
+      suggestedGame: json['suggested_game'] as String?,
+      suggestedCategory: json['suggested_category'] as String?,
+      youtubeViews: json['youtube_views'] as int?,
+      youtubeLikes: json['youtube_likes'] as int?,
+      analyzedAt: DateTime.tryParse(json['analyzed_at'] as String? ?? ''),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'verdict': verdict.name,
+        'confidence': confidence,
+        'reason': reason,
+        if (suggestedGame != null) 'suggested_game': suggestedGame,
+        if (suggestedCategory != null) 'suggested_category': suggestedCategory,
+        if (youtubeViews != null) 'youtube_views': youtubeViews,
+        if (youtubeLikes != null) 'youtube_likes': youtubeLikes,
+        if (analyzedAt != null) 'analyzed_at': analyzedAt!.toIso8601String(),
+      };
 }

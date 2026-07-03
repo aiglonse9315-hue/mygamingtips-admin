@@ -98,6 +98,7 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
               'Message',
               'Partagée le',
               'Statut',
+              'IA',
               'Actions'
             ],
             rows: list
@@ -188,6 +189,7 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                       StatusBadge(
                           label: s.status.label,
                           color: _statusColor(s.status)),
+                      _AiBadge(recommendation: s.aiRecommendation),
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -343,6 +345,17 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
     }
     _title = TextEditingController(text: title);
     _image = TextEditingController();
+
+    // Auto-remplissage depuis la recommandation IA (catégorie seulement ici,
+    // le jeu nécessite la liste des jeux qui est lue dans build).
+    final ai = widget.suggestion.aiRecommendation;
+    if (ai != null && ai.suggestedCategory != null) {
+      final cat = ContentCategory.values.firstWhere(
+        (e) => e.name == ai.suggestedCategory,
+        orElse: () => ContentCategory.video,
+      );
+      _category = cat;
+    }
   }
 
   @override
@@ -371,6 +384,22 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
     final List<Game> games = store.games;
     final bool isVideo = widget.suggestion.url.contains('youtube') ||
         widget.suggestion.url.contains('youtu.be');
+
+    // Auto-sélection du jeu depuis la recommandation IA (si pas déjà choisi).
+    if (_gameId == null) {
+      final ai = widget.suggestion.aiRecommendation;
+      if (ai != null && ai.suggestedGame != null) {
+        final match = games.firstWhere(
+          (g) => g.name.toLowerCase() == ai.suggestedGame!.toLowerCase(),
+          orElse: () => games.firstWhere(
+            (g) =>
+                g.name.toLowerCase().contains(ai.suggestedGame!.toLowerCase()),
+            orElse: () => games.first,
+          ),
+        );
+        if (games.isNotEmpty) _gameId = match.id;
+      }
+    }
 
     return AlertDialog(
       title: const Text('Valider la suggestion'),
@@ -468,5 +497,97 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
         ),
       ],
     );
+  }
+}
+
+/// Badge affichant la recommandation de l'IA Sentinelle sur une suggestion.
+///
+/// Couleurs selon le verdict :
+/// - 🟢 recommended (vert) — "Recommandé"
+/// - 🟡 caution (orange) — "À vérifier"
+/// - 🔴 reject (rouge) — "Risqué"
+///
+/// Au survol (tooltip), affiche la raison détaillée + vues YouTube.
+class _AiBadge extends StatelessWidget {
+  const _AiBadge({required this.recommendation});
+
+  final AiRecommendation? recommendation;
+
+  @override
+  Widget build(BuildContext context) {
+    if (recommendation == null) {
+      // Pas encore analysée par l'IA.
+      return const Tooltip(
+        message: 'Pas encore analysée par l\'IA',
+        child: Text('—', style: TextStyle(fontSize: 12, color: Colors.grey)),
+      );
+    }
+
+    final rec = recommendation!;
+    final (color, icon) = switch (rec.verdict) {
+      AiVerdict.recommended => (AppColors.neonGreen, Icons.check_circle_rounded),
+      AiVerdict.caution => (const Color(0xFFFFC93C), Icons.warning_rounded),
+      AiVerdict.reject => (AppColors.categoryVideo, Icons.dangerous_rounded),
+    };
+
+    // Tooltip avec raison + vues.
+    final views = rec.youtubeViews != null
+        ? '\nVues YouTube: ${_formatCount(rec.youtubeViews!)}'
+        : '';
+    final likes = rec.youtubeLikes != null
+        ? ' • ${_formatCount(rec.youtubeLikes!)} likes'
+        : '';
+    final game = rec.suggestedGame != null
+        ? '\nJeu suggéré: ${rec.suggestedGame}'
+        : '';
+    final cat = rec.suggestedCategory != null
+        ? '\nCatégorie suggérée: ${rec.suggestedCategory}'
+        : '';
+
+    return Tooltip(
+      message:
+          '${rec.verdict.label} (${(rec.confidence * 100).round()}%)\n'
+          '${rec.reason}$views$likes$game$cat',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 4),
+            Text(
+              rec.verdict.label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
+            ),
+            if (rec.youtubeViews != null) ...[
+              const SizedBox(width: 4),
+              Text(
+                _formatCount(rec.youtubeViews!),
+                style: TextStyle(
+                  fontSize: 10,
+                  color: color.withValues(alpha: 0.8),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Formate un nombre avec suffixes (1.2k, 3.4M).
+  static String _formatCount(int n) {
+    if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
+    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}k';
+    return n.toString();
   }
 }
