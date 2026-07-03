@@ -123,6 +123,19 @@ serve(async (req) => {
     return json({ error: "Corps de requête JSON invalide." }, 400);
   }
 
+  // Les tables utilisent des UUID comme clé primaire (gen_random_uuid()).
+  // L'admin génère des IDs temporaires côté client (ex: "g-1783042025131")
+  // pour ses manipulations locales. On ne doit JAMAIS envoyer ces IDs
+  // temporaires à Supabase (erreur "invalid input syntax for type uuid").
+  // Cette fonction ne retourne l'ID que si c'est un vrai UUID valide.
+  const uuidOrUndefined = (id: unknown): string | undefined => {
+    if (typeof id !== "string") return undefined;
+    // Un UUID v4 fait 36 caractères : xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(id) ? id : undefined;
+  };
+
   try {
     // ======================================================================
     // JEUX
@@ -131,7 +144,7 @@ serve(async (req) => {
       const { data, error } = await supabase
         .from("games")
         .upsert({
-          id: body.id ?? undefined,
+          id: uuidOrUndefined(body.id),
           name: body.name,
           publisher: body.publisher,
           cover_url: body.cover_url,
@@ -161,7 +174,7 @@ serve(async (req) => {
       const { data, error } = await supabase
         .from("contents")
         .upsert({
-          id: body.id ?? undefined,
+          id: uuidOrUndefined(body.id),
           game_id: body.game_id,
           category: body.category,
           url: body.url,

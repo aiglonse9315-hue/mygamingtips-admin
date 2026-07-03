@@ -95,6 +95,8 @@ class _AdminShellState extends State<AdminShell> {
                   onRefresh:
                       store.sync != null ? () => store.refresh() : null,
                   isSyncing: store.isSyncing,
+                  syncError: store.syncError,
+                  onDismissError: () => store.clearSyncError(),
                   onReset: () => showDialog<void>(
                     context: context,
                     builder: (_) => ConfirmDialog(

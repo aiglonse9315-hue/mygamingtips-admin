@@ -40,6 +40,12 @@ class StoreController extends ChangeNotifier {
   /// Dernière erreur de synchronisation (null si OK).
   String? syncError;
 
+  /// Efface l'erreur de synchronisation affichée.
+  void clearSyncError() {
+    syncError = null;
+    notifyListeners();
+  }
+
   List<Game> _games = <Game>[];
   List<Content> _contents = <Content>[];
   List<Suggestion> _suggestions = <Suggestion>[];
