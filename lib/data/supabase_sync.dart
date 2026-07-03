@@ -132,11 +132,11 @@ class SupabaseSync {
   ///
   /// La table `suggestions` ne stocke que `author_id` (UUID) ; on utilise la
   /// fonction de jointure PostgREST pour récupérer le profil (displayName,
-  /// avatar, email) via la FK `author_id → profiles.id`.
+  /// avatar) via la FK `author_id → profiles.id`.
   Future<List<Suggestion>> fetchSuggestions() async {
     final Uri uri = Uri.parse(
       '$supabaseUrl/rest/v1/suggestions'
-      '?select=*,author:profiles(id,display_name,avatar_preset,email)'
+      '?select=*,author:profiles(id,display_name,avatar_preset)'
       '&order=shared_at.desc',
     );
     final http.Response res = await http.get(uri, headers: _anonHeaders);
@@ -152,11 +152,9 @@ class SupabaseSync {
       final Map<String, dynamic> authorObj = authorData is Map
           ? {
               'id': authorData['id'] ?? row['author_id'] ?? '',
-              'displayName': authorData['display_name'] ??
-                  (authorData['email'] as String?)?.split('@').first ??
-                  'Inconnu',
+              'displayName':
+                  authorData['display_name'] ?? 'Inconnu',
               'avatarUrl': authorData['avatar_preset'],
-              'email': authorData['email'],
             }
           : {
               'id': row['author_id'] ?? '',
