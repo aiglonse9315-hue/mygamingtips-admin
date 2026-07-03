@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/theme/colors.dart';
 import '../../domain/models/category.dart';
-import '../../domain/models/nitro_user.dart';
+import '../../domain/models/plus_user.dart';
 import '../../domain/models/suggestion.dart';
 import '../../state/store_controller.dart';
 import '../widgets/stat_card.dart';
@@ -69,18 +69,18 @@ class DashboardScreen extends StatelessWidget {
                   label: 'Suggestions en attente',
                   value: '$pending',
                   icon: Icons.inbox_rounded,
-                  color: AppColors.nitroGold,
+                  color: AppColors.plusGold,
                 ),
               ),
               SizedBox(
                 width: 240,
                 child: StatCard(
-                  label: 'Utilisateurs Nitro',
-                  value: '${store.activeNitroCount}',
+                  label: 'Abonnés Plus',
+                  value: '${store.activePlusCount}',
                   icon: Icons.bolt_rounded,
-                  color: AppColors.nitro,
+                  color: AppColors.plus,
                   subtitle:
-                      '${store.nitro.length} au total',
+                      '${store.plus.length} au total',
                 ),
               ),
             ],
@@ -149,8 +149,8 @@ class DashboardScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 24),
-          // ---------- Utilisateurs Nitro (accordéon) ----------
-          _NitroAccordion(),
+          // ---------- Utilisateurs Plus (accordéon) ----------
+          _PlusAccordion(),
           const SizedBox(height: 24),
           // Dernières suggestions
           Row(
@@ -186,7 +186,7 @@ class DashboardScreen extends StatelessWidget {
                                         : Icons.cancel_rounded),
                                 size: 20,
                                 color: s.status == SuggestionStatus.pending
-                                    ? AppColors.nitroGold
+                                    ? AppColors.plusGold
                                     : (s.status == SuggestionStatus.accepted
                                         ? AppColors.neonGreen
                                         : AppColors.categoryVideo),
@@ -287,19 +287,19 @@ class DashboardScreen extends StatelessWidget {
   }
 }
 
-/// Accordéon « Utilisateurs Nitro » : liste + ajout manuel.
-class _NitroAccordion extends StatefulWidget {
+/// Accordéon « Utilisateurs Plus » : liste + ajout manuel.
+class _PlusAccordion extends StatefulWidget {
   @override
-  State<_NitroAccordion> createState() => _NitroAccordionState();
+  State<_PlusAccordion> createState() => _PlusAccordionState();
 }
 
-class _NitroAccordionState extends State<_NitroAccordion> {
+class _PlusAccordionState extends State<_PlusAccordion> {
   bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
     final StoreController store = context.watch<StoreController>();
-    final List<NitroUser> nitro = store.nitro;
+    final List<PlusUser> plus = store.plus;
 
     return Card(
       child: Column(
@@ -309,16 +309,16 @@ class _NitroAccordionState extends State<_NitroAccordion> {
             leading: Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: AppColors.nitro.withValues(alpha: 0.16),
+                color: AppColors.plus.withValues(alpha: 0.16),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: const Icon(Icons.bolt_rounded,
-                  color: AppColors.nitro, size: 20),
+                  color: AppColors.plus, size: 20),
             ),
-            title: const Text('Utilisateurs Nitro',
+            title: const Text('Abonnés Plus',
                 style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
             subtitle: Text(
-              '${store.activeNitroCount} actif(s) • ${nitro.length} au total',
+              '${store.activePlusCount} actif(s) • ${plus.length} au total',
               style: const TextStyle(fontSize: 12),
             ),
             trailing: Row(
@@ -326,7 +326,7 @@ class _NitroAccordionState extends State<_NitroAccordion> {
               children: [
                 FilledButton.icon(
                   style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.nitro,
+                    backgroundColor: AppColors.plus,
                     padding: const EdgeInsets.symmetric(
                         horizontal: 12, vertical: 8),
                   ),
@@ -351,15 +351,15 @@ class _NitroAccordionState extends State<_NitroAccordion> {
             firstChild: const SizedBox(width: double.infinity),
             secondChild: Padding(
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 10),
-              child: nitro.isEmpty
+              child: plus.isEmpty
                   ? const Padding(
                       padding: EdgeInsets.symmetric(
                           vertical: 16, horizontal: 16),
-                      child: Text('Aucun utilisateur Nitro.',
+                      child: Text('Aucun abonné Plus.',
                           style: TextStyle(fontSize: 13)),
                     )
                   : Column(
-                      children: nitro.map((n) => _nitroTile(context, n)).toList(),
+                      children: plus.map((n) => _plusTile(context, n)).toList(),
                     ),
             ),
           ),
@@ -368,16 +368,16 @@ class _NitroAccordionState extends State<_NitroAccordion> {
     );
   }
 
-  Widget _nitroTile(BuildContext context, NitroUser n) {
+  Widget _plusTile(BuildContext context, PlusUser n) {
     final StoreController store = context.read<StoreController>();
     return ListTile(
       dense: true,
       leading: CircleAvatar(
         radius: 16,
         backgroundColor:
-            AppColors.nitro.withValues(alpha: n.active ? 0.2 : 0.06),
+            AppColors.plus.withValues(alpha: n.active ? 0.2 : 0.06),
         child: Icon(Icons.bolt_rounded,
-            size: 16, color: n.active ? AppColors.nitro : Colors.grey),
+            size: 16, color: n.active ? AppColors.plus : Colors.grey),
       ),
       title: Row(
         children: [
@@ -394,8 +394,8 @@ class _NitroAccordionState extends State<_NitroAccordion> {
                 const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
             decoration: BoxDecoration(
               color: (n.plan == 'yearly'
-                      ? AppColors.nitroGold
-                      : AppColors.nitro)
+                      ? AppColors.plusGold
+                      : AppColors.plus)
                   .withValues(alpha: 0.16),
               borderRadius: BorderRadius.circular(6),
             ),
@@ -405,8 +405,8 @@ class _NitroAccordionState extends State<_NitroAccordion> {
                   fontSize: 10,
                   fontWeight: FontWeight.w800,
                   color: n.plan == 'yearly'
-                      ? AppColors.nitroGold
-                      : AppColors.nitro),
+                      ? AppColors.plusGold
+                      : AppColors.plus),
             ),
           ),
           if (!n.active) ...[
@@ -422,21 +422,20 @@ class _NitroAccordionState extends State<_NitroAccordion> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            tooltip: n.active ? 'Suspendre' : 'Réactiver',
-            icon: Icon(
-              n.active
-                  ? Icons.pause_circle_outline_rounded
-                  : Icons.play_circle_outline_rounded,
-              size: 20,
-              color: n.active ? AppColors.nitroGold : AppColors.neonGreen,
+          // Bouton "Suspendre" : affiché uniquement si l'abonné est actif.
+          // La réactivation est volontairement verrouillée (abonnés inactifs
+          // = expirés, gérés côté Google Play Billing).
+          if (n.active)
+            IconButton(
+              tooltip: 'Suspendre',
+              icon: const Icon(Icons.pause_circle_outline_rounded,
+                  size: 20, color: AppColors.plusGold),
+              onPressed: () => store.togglePlusUser(n),
             ),
-            onPressed: () => store.toggleNitroUser(n),
-          ),
           PopupMenuButton<String>(
             tooltip: 'Changer la formule',
             icon: const Icon(Icons.swap_horiz_rounded, size: 20),
-            onSelected: (plan) => store.setNitroPlan(n, plan),
+            onSelected: (plan) => store.setPlusPlan(n, plan),
             itemBuilder: (_) => const [
               PopupMenuItem(value: 'monthly', child: Text('Mensuel')),
               PopupMenuItem(value: 'yearly', child: Text('Annuel')),
@@ -446,7 +445,7 @@ class _NitroAccordionState extends State<_NitroAccordion> {
             tooltip: 'Supprimer',
             icon: const Icon(Icons.delete_outline_rounded, size: 20),
             color: AppColors.categoryVideo,
-            onPressed: () => store.deleteNitroUser(n.id),
+            onPressed: () => store.deletePlusUser(n.id),
           ),
         ],
       ),
@@ -456,7 +455,7 @@ class _NitroAccordionState extends State<_NitroAccordion> {
   void _showAddDialog(BuildContext context) {
     showDialog<void>(
       context: context,
-      builder: (_) => const _AddNitroUserDialog(),
+      builder: (_) => const _AddPlusUserDialog(),
     );
   }
 
@@ -464,18 +463,19 @@ class _NitroAccordionState extends State<_NitroAccordion> {
       '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
 }
 
-/// Dialog d'ajout manuel d'un utilisateur Nitro.
-class _AddNitroUserDialog extends StatefulWidget {
-  const _AddNitroUserDialog();
+/// Dialog d'ajout manuel d'un utilisateur Plus.
+class _AddPlusUserDialog extends StatefulWidget {
+  const _AddPlusUserDialog();
 
   @override
-  State<_AddNitroUserDialog> createState() => _AddNitroUserDialogState();
+  State<_AddPlusUserDialog> createState() => _AddPlusUserDialogState();
 }
 
-class _AddNitroUserDialogState extends State<_AddNitroUserDialog> {
+class _AddPlusUserDialogState extends State<_AddPlusUserDialog> {
   final TextEditingController _name = TextEditingController();
   final TextEditingController _email = TextEditingController();
   String _plan = 'monthly';
+  bool _loading = false;
 
   @override
   void dispose() {
@@ -484,22 +484,69 @@ class _AddNitroUserDialogState extends State<_AddNitroUserDialog> {
     super.dispose();
   }
 
-  void _save() {
-    if (_name.text.trim().isEmpty) return;
-    context
-        .read<StoreController>()
-        .addNitroUser(
-          displayName: _name.text,
-          email: _email.text,
-          plan: _plan,
+  Future<void> _save() async {
+    final email = _email.text.trim();
+    if (email.isEmpty) return;
+    final StoreController store = context.read<StoreController>();
+    final sync = store.sync;
+
+    // Mode aperçu local (sans Supabase) : ajout manuel direct.
+    if (sync == null) {
+      store.addPlusUser(
+        displayName: _name.text.trim().isEmpty ? email : _name.text,
+        email: email,
+        plan: _plan,
+      );
+      if (mounted) Navigator.pop(context);
+      return;
+    }
+
+    setState(() => _loading = true);
+    try {
+      final String? uuid = await sync.findProfileByEmail(email);
+      if (uuid == null) {
+        if (mounted) {
+          setState(() => _loading = false);
+          await showDialog<void>(
+            context: context,
+            builder: (_) => AlertDialog(
+              title: const Text('Utilisateur introuvable'),
+              content: const Text(
+                'Aucun utilisateur trouvé avec cet email. '
+                'L\'utilisateur doit s\'être connecté au moins une fois.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          );
+        }
+        return;
+      }
+      await sync.upsertSubscription(userId: uuid, plan: _plan);
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Abonné Plus ajouté avec succès.')),
         );
-    Navigator.pop(context);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erreur : $e')),
+        );
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Ajouter un utilisateur Nitro'),
+      title: const Text('Ajouter un abonné Plus'),
       content: SizedBox(
         width: 420,
         child: Column(
@@ -508,7 +555,7 @@ class _AddNitroUserDialogState extends State<_AddNitroUserDialog> {
             TextField(
               controller: _name,
               decoration: const InputDecoration(
-                labelText: 'Nom / Pseudo *',
+                labelText: 'Nom / Pseudo (optionnel)',
                 prefixIcon: Icon(Icons.person_outline_rounded),
               ),
               autofocus: true,
@@ -517,7 +564,7 @@ class _AddNitroUserDialogState extends State<_AddNitroUserDialog> {
             TextField(
               controller: _email,
               decoration: const InputDecoration(
-                labelText: 'Email (optionnel)',
+                labelText: 'Email Google de l\'utilisateur *',
                 prefixIcon: Icon(Icons.mail_outline_rounded),
               ),
               keyboardType: TextInputType.emailAddress,
@@ -542,12 +589,18 @@ class _AddNitroUserDialogState extends State<_AddNitroUserDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context),
+          onPressed: _loading ? null : () => Navigator.pop(context),
           child: const Text('Annuler'),
         ),
         FilledButton.icon(
-          onPressed: _save,
-          icon: const Icon(Icons.check_rounded),
+          onPressed: _loading ? null : _save,
+          icon: _loading
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.check_rounded),
           label: const Text('Ajouter'),
         ),
       ],

@@ -1,8 +1,8 @@
 import 'package:flutter/foundation.dart';
 
-/// Utilisateur premium Nitro (gestion admin, sérialisable JSON).
+/// Utilisateur premium Plus (gestion admin, sérialisable JSON).
 @immutable
-class NitroUser {
+class PlusUser {
   final String id;
   final String displayName;
   final String? email;
@@ -10,7 +10,7 @@ class NitroUser {
   final DateTime startedAt;
   final bool active;
 
-  const NitroUser({
+  const PlusUser({
     required this.id,
     required this.displayName,
     this.email,
@@ -19,8 +19,8 @@ class NitroUser {
     this.active = true,
   });
 
-  factory NitroUser.fromJson(Map<String, dynamic> json) {
-    return NitroUser(
+  factory PlusUser.fromJson(Map<String, dynamic> json) {
+    return PlusUser(
       id: json['id'] as String,
       displayName: json['displayName'] as String,
       email: json['email'] as String?,
@@ -41,11 +41,11 @@ class NitroUser {
         'active': active,
       };
 
-  NitroUser copyWith({
+  PlusUser copyWith({
     bool? active,
     String? plan,
   }) {
-    return NitroUser(
+    return PlusUser(
       id: id,
       displayName: displayName,
       email: email,
@@ -56,7 +56,7 @@ class NitroUser {
   }
 
   @override
-  bool operator ==(Object other) => other is NitroUser && other.id == id;
+  bool operator ==(Object other) => other is PlusUser && other.id == id;
 
   @override
   int get hashCode => id.hashCode;

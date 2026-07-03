@@ -6,7 +6,7 @@ import '../domain/models/banned_user.dart';
 import '../domain/models/category.dart';
 import '../domain/models/content.dart';
 import '../domain/models/game.dart';
-import '../domain/models/nitro_user.dart';
+import '../domain/models/plus_user.dart';
 import '../domain/models/suggestion.dart';
 
 /// Contrôleur applicatif (Provider) gérant l'état du catalogue et des
@@ -50,16 +50,16 @@ class StoreController extends ChangeNotifier {
   List<Content> _contents = <Content>[];
   List<Suggestion> _suggestions = <Suggestion>[];
   List<BannedUser> _banned = <BannedUser>[];
-  List<NitroUser> _nitro = <NitroUser>[];
+  List<PlusUser> _plus = <PlusUser>[];
 
   List<Game> get games => List<Game>.unmodifiable(_games);
   List<Content> get contents => List<Content>.unmodifiable(_contents);
   List<Suggestion> get suggestions =>
       List<Suggestion>.unmodifiable(_suggestions);
   List<BannedUser> get banned => List<BannedUser>.unmodifiable(_banned);
-  List<NitroUser> get nitro => List<NitroUser>.unmodifiable(_nitro);
-  int get activeNitroCount =>
-      _nitro.where((n) => n.active).length;
+  List<PlusUser> get plus => List<PlusUser>.unmodifiable(_plus);
+  int get activePlusCount =>
+      _plus.where((n) => n.active).length;
 
   /// L'auteur d'une suggestion est-il actuellement banni ?
   bool isAuthorBanned(String authorId) =>
@@ -252,13 +252,14 @@ class StoreController extends ChangeNotifier {
     required String gameId,
     required ContentCategory category,
     required String titleAdmin,
+    String? imageUrl,
   }) {
     addContent(
       gameId: gameId,
       category: category,
       url: suggestion.url,
       titleAdmin: titleAdmin,
-      imageUrl: null,
+      imageUrl: imageUrl,
     );
     _suggestions = _suggestions
         .map((s) => s.id == suggestion.id
@@ -404,14 +405,14 @@ class StoreController extends ChangeNotifier {
     }
   }
 
-  // ---------- Utilisateurs Nitro ----------
-  /// Ajoute manuellement un utilisateur Nitro (depuis le dashboard admin).
-  void addNitroUser({
+  // ---------- Utilisateurs Plus ----------
+  /// Ajoute manuellement un utilisateur Plus (depuis le dashboard admin).
+  void addPlusUser({
     required String displayName,
     required String email,
     required String plan,
   }) {
-    final NitroUser user = NitroUser(
+    final PlusUser user = PlusUser(
       id: 'nu-${DateTime.now().millisecondsSinceEpoch}',
       displayName: displayName.trim(),
       email: email.trim().isEmpty ? null : email.trim(),
@@ -419,42 +420,42 @@ class StoreController extends ChangeNotifier {
       startedAt: DateTime.now(),
       active: true,
     );
-    _nitro = [..._nitro, user];
-    _store.saveNitro(_nitro);
+    _plus = [..._plus, user];
+    _store.savePlus(_plus);
     notifyListeners();
     // Pas de sync Supabase automatique : l'ID est fictif. La gestion réelle
     // des abonnements se fera via Google Play Billing (Phase 3).
   }
 
-  /// Active/désactive un abonnement Nitro.
-  void toggleNitroUser(NitroUser user) {
-    _nitro = _nitro
+  /// Active/désactive un abonnement Plus.
+  void togglePlusUser(PlusUser user) {
+    _plus = _plus
         .map((n) => n.id == user.id ? n.copyWith(active: !n.active) : n)
         .toList();
-    _store.saveNitro(_nitro);
+    _store.savePlus(_plus);
     notifyListeners();
-    _syncNitroToggle(user);
+    _syncPlusToggle(user);
   }
 
-  /// Change la formule d'un utilisateur Nitro.
-  void setNitroPlan(NitroUser user, String plan) {
-    _nitro = _nitro
+  /// Change la formule d'un utilisateur Plus.
+  void setPlusPlan(PlusUser user, String plan) {
+    _plus = _plus
         .map((n) => n.id == user.id ? n.copyWith(plan: plan) : n)
         .toList();
-    _store.saveNitro(_nitro);
+    _store.savePlus(_plus);
     notifyListeners();
-    _syncNitroToggle(user.copyWith(plan: plan));
+    _syncPlusToggle(user.copyWith(plan: plan));
   }
 
-  void deleteNitroUser(String id) {
-    _nitro = _nitro.where((n) => n.id != id).toList();
-    _store.saveNitro(_nitro);
+  void deletePlusUser(String id) {
+    _plus = _plus.where((n) => n.id != id).toList();
+    _store.savePlus(_plus);
     notifyListeners();
   }
 
   /// Pousse l'état d'un abonnement vers Supabase (uniquement si l'ID est un
   /// UUID valide, c'est-à-dire un vrai user_id).
-  Future<void> _syncNitroToggle(NitroUser user) async {
+  Future<void> _syncPlusToggle(PlusUser user) async {
     if (sync == null) return;
     if (user.id.length != 36 || !user.id.contains('-')) return;
     try {
@@ -482,7 +483,7 @@ class StoreController extends ChangeNotifier {
     _contents = _store.loadContents();
     _suggestions = _store.loadSuggestions();
     _banned = _store.loadBanned();
-    _nitro = _store.loadNitro();
+    _plus = _store.loadPlus();
   }
 
   /// Recharge le catalogue depuis la source active.

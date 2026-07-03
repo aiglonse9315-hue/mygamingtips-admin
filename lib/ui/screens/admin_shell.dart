@@ -7,6 +7,7 @@ import '../widgets/admin_sidebar.dart';
 import '../widgets/admin_topbar.dart';
 import '../widgets/confirm_dialog.dart';
 import 'contents_screen.dart';
+import 'contributors_screen.dart';
 import 'dashboard_screen.dart';
 import 'games_screen.dart';
 import 'login_screen.dart';
@@ -31,6 +32,7 @@ class _AdminShellState extends State<AdminShell> {
     NavItem('Jeux', Icons.sports_esports_rounded, '/games'),
     NavItem('Contenus', Icons.collections_bookmark_rounded, '/contents'),
     NavItem('Suggestions', Icons.inbox_rounded, '/suggestions'),
+    NavItem('Contributeurs', Icons.groups_rounded, '/contributors'),
   ];
 
   String get _title {
@@ -47,6 +49,8 @@ class _AdminShellState extends State<AdminShell> {
         return const ContentsScreen();
       case '/suggestions':
         return const SuggestionsScreen();
+      case '/contributors':
+        return const ContributorsScreen();
       default:
         return DashboardScreen(onOpenSuggestions: () => _go('/suggestions'));
     }

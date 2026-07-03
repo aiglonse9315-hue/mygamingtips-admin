@@ -166,6 +166,58 @@ class SupabaseSync {
     }).toList();
   }
 
+  /// Récupère le top 20 des contributeurs (par suggestions acceptées).
+  ///
+  /// Utilise la vue `contributor_stats` jointe à `profiles`.
+  Future<List<Map<String, dynamic>>> fetchTopContributors(
+      {int limit = 20}) async {
+    final Uri uri = Uri.parse(
+      '$supabaseUrl/rest/v1/contributor_stats'
+      '?select=accepted_count,author:profiles(id,display_name,avatar_preset)'
+      '&order=accepted_count.desc'
+      '&limit=$limit',
+    );
+    final http.Response res = await http.get(uri, headers: _anonHeaders);
+    if (res.statusCode != 200) {
+      throw Exception(
+          'fetchTopContributors échec ${res.statusCode}: ${res.body}');
+    }
+    final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
+    return rows.map((r) {
+      final row = r as Map<String, dynamic>;
+      final author = row['author'] as Map<String, dynamic>?;
+      return <String, dynamic>{
+        'userId': author?['id'] ?? '',
+        'displayName': author?['display_name'] ?? 'Inconnu',
+        'avatarPreset': author?['avatar_preset'],
+        'acceptedCount': row['accepted_count'] ?? 0,
+      };
+    }).toList();
+  }
+
+  /// Recherche un profil par email (pour l'ajout d'abonné Plus par email).
+  ///
+  /// Retourne l'UUID du profil trouvé, ou null si introuvable.
+  /// Note : la table `profiles` ne contient pas `email` par défaut — cette
+  /// méthode utilise une jointure avec `auth.users` via PostgREST si la FK
+  /// existe, sinon retourne null.
+  Future<String?> findProfileByEmail(String email) async {
+    try {
+      final Uri uri = Uri.parse(
+        '$supabaseUrl/rest/v1/rpc/find_profile_by_email?email=${Uri.encodeComponent(email)}',
+      );
+      final http.Response res = await http.get(uri, headers: _anonHeaders);
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (data is String && data.isNotEmpty) return data;
+        if (data is Map) return data['id'] as String?;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   // ===========================================================================
   // ÉCRITURES (Edge Function admin-catalog — service_role)
   // ===========================================================================

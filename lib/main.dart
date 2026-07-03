@@ -31,16 +31,16 @@ Future<void> main() async {
   String contentsSeed;
   String suggestionsSeed;
   String bannedSeed;
-  String nitroSeed;
+  String plusSeed;
   try {
     gamesSeed = await rootBundle.loadString('assets/seed/games.json');
     contentsSeed = await rootBundle.loadString('assets/seed/contents.json');
     suggestionsSeed = await rootBundle.loadString('assets/seed/suggestions.json');
     bannedSeed = await rootBundle.loadString('assets/seed/banned.json');
     try {
-      nitroSeed = await rootBundle.loadString('assets/seed/nitro_users.json');
+      plusSeed = await rootBundle.loadString('assets/seed/plus_users.json');
     } catch (_) {
-      nitroSeed = '[]';
+      plusSeed = '[]';
     }
   } catch (e) {
     // ignore: avoid_print
@@ -49,7 +49,7 @@ Future<void> main() async {
     contentsSeed = '[]';
     suggestionsSeed = '[]';
     bannedSeed = '[]';
-    nitroSeed = '[]';
+    plusSeed = '[]';
   }
 
   final Store store = Store(
@@ -57,7 +57,7 @@ Future<void> main() async {
     contentsSeed: contentsSeed,
     suggestionsSeed: suggestionsSeed,
     bannedSeed: bannedSeed,
-    nitroSeed: nitroSeed,
+    plusSeed: plusSeed,
   );
 
   // --- Branchement Supabase (mode production) ---

@@ -4,7 +4,7 @@ import 'dart:html' as html;
 import '../../domain/models/banned_user.dart';
 import '../../domain/models/content.dart';
 import '../../domain/models/game.dart';
-import '../../domain/models/nitro_user.dart';
+import '../../domain/models/plus_user.dart';
 import '../../domain/models/suggestion.dart';
 
 /// Couche d'accès aux données du panneau admin (phase mock).
@@ -16,21 +16,21 @@ class Store {
   static const String _kContents = 'mgt_admin_contents';
   static const String _kSuggestions = 'mgt_admin_suggestions';
   static const String _kBanned = 'mgt_admin_banned';
-  static const String _kNitro = 'mgt_admin_nitro';
+  static const String _kPlus = 'mgt_admin_plus';
   static const String _kInitialized = 'mgt_admin_initialized';
 
   final String gamesSeed;
   final String contentsSeed;
   final String suggestionsSeed;
   final String bannedSeed;
-  final String nitroSeed;
+  final String plusSeed;
 
   Store({
     required this.gamesSeed,
     required this.contentsSeed,
     required this.suggestionsSeed,
     required this.bannedSeed,
-    required this.nitroSeed,
+    required this.plusSeed,
   });
 
   /// Initialise le localStorage au 1er lancement à partir des seeds.
@@ -40,7 +40,7 @@ class Store {
       html.window.localStorage[_kContents] = contentsSeed;
       html.window.localStorage[_kSuggestions] = suggestionsSeed;
       html.window.localStorage[_kBanned] = bannedSeed;
-      html.window.localStorage[_kNitro] = nitroSeed;
+      html.window.localStorage[_kPlus] = plusSeed;
       html.window.localStorage[_kInitialized] = 'true';
     }
   }
@@ -51,7 +51,7 @@ class Store {
     html.window.localStorage[_kContents] = contentsSeed;
     html.window.localStorage[_kSuggestions] = suggestionsSeed;
     html.window.localStorage[_kBanned] = bannedSeed;
-    html.window.localStorage[_kNitro] = nitroSeed;
+    html.window.localStorage[_kPlus] = plusSeed;
     html.window.localStorage[_kInitialized] = 'true';
   }
 
@@ -76,10 +76,10 @@ class Store {
   void saveBanned(List<BannedUser> banned) =>
       _saveList(_kBanned, banned.map((b) => b.toJson()).toList());
 
-  // ---------- Utilisateurs Nitro ----------
-  List<NitroUser> loadNitro() => _loadList(_kNitro, NitroUser.fromJson);
-  void saveNitro(List<NitroUser> nitro) =>
-      _saveList(_kNitro, nitro.map((n) => n.toJson()).toList());
+  // ---------- Utilisateurs Plus ----------
+  List<PlusUser> loadPlus() => _loadList(_kPlus, PlusUser.fromJson);
+  void savePlus(List<PlusUser> plus) =>
+      _saveList(_kPlus, plus.map((n) => n.toJson()).toList());
 
   // ---------- Helpers ----------
   List<T> _loadList<T>(String key, T Function(Map<String, dynamic>) fromJson) {

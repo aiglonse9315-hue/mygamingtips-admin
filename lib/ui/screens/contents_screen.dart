@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart' as ul;
 
 import '../../core/theme/colors.dart';
 import '../../domain/models/category.dart';
@@ -21,6 +22,14 @@ class ContentsScreen extends StatefulWidget {
 class _ContentsScreenState extends State<ContentsScreen> {
   String? _gameFilter; // null = tous
   ContentCategory? _catFilter; // null = toutes
+  String _search = '';
+  final TextEditingController _searchCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -34,6 +43,12 @@ class _ContentsScreenState extends State<ContentsScreen> {
     }
     if (_catFilter != null) {
       list = list.where((c) => c.category == _catFilter).toList();
+    }
+    if (_search.isNotEmpty) {
+      final q = _search.toLowerCase();
+      list = list
+          .where((c) => c.displayTitle.toLowerCase().contains(q))
+          .toList();
     }
 
     return SingleChildScrollView(
@@ -54,6 +69,19 @@ class _ContentsScreenState extends State<ContentsScreen> {
                 label: const Text('Ajouter un contenu'),
               ),
             ],
+          ),
+          const SizedBox(height: 16),
+          // Barre de recherche
+          TextField(
+            controller: _searchCtrl,
+            onChanged: (v) => setState(() => _search = v),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: 'Rechercher un contenu…',
+              prefixIcon: const Icon(Icons.search_rounded),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
           ),
           const SizedBox(height: 16),
           // Filtres
@@ -131,7 +159,14 @@ class _ContentsScreenState extends State<ContentsScreen> {
                             tooltip: 'Ouvrir l\'URL',
                             icon: const Icon(Icons.open_in_new_rounded,
                                 size: 18),
-                            onPressed: () {},
+                            onPressed: () async {
+                              final uri = Uri.parse(c.url);
+                              if (await ul.canLaunchUrl(uri)) {
+                                await ul.launchUrl(uri,
+                                    mode: ul.LaunchMode
+                                        .externalApplication);
+                              }
+                            },
                           ),
                           IconButton(
                             tooltip: 'Supprimer',

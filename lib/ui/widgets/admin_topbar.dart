@@ -89,22 +89,22 @@ class AdminTopbar extends StatelessWidget {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: AppColors.nitro.withValues(alpha: 0.16),
+                  color: AppColors.plus.withValues(alpha: 0.16),
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(
-                    color: AppColors.nitro.withValues(alpha: 0.5),
+                    color: AppColors.plus.withValues(alpha: 0.5),
                   ),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: const [
                     Icon(Icons.shield_rounded,
-                        size: 16, color: AppColors.nitro),
+                        size: 16, color: AppColors.plus),
                     SizedBox(width: 6),
                     Text(
                       'admin',
                       style: TextStyle(
-                        color: AppColors.nitro,
+                        color: AppColors.plus,
                         fontWeight: FontWeight.w800,
                         fontSize: 13,
                       ),

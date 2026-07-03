@@ -14,9 +14,9 @@ class AppColors {
   static const Color neonViolet = Color(0xFF8A2BE2);
   static const Color neonGreen = Color(0xFF39FF14);
 
-  // Couleur « Nitro » : violet/or, marque premium.
-  static const Color nitro = Color(0xFFB026FF);
-  static const Color nitroGold = Color(0xFFFFC93C);
+  // Couleur « Plus » : violet/or, marque premium.
+  static const Color plus = Color(0xFFB026FF);
+  static const Color plusGold = Color(0xFFFFC93C);
 
   // Catégories — couleurs sémantiques partagées par les onglets Video / Guides / Links.
   static const Color categoryVideo = Color(0xFFFF2D55); // rouge YouTube-like

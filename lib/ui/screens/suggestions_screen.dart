@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart' as ul;
 
 import '../../core/theme/colors.dart';
 import '../../domain/models/category.dart';
@@ -45,7 +46,7 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
               if (store.pendingSuggestionsCount > 0)
                 StatusBadge(
                   label: '${store.pendingSuggestionsCount} en attente',
-                  color: AppColors.nitroGold,
+                  color: AppColors.plusGold,
                 ),
             ],
           ),
@@ -70,7 +71,7 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                   label:
                       'En attente (${store.pendingSuggestionsCount})',
                   selected: _statusFilter == SuggestionStatus.pending,
-                  color: AppColors.nitroGold,
+                  color: AppColors.plusGold,
                   onTap: () => setState(() =>
                       _statusFilter = SuggestionStatus.pending)),
               _StatusTab(
@@ -102,7 +103,8 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
             rows: list
                 .map((s) => [
                       InkWell(
-                        onTap: () {},
+                        onTap: () => ul.launchUrl(Uri.parse(s.url),
+                            mode: ul.LaunchMode.externalApplication),
                         child: Text(s.url,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -214,13 +216,6 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                                 ),
                               ),
                             ),
-                          ] else ...[
-                            IconButton(
-                              tooltip: 'Repasser en attente',
-                              icon: const Icon(Icons.restore_rounded,
-                                  size: 20),
-                              onPressed: () {},
-                            ),
                           ],
                           // Modération du compte : bannir / débannir l'auteur.
                           if (store.isAuthorBanned(s.author.id))
@@ -271,7 +266,7 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
   static Color _statusColor(SuggestionStatus s) {
     switch (s) {
       case SuggestionStatus.pending:
-        return AppColors.nitroGold;
+        return AppColors.plusGold;
       case SuggestionStatus.accepted:
         return AppColors.neonGreen;
       case SuggestionStatus.rejected:
@@ -332,20 +327,28 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
   String? _gameId;
   ContentCategory _category = ContentCategory.video;
   late final TextEditingController _title;
+  late final TextEditingController _image;
 
   @override
   void initState() {
     super.initState();
-    // Pré-remplissage intelligent du titre.
-    _title = TextEditingController(
-        text: widget.suggestion.sharedText?.trim().isNotEmpty == true
-            ? widget.suggestion.sharedText!
-            : widget.suggestion.url);
+    // Pré-remplissage intelligent du titre : on retire l'URL éventuelle du
+    // shared_text pour ne garder que le vrai titre.
+    String title = widget.suggestion.url;
+    final sharedText = widget.suggestion.sharedText;
+    if (sharedText != null && sharedText.trim().isNotEmpty) {
+      final cleaned =
+          sharedText.replaceAll(RegExp(r'https?://[^\s]+'), '').trim();
+      title = cleaned.isEmpty ? sharedText : cleaned;
+    }
+    _title = TextEditingController(text: title);
+    _image = TextEditingController();
   }
 
   @override
   void dispose() {
     _title.dispose();
+    _image.dispose();
     super.dispose();
   }
 
@@ -357,6 +360,7 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
       gameId: _gameId!,
       category: _category,
       titleAdmin: _title.text,
+      imageUrl: _image.text,
     );
     Navigator.pop(context);
   }
@@ -441,6 +445,13 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
               decoration: const InputDecoration(
                 labelText: 'Titre administrateur *',
                 helperText: 'Titre affiché dans l\'app mobile.'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _image,
+              decoration: const InputDecoration(
+                  labelText: 'URL image d\'aperçu (optionnel)',
+                  helperText: 'Sinon, extraction auto pour YouTube'),
             ),
           ],
         ),

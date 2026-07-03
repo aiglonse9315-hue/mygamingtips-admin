@@ -19,7 +19,7 @@
 //   POST /suggestions/reject → rejeter une suggestion
 //   POST /profiles/ban     → bannir un utilisateur (is_banned = true)
 //   POST /profiles/unban   → lever un ban (is_banned = false)
-//   POST /subscriptions/upsert → créer/modifier un abonnement Nitro manuel
+//   POST /subscriptions/upsert → créer/modifier un abonnement Plus manuel
 //
 // Lecture : les lectures du catalogue se font directement via l'API REST
 // PostgREST (anon key suffit grâce aux politiques RLS publiques en lecture).
