@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -52,8 +52,11 @@ jobs:
             --dart-define=MGT_SUPABASE_ANON_KEY="${{ secrets.MGT_SUPABASE_ANON_KEY }}" \
             --dart-define=MGT_ADMIN_CATALOG_ENDPOINT="https://odqbazwyjdpppbameype.supabase.co/functions/v1/admin-catalog"
 
-      - name: Configuration artifact
-        uses: actions/upload-pages-artifact@v4
+      - name: Configuration GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
           path: build/web
 
