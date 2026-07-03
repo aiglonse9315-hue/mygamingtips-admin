@@ -45,12 +45,15 @@ class SupabaseSync {
 
   /// Headers pour les écritures via l'Edge Function admin-catalog.
   /// Stratégie pour franchir la passerelle Supabase SANS conflit de header :
-  ///   - `apikey: <anon_key>` → la passerelle exige une auth, l'anon key suffit.
+  ///   - `Authorization: Bearer <anon_key>` → la passerelle exige ce header
+  ///     (on y met l'anon key, ce qui suffit à franchir le gateway).
+  ///   - `apikey: <anon_key>` → requis également par la passerelle.
   ///   - `X-Admin-Token: <jwt_admin>` → notre code Deno lit ce header
   ///     personnalisé (le header `Authorization` est réservé par la passerelle
   ///     pour l'auth Supabase Auth, on ne doit pas y mettre notre JWT admin).
   Map<String, String> get _adminHeaders => {
         'Content-Type': 'application/json',
+        'Authorization': 'Bearer $anonKey',
         'apikey': anonKey,
         'X-Admin-Token': adminToken,
       };
