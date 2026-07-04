@@ -482,9 +482,10 @@ class StoreController extends ChangeNotifier {
 
   /// Implémente une suggestion Sentinelle en 1 clic.
   ///
-  /// Utilise le jeu et la catégorie suggérés par l'IA. Si l'IA n'a pas proposé
-  /// de catégorie, on déduit 'video' si l'URL est YouTube, sinon 'links'.
-  /// La suggestion est ensuite retirée de la liste Sentinelle.
+  /// Utilise le jeu et la catégorie suggérés par l'IA. **Si le jeu suggéré
+  /// n'existe pas dans le catalogue, il est créé automatiquement** puis le
+  /// contenu y est rattaché. La suggestion est ensuite retirée de la liste
+  /// Sentinelle.
   Future<void> acceptOneClick(Suggestion suggestion) async {
     final ai = suggestion.aiRecommendation;
     if (ai == null) {
@@ -493,29 +494,58 @@ class StoreController extends ChangeNotifier {
       return;
     }
 
-    // Détermine le jeu : on cherche un jeu existant dont le nom correspond
-    // à la suggestion de l'IA, sinon on prend le premier jeu disponible.
-    final suggestedName = ai.suggestedGame?.toLowerCase();
-    Game? targetGame;
-    if (suggestedName != null) {
-      try {
-        targetGame = _games.firstWhere(
-          (g) => g.name.toLowerCase() == suggestedName,
-        );
-      } catch (_) {
-        targetGame = _games.isNotEmpty ? _games.first : null;
-      }
-    } else if (_games.isNotEmpty) {
-      targetGame = _games.first;
-    }
-    if (targetGame == null) {
-      lastActionError = 'Aucun jeu dans le catalogue pour implémenter.';
-      notifyListeners();
-      return;
-    }
-
     // Détermine la catégorie depuis la suggestion IA.
     final category = _categoryFromAi(ai.suggestedCategory, suggestion.url);
+
+    // Détermine le jeu cible :
+    // 1. Cherche un jeu existant dont le nom correspond exactement.
+    // 2. Sinon, cherche un jeu dont le nom contient la suggestion (ex: "fortnite" dans "Fortnite Battle Royale").
+    // 3. Sinon, CRÉE le jeu automatiquement depuis la suggestion IA.
+    final suggestedName = ai.suggestedGame;
+    Game? targetGame;
+
+    if (suggestedName != null && suggestedName.trim().isNotEmpty) {
+      final lower = suggestedName.toLowerCase();
+      try {
+        // Recherche exacte (insensible à la casse).
+        targetGame = _games.firstWhere(
+          (g) => g.name.toLowerCase() == lower,
+        );
+      } catch (_) {
+        try {
+          // Recherche partielle (contient).
+          targetGame = _games.firstWhere(
+            (g) => g.name.toLowerCase().contains(lower) ||
+                lower.contains(g.name.toLowerCase()),
+          );
+        } catch (_) {
+          // Le jeu n'existe pas → on le crée.
+          targetGame = null;
+        }
+      }
+    }
+
+    // Si toujours pas de jeu, on en crée un nouveau depuis la suggestion IA.
+    if (targetGame == null) {
+      if (suggestedName == null || suggestedName.trim().isEmpty) {
+        lastActionError =
+            'L\'IA n\'a pas pu identifier le jeu. Utilisez « Ajouter manuellement ».';
+        notifyListeners();
+        return;
+      }
+      // Crée le jeu (await pour récupérer le vrai UUID).
+      await addGame(name: suggestedName.trim());
+      // Récupère le jeu fraîchement créé (par son nom).
+      try {
+        targetGame = _games.firstWhere(
+          (g) => g.name.toLowerCase() == suggestedName.toLowerCase(),
+        );
+      } catch (_) {
+        lastActionError = 'Création du jeu échouée. Réessaie.';
+        notifyListeners();
+        return;
+      }
+    }
 
     // Retire la suggestion de la liste Sentinelle (optimiste).
     _sentinelleSuggestions = _sentinelleSuggestions
@@ -532,7 +562,7 @@ class StoreController extends ChangeNotifier {
         titleAdmin: _cleanTitle(suggestion),
         isVideo: category == ContentCategory.video,
       );
-      // Resync pour récupérer le contenu créé côté serveur.
+      // Resync pour récupérer le contenu créé côté serveur + le nouveau jeu.
       await syncFromSupabase();
     } catch (e) {
       // Rollback : remet la suggestion dans Sentinelle.
