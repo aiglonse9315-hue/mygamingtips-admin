@@ -207,7 +207,7 @@ class _ContentsScreenState extends State<ContentsScreen> {
       '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
 }
 
-/// Menu déroulant de filtre stylisé.
+/// Menu déroulant de filtre stylé.
 class _FilterChip extends StatelessWidget {
   const _FilterChip({
     required this.label,
@@ -224,6 +224,12 @@ class _FilterChip extends StatelessWidget {
   final List<String> values;
   final String? selectedValue;
   final ValueChanged<String?> onChanged;
+
+  /// Valeur sentinel représentant "Tous" (aucun filtre).
+  /// ⚠️ On ne peut pas utiliser `null` comme valeur de PopupMenuItem car
+  /// Flutter interprète `onSelected(null)` comme "pas de sélection" et ne
+  /// déclenche pas le callback. On utilise donc une chaîne sentinel.
+  static const String _allValue = '__all__';
 
   @override
   Widget build(BuildContext context) {
@@ -242,7 +248,7 @@ class _FilterChip extends StatelessWidget {
                   fontSize: 12,
                   color: Theme.of(context).textTheme.bodySmall?.color,
                   fontWeight: FontWeight.w700)),
-          PopupMenuButton<String?>(
+          PopupMenuButton<String>(
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -252,9 +258,13 @@ class _FilterChip extends StatelessWidget {
                 const Icon(Icons.arrow_drop_down_rounded, size: 18),
               ],
             ),
-            onSelected: onChanged,
+            onSelected: (v) {
+              // La valeur sentinel "__all__" est convertie en null (= pas de filtre).
+              onChanged(v == _allValue ? null : v);
+            },
             itemBuilder: (_) => [
-              const PopupMenuItem<String?>(value: null, child: Text('Tous')),
+              const PopupMenuItem<String>(
+                  value: _allValue, child: Text('Tous')),
               ...List.generate(items.length,
                   (i) => PopupMenuItem(value: values[i], child: Text(items[i]))),
             ],

@@ -81,13 +81,6 @@ class AdminSidebar extends StatelessWidget {
                 onTap: () => onSelected(item.route),
               )),
           const Spacer(),
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Text(
-              'v1.0 — données de démo',
-              style: TextStyle(fontSize: 10, color: Colors.white38),
-            ),
-          ),
         ],
       ),
     );
