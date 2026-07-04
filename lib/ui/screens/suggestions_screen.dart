@@ -154,6 +154,12 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                                           label: 'BANNI',
                                           color: AppColors.categoryVideo),
                                     ],
+                                    if (store.isPlusUser(s.author.id)) ...[
+                                      const SizedBox(width: 5),
+                                      StatusBadge(
+                                          label: 'PLUS',
+                                          color: AppColors.plus),
+                                    ],
                                   ],
                                 ),
                                 Text(s.author.id,
@@ -165,6 +171,69 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                                             .textTheme
                                             .bodySmall
                                             ?.color)),
+                                // Bouton pour ajouter en Plus directement.
+                                if (!store.isPlusUser(s.author.id) &&
+                                    !store.isAuthorBanned(s.author.id))
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: SizedBox(
+                                      height: 26,
+                                      child: FilledButton.icon(
+                                        onPressed: () => showDialog<void>(
+                                          context: context,
+                                          builder: (_) => AlertDialog(
+                                            title: const Text(
+                                                'Ajouter en membre Plus ?'),
+                                            content: Text(
+                                              'Activer l\'abonnement Plus pour '
+                                              '${s.author.displayName} '
+                                              '(${s.author.id.substring(0, 8)}…) ?',
+                                            ),
+                                            actions: [
+                                              TextButton(
+                                                onPressed: () =>
+                                                    Navigator.pop(context),
+                                                child: const Text('Annuler'),
+                                              ),
+                                              FilledButton(
+                                                onPressed: () {
+                                                  store.addPlusByUserId(
+                                                    userId: s.author.id,
+                                                    displayName:
+                                                        s.author.displayName,
+                                                  );
+                                                  Navigator.pop(context);
+                                                  ScaffoldMessenger.of(context)
+                                                      .showSnackBar(
+                                                    SnackBar(
+                                                      content: Text(
+                                                          '${s.author.displayName} est maintenant membre Plus ✨'),
+                                                      backgroundColor:
+                                                          AppColors.plus,
+                                                    ),
+                                                  );
+                                                },
+                                                child: const Text('Activer Plus'),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        icon: const Icon(
+                                            Icons.bolt_rounded,
+                                            size: 14),
+                                        label: const Text('Plus',
+                                            style: TextStyle(fontSize: 11)),
+                                        style: FilledButton.styleFrom(
+                                          backgroundColor: AppColors.plus,
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 10),
+                                          textStyle: const TextStyle(
+                                              fontWeight: FontWeight.w700),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                               ],
                             ),
                           ),

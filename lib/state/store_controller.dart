@@ -138,6 +138,55 @@ class StoreController extends ChangeNotifier {
   bool isAuthorBanned(String authorId) =>
       _banned.any((b) => b.id == authorId);
 
+  /// Un utilisateur est-il déjà abonné Plus (actif) ?
+  bool isPlusUser(String userId) =>
+      _plus.any((p) => p.id == userId && p.active);
+
+  /// Ajoute un utilisateur en Plus directement depuis son user_id (UUID).
+  /// Utilisé par le bouton "Plus" dans le menu Suggestions/Sentinelle.
+  Future<void> addPlusByUserId({
+    required String userId,
+    required String displayName,
+    String plan = 'monthly',
+  }) async {
+    if (isPlusUser(userId)) return; // déjà Plus
+    // Ajout local optimiste.
+    _plus = [
+      ..._plus,
+      PlusUser(
+        id: userId,
+        displayName: displayName,
+        plan: plan,
+        startedAt: DateTime.now(),
+        active: true,
+      ),
+    ];
+    _store.savePlus(_plus);
+    notifyListeners();
+
+    // Sync serveur (si l'UUID est valide).
+    if (sync == null) return;
+    if (userId.length != 36 || !userId.contains('-')) return;
+    try {
+      await sync!.upsertSubscription(
+        userId: userId,
+        plan: plan,
+        isActive: true,
+        startedAt: DateTime.now(),
+      );
+    } catch (e) {
+      // Rollback.
+      _plus = _plus.where((p) => p.id != userId).toList();
+      _store.savePlus(_plus);
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
+      lastActionError = 'Abonnement Plus non ajouté (erreur serveur) : $e';
+      notifyListeners();
+    }
+  }
+
   // ---------- Jeux ----------
   Game? gameById(String id) {
     for (final Game g in _games) {
