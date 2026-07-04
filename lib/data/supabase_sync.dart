@@ -146,9 +146,9 @@ class SupabaseSync {
         .toList();
   }
 
-  /// Récupère les suggestions NON encore analysées par Sentinelle (sans
-  /// `ai_recommendation`). Ces suggestions apparaissent dans le menu
-  /// "Suggestions" classique en attendant l'analyse IA.
+  /// Récupère les suggestions VRAIMENT nouvelles : jamais prises en charge
+  /// par Sentinelle (`sentinelle_started_at IS NULL` ET pas encore
+  /// d'analyse IA). Ces suggestions apparaissent dans le menu "Suggestions".
   ///
   /// La table `suggestions` ne stocke que `author_id` (UUID) ; on utilise la
   /// fonction de jointure PostgREST pour récupérer le profil (displayName,
@@ -157,13 +157,52 @@ class SupabaseSync {
     final Uri uri = Uri.parse(
       '$supabaseUrl/rest/v1/suggestions'
       '?select=*,author:profiles(id,display_name,avatar_preset)'
-      '&ai_recommendation=is.null'
+      '&sentinelle_started_at=is.null'
       '&order=shared_at.desc',
     );
     final http.Response res = await http.get(uri, headers: _anonHeaders);
     if (res.statusCode != 200) {
       throw Exception(
           'fetchSuggestions échec ${res.statusCode}: ${res.body}');
+    }
+    final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
+    return rows.map((r) {
+      final row = r as Map<String, dynamic>;
+      final authorData = row['author'];
+      final Map<String, dynamic> authorObj = authorData is Map
+          ? {
+              'id': authorData['id'] ?? row['author_id'] ?? '',
+              'displayName':
+                  authorData['display_name'] ?? 'Inconnu',
+              'avatarUrl': authorData['avatar_preset'],
+            }
+          : {
+              'id': row['author_id'] ?? '',
+              'displayName': 'Inconnu',
+            };
+      final Map<String, dynamic> mapped = _camelRow(row);
+      mapped['author'] = authorObj;
+      return Suggestion.fromJson(mapped);
+    }).toList();
+  }
+
+  /// Récupère les suggestions EN COURS d'analyse par Sentinelle
+  /// (`sentinelle_started_at NOT NULL` MAIS `ai_recommendation IS NULL`).
+  /// Ces suggestions apparaissent dans le menu "Sentinelle" → section
+  /// "Analyse en cours" (Sentinelle travaille dessus).
+  Future<List<Suggestion>> fetchSentinelleAnalyzing() async {
+    final Uri uri = Uri.parse(
+      '$supabaseUrl/rest/v1/suggestions'
+      '?select=*,author:profiles(id,display_name,avatar_preset)'
+      '&sentinelle_started_at=not.is.null'
+      '&ai_recommendation=is.null'
+      '&status=eq.pending'
+      '&order=shared_at.desc',
+    );
+    final http.Response res = await http.get(uri, headers: _anonHeaders);
+    if (res.statusCode != 200) {
+      throw Exception(
+          'fetchSentinelleAnalyzing échec ${res.statusCode}: ${res.body}');
     }
     final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
     return rows.map((r) {

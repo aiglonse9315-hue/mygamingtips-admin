@@ -37,6 +37,7 @@ class Suggestion {
   final DateTime sharedAt;
   final SuggestionAuthor author;
   final AiRecommendation? aiRecommendation;
+  final DateTime? sentinelleStartedAt;
 
   const Suggestion({
     required this.id,
@@ -46,6 +47,7 @@ class Suggestion {
     required this.sharedAt,
     required this.author,
     this.aiRecommendation,
+    this.sentinelleStartedAt,
   });
 
   factory Suggestion.fromJson(Map<String, dynamic> json) {
@@ -65,6 +67,8 @@ class Suggestion {
           ? AiRecommendation.fromJson(
               json['aiRecommendation'] as Map<String, dynamic>)
           : null,
+      sentinelleStartedAt: DateTime.tryParse(
+          json['sentinelleStartedAt'] as String? ?? ''),
     );
   }
 

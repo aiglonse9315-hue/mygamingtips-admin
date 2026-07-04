@@ -94,6 +94,7 @@ class StoreController extends ChangeNotifier {
   List<Game> _games = <Game>[];
   List<Content> _contents = <Content>[];
   List<Suggestion> _suggestions = <Suggestion>[];
+  List<Suggestion> _sentinelleAnalyzing = <Suggestion>[];
   List<Suggestion> _sentinelleSuggestions = <Suggestion>[];
   List<BannedUser> _banned = <BannedUser>[];
   List<PlusUser> _plus = <PlusUser>[];
@@ -106,6 +107,10 @@ class StoreController extends ChangeNotifier {
   /// Suggestions analysées par Sentinelle (menu Sentinelle dédié).
   List<Suggestion> get sentinelleSuggestions =>
       List<Suggestion>.unmodifiable(_sentinelleSuggestions);
+
+  /// Suggestions en cours d'analyse par Sentinelle.
+  List<Suggestion> get sentinelleAnalyzing =>
+      List<Suggestion>.unmodifiable(_sentinelleAnalyzing);
 
   /// Suggestions Sentinelle avec verdict "recommended" ET confiance ≥ 0.9.
   /// Ce sont les suggestions "99% sûr" implémentables en 1 clic.
@@ -793,6 +798,7 @@ class StoreController extends ChangeNotifier {
     final games = await sync!.fetchGames();
     final contents = await sync!.fetchContents();
     final suggestions = await sync!.fetchSuggestions();
+    final sentinelleAnalyzing = await sync!.fetchSentinelleAnalyzing();
     final sentinelleSuggestions = await sync!.fetchSentinelleSuggestions();
 
     // --- Fusion : conserve les entrées locales non encore synchronisées
@@ -812,8 +818,9 @@ class StoreController extends ChangeNotifier {
         .toList();
     _suggestions = [...suggestions, ...pendingSuggestions];
 
-    // Suggestions Sentinelle (analysées par IA, en attente de validation).
-    _sentinelleSuggestions = sentinelleSuggestions;
+      // Suggestions Sentinelle : en cours d'analyse + analysées.
+      _sentinelleAnalyzing = sentinelleAnalyzing;
+      _sentinelleSuggestions = sentinelleSuggestions;
 
     // Met à jour le cache local pour les lectures hors-ligne.
     _store.saveGames(_games);

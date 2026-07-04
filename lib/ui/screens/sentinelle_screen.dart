@@ -22,6 +22,7 @@ class SentinelleScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final StoreController store = context.watch<StoreController>();
+    final analyzing = store.sentinelleAnalyzing;
     final trusted = store.sentinelleTrusted;
     final toVerify = store.sentinelleToVerify;
 
@@ -49,7 +50,7 @@ class SentinelleScreen extends StatelessWidget {
               ),
               const SizedBox(width: 12),
               Text(
-                '${trusted.length + toVerify.length} analyse(s)',
+                '${analyzing.length + trusted.length + toVerify.length} suggestion(s)',
                 style: TextStyle(
                   fontSize: 12,
                   color: Theme.of(context).textTheme.bodySmall?.color,
@@ -59,14 +60,29 @@ class SentinelleScreen extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Suggestions analysées par l\'IA. L\'admin valide ou rejette — '
-            'l\'IA ne décide jamais seule.',
+            'Suggestions en cours d\'analyse et analysées par l\'IA. '
+            'L\'admin valide ou rejette — l\'IA ne décide jamais seule.',
             style: TextStyle(
               fontSize: 12,
               color: Theme.of(context).textTheme.bodySmall?.color,
             ),
           ),
           const SizedBox(height: 24),
+
+          // Section 0 : Analyse en cours (Sentinelle travaille)
+          _SectionHeader(
+            icon: Icons.hourglass_top_rounded,
+            color: AppColors.neonCyan,
+            title: 'Analyse en cours',
+            count: analyzing.length,
+          ),
+          const SizedBox(height: 12),
+          if (analyzing.isEmpty)
+            const _EmptyHint(text: 'Aucune analyse en cours.')
+          else
+            _AnalyzingTable(suggestions: analyzing),
+
+          const SizedBox(height: 32),
 
           // Section 1 : 99% sûr (implémentable en 1 clic)
           _SectionHeader(
@@ -104,6 +120,61 @@ class SentinelleScreen extends StatelessWidget {
 // ---------------------------------------------------------------------------
 // Tables
 // ---------------------------------------------------------------------------
+
+class _AnalyzingTable extends StatelessWidget {
+  const _AnalyzingTable({required this.suggestions});
+  final List<Suggestion> suggestions;
+
+  @override
+  Widget build(BuildContext context) {
+    return AdminDataTable(
+      columns: const ['Titre', 'URL', 'Auteur', 'Statut', 'Depuis'],
+      rows: suggestions.map((s) {
+        final since = s.sentinelleStartedAt;
+        final elapsed = since != null
+            ? DateTime.now().difference(since)
+            : Duration.zero;
+        return [
+          Text(_cleanTitle(s),
+              style:
+                  const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+          Container(
+            constraints: const BoxConstraints(maxWidth: 200),
+            child: Text(s.url,
+                style: TextStyle(
+                    fontSize: 11,
+                    color: Theme.of(context).textTheme.bodySmall?.color),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+          ),
+          Text(s.author.displayName,
+              style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).textTheme.bodySmall?.color)),
+          Row(
+            children: [
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 6),
+              Text('En cours…',
+                  style: TextStyle(
+                      fontSize: 12,
+                      color: AppColors.neonCyan,
+                      fontWeight: FontWeight.w700)),
+            ],
+          ),
+          Text(_formatElapsed(elapsed),
+              style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).textTheme.bodySmall?.color)),
+        ];
+      }).toList(),
+    );
+  }
+}
 
 class _TrustedTable extends StatelessWidget {
   const _TrustedTable({required this.suggestions});
@@ -353,4 +424,9 @@ String _formatViews(int? views) {
   if (views >= 1000000) return '${(views / 1000000).toStringAsFixed(1)}M';
   if (views >= 1000) return '${(views / 1000).toStringAsFixed(1)}k';
   return views.toString();
+}
+
+String _formatElapsed(Duration d) {
+  if (d.inMinutes > 0) return '${d.inMinutes} min';
+  return '${d.inSeconds} s';
 }

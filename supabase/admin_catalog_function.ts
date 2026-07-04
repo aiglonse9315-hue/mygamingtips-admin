@@ -312,6 +312,26 @@ serve(async (req) => {
       return await jsonWithFreshToken({ ok: true });
     }
 
+    if (route === "suggestions/mark-analyzing") {
+      // Marque qu'une suggestion est en cours d'analyse par Sentinelle.
+      // Écrit sentinelle_started_at = now() (sans ai_recommendation).
+      // L'admin voit alors la suggestion passer dans le menu Sentinelle,
+      // section "Analyse en cours", jusqu'à ce que l'analyse termine.
+      const suggestionId = uuidOrUndefined(body.id);
+      if (!suggestionId) {
+        return json(
+          { error: "id manquant ou invalide (UUID attendu)." },
+          400
+        );
+      }
+      const { error } = await supabase
+        .from("suggestions")
+        .update({ sentinelle_started_at: new Date().toISOString() })
+        .eq("id", suggestionId);
+      if (error) return json({ error: error.message }, 400);
+      return await jsonWithFreshToken({ ok: true });
+    }
+
     // ======================================================================
     // PROFILS — ban / unban
     // ======================================================================
