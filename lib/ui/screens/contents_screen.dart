@@ -21,7 +21,8 @@ class ContentsScreen extends StatefulWidget {
 
 class _ContentsScreenState extends State<ContentsScreen> {
   String? _gameFilter; // null = tous
-  ContentCategory? _catFilter; // null = toutes
+  /// Filtre catégorie : 'media' = vidéo+guides fusionnés, 'links' = liens, null = toutes.
+  String? _catFilter;
   String _search = '';
   final TextEditingController _searchCtrl = TextEditingController();
 
@@ -41,8 +42,13 @@ class _ContentsScreenState extends State<ContentsScreen> {
     if (_gameFilter != null) {
       list = list.where((c) => c.gameId == _gameFilter).toList();
     }
-    if (_catFilter != null) {
-      list = list.where((c) => c.category == _catFilter).toList();
+    // Filtre catégorie fusionné : 'media' = vidéo OU guides, 'links' = liens.
+    if (_catFilter == 'media') {
+      list = list.where((c) =>
+          c.category == ContentCategory.video ||
+          c.category == ContentCategory.guides).toList();
+    } else if (_catFilter == 'links') {
+      list = list.where((c) => c.category == ContentCategory.links).toList();
     }
     if (_search.isNotEmpty) {
       final q = _search.toLowerCase();
@@ -103,17 +109,13 @@ class _ContentsScreenState extends State<ContentsScreen> {
                 label: 'Catégorie',
                 value: _catFilter == null
                     ? 'Toutes'
-                    : _catFilter!.label,
-                items: ContentCategory.values.map((c) => c.label).toList(),
-                values: ContentCategory.values
-                    .map((c) => c.name)
-                    .toList(),
-                selectedValue: _catFilter?.name,
-                onChanged: (v) => setState(() =>
-                    _catFilter = v == null
-                        ? null
-                        : ContentCategory.values
-                            .firstWhere((c) => c.name == v)),
+                    : _catFilter == 'media'
+                        ? 'Vidéos & Guides'
+                        : 'Liens',
+                items: const ['Vidéos & Guides', 'Liens'],
+                values: const ['media', 'links'],
+                selectedValue: _catFilter,
+                onChanged: (v) => setState(() => _catFilter = v),
               ),
             ],
           ),
