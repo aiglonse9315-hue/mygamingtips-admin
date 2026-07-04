@@ -300,6 +300,8 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
     _title = TextEditingController(
         text: widget.content?.titleAdmin ?? widget.content?.titleSource ?? '');
     _image = TextEditingController(text: widget.content?.imageUrl ?? '');
+    // En édition, pré-remplit l'URL du contenu existant.
+    _url = TextEditingController(text: widget.content?.url ?? '');
     _gameId = widget.content?.gameId;
     _category = widget.content?.category ?? ContentCategory.video;
   }
@@ -326,7 +328,12 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
         imageUrl: _image.text,
       );
     } else {
-      store.updateContentTitle(widget.content!, _title.text);
+      // Édition : met à jour le titre ET l'URL.
+      store.updateContent(
+        widget.content!,
+        titleAdmin: _title.text,
+        url: url,
+      );
     }
     Navigator.pop(context);
   }
@@ -339,7 +346,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
 
     return AlertDialog(
       title: Text(edit
-          ? 'Modifier le titre administrateur'
+          ? 'Modifier le contenu'
           : 'Ajouter une vidéo / un guide / un lien'),
       content: SizedBox(
         width: 460,
@@ -354,7 +361,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
                   style: TextStyle(color: AppColors.categoryVideo, fontSize: 13),
                 ),
               ),
-            // En édition, on ne change que le titre.
+            // En édition, on peut changer le titre ET l'URL.
             if (edit) ...[
               TextField(
                 controller: _title,
@@ -362,6 +369,13 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
                   labelText: 'Titre administrateur *',
                   helperText: 'C\'est ce titre que verront les utilisateurs.'),
                 autofocus: true,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _url,
+                decoration: const InputDecoration(
+                  labelText: 'URL *',
+                  helperText: 'Lien YouTube (vidéo) ou page web'),
               ),
             ] else ...[
               DropdownButtonFormField<String>(

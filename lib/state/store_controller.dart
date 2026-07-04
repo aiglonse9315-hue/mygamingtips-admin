@@ -372,6 +372,42 @@ class StoreController extends ChangeNotifier {
     }
   }
 
+  /// Met à jour un contenu (titre + URL). Attend la confirmation serveur.
+  Future<void> updateContent(Content content, {
+    required String titleAdmin,
+    required String url,
+  }) async {
+    final Content previous = _contents.firstWhere(
+      (c) => c.id == content.id,
+      orElse: () => content,
+    );
+    _contents = _contents
+        .map((c) => c.id == content.id
+            ? c.copyWith(
+                titleAdmin: () => titleAdmin.trim(),
+                url: () => url.trim(),
+              )
+            : c)
+        .toList();
+    _store.saveContents(_contents);
+    notifyListeners();
+    if (sync == null) return;
+    final updated = _contents.firstWhere((c) => c.id == content.id);
+    try {
+      await sync!.upsertContent(updated);
+    } catch (e) {
+      // Rollback.
+      _contents = _contents.map((c) => c.id == content.id ? previous : c).toList();
+      _store.saveContents(_contents);
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
+      lastActionError = 'Contenu non modifié (erreur serveur) : $e';
+      notifyListeners();
+    }
+  }
+
   /// Supprime un contenu. Attend la confirmation serveur.
   Future<void> deleteContent(String id) async {
     final List<Content> backup = List<Content>.from(_contents);

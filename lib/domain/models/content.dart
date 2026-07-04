@@ -73,13 +73,14 @@ class Content {
   Content copyWith({
     ValueGetter<String?>? titleAdmin,
     ValueGetter<String?>? imageUrl,
+    ValueGetter<String?>? url,
     bool? validated,
   }) {
     return Content(
       id: id,
       gameId: gameId,
       category: category,
-      url: url,
+      url: url != null ? url() ?? '' : this.url,
       titleSource: titleSource,
       titleAdmin: titleAdmin != null ? titleAdmin() : this.titleAdmin,
       imageUrl: imageUrl != null ? imageUrl() : this.imageUrl,
