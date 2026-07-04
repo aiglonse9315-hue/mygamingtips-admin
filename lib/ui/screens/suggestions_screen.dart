@@ -378,6 +378,93 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
     Navigator.pop(context);
   }
 
+  /// Ouvre un mini-dialog pour créer un jeu rapidement sans quitter le
+  /// dialogue de validation. Une fois créé, le jeu est automatiquement
+  /// sélectionné comme jeu cible.
+  void _quickCreateGame() {
+    final nameCtrl = TextEditingController();
+    final publisherCtrl = TextEditingController();
+    final coverCtrl = TextEditingController();
+
+    // Pré-remplit le nom avec le jeu suggéré par l'IA si disponible.
+    final ai = widget.suggestion.aiRecommendation;
+    if (ai != null && ai.suggestedGame != null) {
+      nameCtrl.text = ai.suggestedGame!;
+    }
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Créer un jeu'),
+        content: SizedBox(
+          width: 380,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Nom du jeu *',
+                  hintText: 'ex. Fortnite',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: publisherCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Éditeur (optionnel)',
+                  hintText: 'ex. Epic Games',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: coverCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'URL image de couverture (optionnel)',
+                  hintText: 'https://...',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('Annuler'),
+          ),
+          FilledButton.icon(
+            icon: const Icon(Icons.check_rounded, size: 18),
+            label: const Text('Créer et sélectionner'),
+            onPressed: () async {
+              final name = nameCtrl.text.trim();
+              if (name.isEmpty) return;
+              final store = context.read<StoreController>();
+              Navigator.pop(dialogCtx); // ferme le mini-dialog
+              // Crée le jeu (await pour récupérer le vrai UUID).
+              await store.addGame(
+                name: name,
+                publisher: publisherCtrl.text.trim().isEmpty
+                    ? null
+                    : publisherCtrl.text.trim(),
+                coverUrl: coverCtrl.text.trim().isEmpty
+                    ? null
+                    : coverCtrl.text.trim(),
+              );
+              // Sélectionne automatiquement le jeu fraîchement créé.
+              // addGame l'ajoute en fin de liste, on le retrouve par son nom.
+              final created = store.games.firstWhere(
+                (g) => g.name.toLowerCase() == name.toLowerCase(),
+                orElse: () => store.games.last,
+              );
+              setState(() => _gameId = created.id);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final StoreController store = context.read<StoreController>();
@@ -443,14 +530,31 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
                   style: TextStyle(color: AppColors.categoryVideo, fontSize: 13),
                 ),
               ),
-            DropdownButtonFormField<String>(
-              value: _gameId,
-              decoration: const InputDecoration(labelText: 'Jeu cible *'),
-              items: games
-                  .map((g) =>
-                      DropdownMenuItem(value: g.id, child: Text(g.name)))
-                  .toList(),
-              onChanged: (v) => setState(() => _gameId = v),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: _gameId,
+                    decoration: const InputDecoration(labelText: 'Jeu cible *'),
+                    items: games
+                        .map((g) =>
+                            DropdownMenuItem(value: g.id, child: Text(g.name)))
+                        .toList(),
+                    onChanged: (v) => setState(() => _gameId = v),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Bouton "+" pour créer un jeu rapidement sans quitter le dialog.
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: IconButton.filled(
+                    tooltip: 'Créer un nouveau jeu',
+                    onPressed: () => _quickCreateGame(),
+                    icon: const Icon(Icons.add_rounded, size: 20),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<ContentCategory>(
