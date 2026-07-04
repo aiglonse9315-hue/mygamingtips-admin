@@ -324,18 +324,25 @@ class _TrustedTable extends StatelessWidget {
               style:
                   const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
           // Titre réel de la vidéo YouTube (pour insertion 1 clic).
-          Container(
-            constraints: const BoxConstraints(maxWidth: 200),
-            child: Text(
-              ai.youtubeTitle ?? _cleanTitle(s),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                  fontSize: 12,
-                  fontStyle: FontStyle.italic,
-                  color: ai.youtubeTitle != null
-                      ? AppColors.neonCyan
-                      : Theme.of(context).textTheme.bodySmall?.color),
+          Tooltip(
+            message: ai.youtubeTitle ?? _cleanTitle(s),
+            showDuration: const Duration(seconds: 8),
+            margin: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.all(10),
+            textStyle: const TextStyle(fontSize: 12, color: Colors.white),
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 200),
+              child: Text(
+                ai.youtubeTitle ?? _cleanTitle(s),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 12,
+                    fontStyle: FontStyle.italic,
+                    color: ai.youtubeTitle != null
+                        ? AppColors.neonCyan
+                        : Theme.of(context).textTheme.bodySmall?.color),
+              ),
             ),
           ),
           Text(ai.suggestedGame ?? '—',
@@ -419,18 +426,25 @@ class _ToVerifyTable extends StatelessWidget {
               style:
                   const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
           // Titre réel de la vidéo YouTube (pour insertion manuelle).
-          Container(
-            constraints: const BoxConstraints(maxWidth: 200),
-            child: Text(
-              ai?.youtubeTitle ?? _cleanTitle(s),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                  fontSize: 12,
-                  fontStyle: FontStyle.italic,
-                  color: ai?.youtubeTitle != null
-                      ? AppColors.neonCyan
-                      : Theme.of(context).textTheme.bodySmall?.color),
+          Tooltip(
+            message: ai?.youtubeTitle ?? _cleanTitle(s),
+            showDuration: const Duration(seconds: 8),
+            margin: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.all(10),
+            textStyle: const TextStyle(fontSize: 12, color: Colors.white),
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 200),
+              child: Text(
+                ai?.youtubeTitle ?? _cleanTitle(s),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 12,
+                    fontStyle: FontStyle.italic,
+                    color: ai?.youtubeTitle != null
+                        ? AppColors.neonCyan
+                        : Theme.of(context).textTheme.bodySmall?.color),
+              ),
             ),
           ),
           ai == null
@@ -441,15 +455,23 @@ class _ToVerifyTable extends StatelessWidget {
                       ? AppColors.categoryVideo
                       : AppColors.plusGold,
                 ),
-          Container(
-            constraints: const BoxConstraints(maxWidth: 250),
-            child: Text(
-              ai?.reason ?? 'Pas d\'analyse.',
-              style: TextStyle(
-                  fontSize: 11,
-                  color: Theme.of(context).textTheme.bodySmall?.color),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+          // Raison : texte tronqué à 2 lignes, tooltip complet au survol.
+          Tooltip(
+            message: ai?.reason ?? 'Pas d\'analyse.',
+            showDuration: const Duration(seconds: 10),
+            margin: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.all(12),
+            textStyle: const TextStyle(fontSize: 12, color: Colors.white),
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 250),
+              child: Text(
+                ai?.reason ?? 'Pas d\'analyse.',
+                style: TextStyle(
+                    fontSize: 11,
+                    color: Theme.of(context).textTheme.bodySmall?.color),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ),
           Text(ai != null ? '${(ai.confidence * 100).round()}%' : '—',
