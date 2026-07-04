@@ -13,11 +13,60 @@ import 'suggestions_screen.dart' show SuggestionReviewDialog;
 /// Écran Sentinelle : suggestions analysées par l'IA, triées en 2 catégories.
 ///
 /// 1. **99% sûr** (🟢) : verdict "recommended" + confiance ≥ 0.9 → bouton
-///    "Implémenter en 1 clic".
+///    "Implémenter en 1 clic". Sélection multiple possible (checkbox) + boutons
+///    "Tout valider" et "Valider la sélection".
 /// 2. **À vérifier** (🟡🔴) : verdict "caution"/"reject" ou confiance < 0.9 →
 ///    l'admin vérifie le lien puis ajoute manuellement ou rejette.
-class SentinelleScreen extends StatelessWidget {
+class SentinelleScreen extends StatefulWidget {
   const SentinelleScreen({super.key});
+
+  @override
+  State<SentinelleScreen> createState() => _SentinelleScreenState();
+}
+
+class _SentinelleScreenState extends State<SentinelleScreen> {
+  /// IDs des suggestions sélectionnées (section 99% sûr).
+  final Set<String> _selected = <String>{};
+
+  void _toggleSelect(String id) {
+    setState(() {
+      if (_selected.contains(id)) {
+        _selected.remove(id);
+      } else {
+        _selected.add(id);
+      }
+    });
+  }
+
+  void _selectAll(List<Suggestion> trusted) {
+    setState(() {
+      if (_selected.length == trusted.length) {
+        _selected.clear(); // tout désélectionner
+      } else {
+        _selected.clear();
+        _selected.addAll(trusted.map((s) => s.id));
+      }
+    });
+  }
+
+  /// Valide toutes les suggestions "99% sûr" en une fois.
+  Future<void> _validateAll(List<Suggestion> trusted) async {
+    final store = context.read<StoreController>();
+    for (final s in trusted) {
+      await store.acceptOneClick(s);
+    }
+    setState(() => _selected.clear());
+  }
+
+  /// Valide uniquement les suggestions sélectionnées.
+  Future<void> _validateSelected(List<Suggestion> trusted) async {
+    final store = context.read<StoreController>();
+    final selected = trusted.where((s) => _selected.contains(s.id)).toList();
+    for (final s in selected) {
+      await store.acceptOneClick(s);
+    }
+    setState(() => _selected.clear());
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -85,17 +134,76 @@ class SentinelleScreen extends StatelessWidget {
           const SizedBox(height: 32),
 
           // Section 1 : 99% sûr (implémentable en 1 clic)
-          _SectionHeader(
-            icon: Icons.verified_rounded,
-            color: AppColors.neonGreen,
-            title: '99% sûr — Implémentable en 1 clic',
-            count: trusted.length,
+          Row(
+            children: [
+              _SectionHeader(
+                icon: Icons.verified_rounded,
+                color: AppColors.neonGreen,
+                title: '99% sûr — Implémentable en 1 clic',
+                count: trusted.length,
+              ),
+              const Spacer(),
+              if (trusted.isNotEmpty) ...[
+                // Bouton : valider la sélection
+                if (_selected.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilledButton.icon(
+                      onPressed: () => showDialog<void>(
+                        context: context,
+                        builder: (_) => ConfirmDialog(
+                          title: 'Valider ${_selected.length} suggestion(s) ?',
+                          message:
+                              'Les ${_selected.length} suggestion(s) sélectionnée(s) '
+                              'seront implémentées automatiquement avec le jeu et '
+                              'la catégorie suggérés par l\'IA.',
+                          confirmLabel: 'Valider la sélection',
+                          onConfirm: () => _validateSelected(trusted),
+                        ),
+                      ),
+                      icon: const Icon(Icons.check_circle_outline_rounded,
+                          size: 16),
+                      label: Text('Valider sélection (${_selected.length})'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.neonCyan,
+                        foregroundColor: Colors.black,
+                      ),
+                    ),
+                  ),
+                // Bouton : tout valider
+                FilledButton.icon(
+                  onPressed: () => showDialog<void>(
+                    context: context,
+                    builder: (_) => ConfirmDialog(
+                      title: 'Valider toutes les suggestions (${trusted.length}) ?',
+                      message:
+                          'Les ${trusted.length} suggestions "99% sûr" seront '
+                          'implémentées automatiquement avec le jeu et la '
+                          'catégorie suggérés par l\'IA.',
+                      confirmLabel: 'Tout valider',
+                      onConfirm: () => _validateAll(trusted),
+                    ),
+                  ),
+                  icon: const Icon(Icons.done_all_rounded, size: 16),
+                  label: const Text('Tout valider'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.neonGreen,
+                    foregroundColor: Colors.black,
+                  ),
+                ),
+              ],
+            ],
           ),
           const SizedBox(height: 12),
           if (trusted.isEmpty)
             const _EmptyHint(text: 'Aucune suggestion à haute confiance pour le moment.')
           else
-            _TrustedTable(suggestions: trusted),
+            _TrustedTable(
+              suggestions: trusted,
+              selectedIds: _selected,
+              onToggle: _toggleSelect,
+              onSelectAll: () => _selectAll(trusted),
+            ),
 
           const SizedBox(height: 32),
 
@@ -177,17 +285,41 @@ class _AnalyzingTable extends StatelessWidget {
 }
 
 class _TrustedTable extends StatelessWidget {
-  const _TrustedTable({required this.suggestions});
+  const _TrustedTable({
+    required this.suggestions,
+    required this.selectedIds,
+    required this.onToggle,
+    required this.onSelectAll,
+  });
+
   final List<Suggestion> suggestions;
+  final Set<String> selectedIds;
+  final ValueChanged<String> onToggle;
+  final VoidCallback onSelectAll;
 
   @override
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
     return AdminDataTable(
-      columns: const ['Titre', 'Titre pour insertion', 'Jeu IA', 'Catégorie', 'Confiance', 'Vues', 'Actions'],
+      columns: const ['☐', 'Titre', 'Titre pour insertion', 'Jeu IA', 'Catégorie', 'Confiance', 'Vues', 'Actions'],
       rows: suggestions.map((s) {
         final ai = s.aiRecommendation!;
+        final isSelected = selectedIds.contains(s.id);
         return [
+          // Checkbox de sélection (cliquable).
+          InkWell(
+            onTap: () => onToggle(s.id),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Icon(
+                isSelected
+                    ? Icons.check_box_rounded
+                    : Icons.check_box_outline_blank_rounded,
+                size: 18,
+                color: isSelected ? AppColors.neonGreen : null,
+              ),
+            ),
+          ),
           Text(_cleanTitle(s),
               style:
                   const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
