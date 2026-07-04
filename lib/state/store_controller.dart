@@ -18,6 +18,17 @@ import '../domain/models/suggestion.dart';
 /// **Mode production** (avec [SupabaseSync]) : les lectures viennent de
 /// Supabase (PostgREST, anon key), les écritures passent par l'Edge Function
 /// `admin-catalog` (service_role). Le localStorage sert de cache local.
+///
+/// ## Stratégie de synchronisation (v2 — robuste)
+///
+/// - Les écritures sont **attendues** (await) : l'UI attend la confirmation
+///   serveur avant de considérer l'opération comme réussie.
+/// - En cas d'échec serveur, on **annule** l'opération locale (rollback) et
+///   on notifie l'utilisateur via [lastActionError].
+/// - `syncFromSupabase` **fusionne** (merge) les données serveur avec les
+///   entrées locales en attente, plutôt que de tout remplacer. Cela évite
+///   qu'une écriture en cours soit perdue au refresh.
+/// - Une garde anti-réentrance empêche deux sync concurrentes.
 class StoreController extends ChangeNotifier {
   StoreController(this._store, {this.sync}) {
     _store.ensureInitialized();
@@ -40,9 +51,25 @@ class StoreController extends ChangeNotifier {
   /// Dernière erreur de synchronisation (null si OK).
   String? syncError;
 
+  /// Dernière erreur d'action (ajout/suppression) — plus visible que syncError.
+  /// Affichée dans une snackbar, puis effacée.
+  String? lastActionError;
+
+  /// Garde anti-réentrance pour syncFromSupabase.
+  bool _syncing = false;
+
+  /// Dernier token admin connu (pour éviter les resync inutiles).
+  String? _lastToken;
+
   /// Efface l'erreur de synchronisation affichée.
   void clearSyncError() {
     syncError = null;
+    notifyListeners();
+  }
+
+  /// Efface la dernière erreur d'action.
+  void clearActionError() {
+    lastActionError = null;
     notifyListeners();
   }
 
@@ -77,12 +104,14 @@ class StoreController extends ChangeNotifier {
   int contentCountFor(String gameId) =>
       _contents.where((c) => c.gameId == gameId && c.validated).length;
 
-  void addGame({
+  /// Ajoute un jeu. En mode production, attend la confirmation serveur.
+  /// En cas d'échec, le jeu est retiré (rollback) et l'erreur est notifiée.
+  Future<void> addGame({
     required String name,
     String? publisher,
     String? coverUrl,
     bool active = true,
-  }) {
+  }) async {
     final Game game = Game(
       id: 'g-${DateTime.now().millisecondsSinceEpoch}',
       name: name.trim(),
@@ -91,40 +120,12 @@ class StoreController extends ChangeNotifier {
       active: active,
       createdAt: DateTime.now(),
     );
+    // Ajout optimiste local.
     _games = [..._games, game]..sort(_byName);
     _store.saveGames(_games);
     notifyListeners();
-    // Sync Supabase (optimiste) : on pousse le jeu créé.
-    _syncGame(game);
-  }
 
-  void updateGame(Game game) {
-    _games = _games.map((g) => g.id == game.id ? game : g).toList()
-      ..sort(_byName);
-    _store.saveGames(_games);
-    notifyListeners();
-    _syncGame(game);
-  }
-
-  void toggleGameActive(Game game) {
-    updateGame(game.copyWith(active: !game.active));
-  }
-
-  void deleteGame(String id) {
-    _games = _games.where((g) => g.id != id).toList();
-    // On supprime aussi les contenus liés (cohérence référentielle).
-    _contents = _contents.where((c) => c.gameId != id).toList();
-    _store.saveGames(_games);
-    _store.saveContents(_contents);
-    notifyListeners();
-    // Sync Supabase : supprime le jeu (cascade contenus côté serveur).
-    // La suppression attend la confirmation serveur, puis resync pour
-    // garantir la cohérence (en cas d'ID temporaire non encore remplacé).
-    _syncDeleteGame(id);
-  }
-
-  /// Pousse un jeu vers Supabase (upsert) en arrière-plan.
-  Future<void> _syncGame(Game game) async {
+    // Sync Supabase : attend la confirmation.
     if (sync == null) return;
     try {
       final created = await sync!.upsertGame(game);
@@ -134,23 +135,60 @@ class StoreController extends ChangeNotifier {
       _store.saveGames(_games);
       notifyListeners();
     } catch (e) {
-      syncError = 'Jeu non synchronisé: $e';
+      // Rollback : retire le jeu qui n'a pas pu être synchronisé.
+      _games = _games.where((g) => g.id != game.id).toList();
+      _store.saveGames(_games);
+      lastActionError = 'Jeu non ajouté (erreur serveur) : $e';
       notifyListeners();
     }
   }
 
-  Future<void> _syncDeleteGame(String id) async {
+  Future<void> updateGame(Game game) async {
+    final Game? previous = gameById(game.id);
+    _games = _games.map((g) => g.id == game.id ? game : g).toList()
+      ..sort(_byName);
+    _store.saveGames(_games);
+    notifyListeners();
+    if (sync == null) return;
+    try {
+      await sync!.upsertGame(game);
+    } catch (e) {
+      // Rollback vers l'état précédent.
+      if (previous != null) {
+        _games = _games.map((g) => g.id == game.id ? previous : g).toList()
+          ..sort(_byName);
+        _store.saveGames(_games);
+      }
+      lastActionError = 'Jeu non modifié (erreur serveur) : $e';
+      notifyListeners();
+    }
+  }
+
+  void toggleGameActive(Game game) {
+    updateGame(game.copyWith(active: !game.active));
+  }
+
+  /// Supprime un jeu. Attend la confirmation serveur, puis resync.
+  Future<void> deleteGame(String id) async {
+    final List<Game> backupGames = List<Game>.from(_games);
+    final List<Content> backupContents = List<Content>.from(_contents);
+    _games = _games.where((g) => g.id != id).toList();
+    _contents = _contents.where((c) => c.gameId != id).toList();
+    _store.saveGames(_games);
+    _store.saveContents(_contents);
+    notifyListeners();
     if (sync == null) return;
     try {
       await sync!.deleteGame(id);
-      // La suppression a réussi côté serveur : on resync pour garantir
-      // la cohérence (le cache local est écrasé par l'état serveur réel).
+      // Resync pour garantir la cohérence avec le serveur.
       await syncFromSupabase();
     } catch (e) {
-      syncError = 'Suppression jeu non synchronisée: $e';
-      // En cas d'échec (ex: ID temporaire), on resync aussi pour révéler
-      // l'état réel (le jeu réapparaît s'il n'a pas pu être supprimé).
-      await syncFromSupabase();
+      // Rollback : le jeu n'a pas pu être supprimé, on le restaure.
+      _games = backupGames..sort(_byName);
+      _contents = backupContents;
+      _store.saveGames(_games);
+      _store.saveContents(_contents);
+      lastActionError = 'Jeu non supprimé (erreur serveur) : $e';
       notifyListeners();
     }
   }
@@ -163,13 +201,14 @@ class StoreController extends ChangeNotifier {
           .toList()
         ..sort((a, b) => b.publishedAt.compareTo(a.publishedAt));
 
-  void addContent({
+  /// Ajoute un contenu. Attend la confirmation serveur.
+  Future<void> addContent({
     required String gameId,
     required ContentCategory category,
     required String url,
     String? titleAdmin,
     String? imageUrl,
-  }) {
+  }) async {
     final bool isVideo = category == ContentCategory.video;
     final Content content = Content(
       id: 'c-${DateTime.now().millisecondsSinceEpoch}',
@@ -186,53 +225,61 @@ class StoreController extends ChangeNotifier {
     _contents = [..._contents, content];
     _store.saveContents(_contents);
     notifyListeners();
-    _syncContent(content);
+    if (sync == null) return;
+    try {
+      final created = await sync!.upsertContent(content);
+      _contents =
+          _contents.map((c) => c.id == content.id ? created : c).toList();
+      _store.saveContents(_contents);
+      notifyListeners();
+    } catch (e) {
+      // Rollback.
+      _contents = _contents.where((c) => c.id != content.id).toList();
+      _store.saveContents(_contents);
+      lastActionError = 'Contenu non ajouté (erreur serveur) : $e';
+      notifyListeners();
+    }
   }
 
-  void updateContentTitle(Content content, String titleAdmin) {
+  Future<void> updateContentTitle(Content content, String titleAdmin) async {
+    final Content previous = _contents.firstWhere(
+      (c) => c.id == content.id,
+      orElse: () => content,
+    );
     _contents = _contents
         .map((c) =>
             c.id == content.id ? c.copyWith(titleAdmin: () => titleAdmin.trim()) : c)
         .toList();
     _store.saveContents(_contents);
     notifyListeners();
-    final updated = _contents.firstWhere((c) => c.id == content.id);
-    _syncContent(updated);
-  }
-
-  void deleteContent(String id) {
-    _contents = _contents.where((c) => c.id != id).toList();
-    _store.saveContents(_contents);
-    notifyListeners();
-    // Sync Supabase : supprime le contenu, puis resync pour garantir la
-    // cohérence (le cache local est écrasé par l'état serveur réel).
-    _syncDeleteContent(id);
-  }
-
-  /// Pousse un contenu vers Supabase (upsert) en arrière-plan.
-  Future<void> _syncContent(Content content) async {
     if (sync == null) return;
+    final updated = _contents.firstWhere((c) => c.id == content.id);
     try {
-      final created = await sync!.upsertContent(content);
-      _contents = _contents.map((c) => c.id == content.id ? created : c).toList();
-      _store.saveContents(_contents);
-      notifyListeners();
+      await sync!.upsertContent(updated);
     } catch (e) {
-      syncError = 'Contenu non synchronisé: $e';
+      // Rollback.
+      _contents = _contents.map((c) => c.id == content.id ? previous : c).toList();
+      _store.saveContents(_contents);
+      lastActionError = 'Titre non modifié (erreur serveur) : $e';
       notifyListeners();
     }
   }
 
-  Future<void> _syncDeleteContent(String id) async {
+  /// Supprime un contenu. Attend la confirmation serveur.
+  Future<void> deleteContent(String id) async {
+    final List<Content> backup = List<Content>.from(_contents);
+    _contents = _contents.where((c) => c.id != id).toList();
+    _store.saveContents(_contents);
+    notifyListeners();
     if (sync == null) return;
     try {
       await sync!.deleteContent(id);
-      // Resync pour garantir la cohérence avec le serveur.
       await syncFromSupabase();
     } catch (e) {
-      syncError = 'Suppression contenu non synchronisée: $e';
-      // En cas d'échec (ex: ID temporaire), on resync pour révéler l'état réel.
-      await syncFromSupabase();
+      // Rollback.
+      _contents = backup;
+      _store.saveContents(_contents);
+      lastActionError = 'Contenu non supprimé (erreur serveur) : $e';
       notifyListeners();
     }
   }
@@ -247,20 +294,18 @@ class StoreController extends ChangeNotifier {
 
   /// Valide une suggestion : crée un contenu validé et marque la suggestion
   /// acceptée. C'est le cœur du workflow de modération.
-  void acceptSuggestion({
+  ///
+  /// ⚠️ Une seule écriture serveur : la route `/suggestions/accept` crée
+  /// elle-même le contenu côté serveur. On NE fait pas d'addContent séparé
+  /// (sinon double insertion).
+  Future<void> acceptSuggestion({
     required Suggestion suggestion,
     required String gameId,
     required ContentCategory category,
     required String titleAdmin,
     String? imageUrl,
-  }) {
-    addContent(
-      gameId: gameId,
-      category: category,
-      url: suggestion.url,
-      titleAdmin: titleAdmin,
-      imageUrl: imageUrl,
-    );
+  }) async {
+    // Marque la suggestion comme acceptée localement (optimiste).
     _suggestions = _suggestions
         .map((s) => s.id == suggestion.id
             ? s.copyWith(status: SuggestionStatus.accepted)
@@ -268,32 +313,7 @@ class StoreController extends ChangeNotifier {
         .toList();
     _store.saveSuggestions(_suggestions);
     notifyListeners();
-    // Sync Supabase : crée le contenu + marque la suggestion acceptée.
-    _syncAcceptSuggestion(
-      suggestion: suggestion,
-      gameId: gameId,
-      category: category,
-      titleAdmin: titleAdmin,
-    );
-  }
 
-  void rejectSuggestion(Suggestion suggestion) {
-    _suggestions = _suggestions
-        .map((s) => s.id == suggestion.id
-            ? s.copyWith(status: SuggestionStatus.rejected)
-            : s)
-        .toList();
-    _store.saveSuggestions(_suggestions);
-    notifyListeners();
-    _syncRejectSuggestion(suggestion.id);
-  }
-
-  Future<void> _syncAcceptSuggestion({
-    required Suggestion suggestion,
-    required String gameId,
-    required ContentCategory category,
-    required String titleAdmin,
-  }) async {
     if (sync == null) return;
     try {
       await sync!.acceptSuggestion(
@@ -303,34 +323,67 @@ class StoreController extends ChangeNotifier {
         titleAdmin: titleAdmin,
         isVideo: category == ContentCategory.video,
       );
+      // Resync pour récupérer le contenu créé côté serveur.
+      await syncFromSupabase();
     } catch (e) {
-      syncError = 'Suggestion non acceptée côté serveur: $e';
+      // Rollback : la suggestion redevient pending.
+      _suggestions = _suggestions
+          .map((s) => s.id == suggestion.id
+              ? s.copyWith(status: SuggestionStatus.pending)
+              : s)
+          .toList();
+      _store.saveSuggestions(_suggestions);
+      lastActionError = 'Suggestion non validée (erreur serveur) : $e';
       notifyListeners();
     }
   }
 
-  Future<void> _syncRejectSuggestion(String suggestionId) async {
+  Future<void> rejectSuggestion(Suggestion suggestion) async {
+    final SuggestionStatus previousStatus = suggestion.status;
+    _suggestions = _suggestions
+        .map((s) => s.id == suggestion.id
+            ? s.copyWith(status: SuggestionStatus.rejected)
+            : s)
+        .toList();
+    _store.saveSuggestions(_suggestions);
+    notifyListeners();
     if (sync == null) return;
     try {
-      await sync!.rejectSuggestion(suggestionId);
+      await sync!.rejectSuggestion(suggestion.id);
     } catch (e) {
-      syncError = 'Suggestion non rejetée côté serveur: $e';
+      // Rollback.
+      _suggestions = _suggestions
+          .map((s) => s.id == suggestion.id
+              ? s.copyWith(status: previousStatus)
+              : s)
+          .toList();
+      _store.saveSuggestions(_suggestions);
+      lastActionError = 'Suggestion non rejetée (erreur serveur) : $e';
       notifyListeners();
     }
   }
 
   // ---------- Bannissement ----------
   /// Bannit le compte auteur d'une suggestion (modération disciplinaire).
-  void banAuthor(Suggestion suggestion, {String? reason}) {
+  Future<void> banAuthor(Suggestion suggestion, {String? reason}) async {
     if (isAuthorBanned(suggestion.author.id)) return;
     _banned = [..._banned, BannedUser.fromAuthor(suggestion.author, reason: reason)];
     _store.saveBanned(_banned);
     notifyListeners();
-    _syncBan(suggestion.author.id, reason: reason);
+    if (sync == null) return;
+    try {
+      await sync!.banUser(suggestion.author.id, reason: reason);
+    } catch (e) {
+      // Rollback.
+      _banned = _banned.where((b) => b.id != suggestion.author.id).toList();
+      _store.saveBanned(_banned);
+      lastActionError = 'Bannissement échoué (erreur serveur) : $e';
+      notifyListeners();
+    }
   }
 
   /// Bannit directement un auteur identifié (depuis un id).
-  void banAuthorId(String authorId, {String? displayName}) {
+  Future<void> banAuthorId(String authorId, {String? displayName}) async {
     if (isAuthorBanned(authorId)) return;
     _banned = [
       ..._banned,
@@ -343,14 +396,29 @@ class StoreController extends ChangeNotifier {
     ];
     _store.saveBanned(_banned);
     notifyListeners();
-    _syncBan(authorId, reason: 'Banni manuellement');
+    if (sync == null) return;
+    try {
+      await sync!.banUser(authorId, reason: 'Banni manuellement');
+    } catch (e) {
+      _banned = _banned.where((b) => b.id != authorId).toList();
+      _store.saveBanned(_banned);
+      lastActionError = 'Bannissement échoué (erreur serveur) : $e';
+      notifyListeners();
+    }
   }
 
-  void unban(String id) {
+  Future<void> unban(String id) async {
     _banned = _banned.where((b) => b.id != id).toList();
     _store.saveBanned(_banned);
     notifyListeners();
-    _syncUnban(id);
+    if (sync == null) return;
+    try {
+      await sync!.unbanUser(id);
+    } catch (e) {
+      // Rollback : on ne peut pas reconstruire l'entrée exacte, donc on resync.
+      lastActionError = 'Levée de ban échouée : $e';
+      notifyListeners();
+    }
   }
 
   /// Bannit manuellement un compte (sans suggestion associée).
@@ -379,32 +447,6 @@ class StoreController extends ChangeNotifier {
     // correspondent à aucun profil en base.
   }
 
-  /// Pousse un ban vers Supabase (uniquement si l'ID est un UUID valide,
-  /// c'est-à-dire un vrai user_id — pas un ID manuel fictif).
-  Future<void> _syncBan(String userId, {String? reason}) async {
-    if (sync == null) return;
-    // Les UUID Supabase font 36 caractères (format xxxxxxxx-xxxx-...).
-    // Les IDs manuels commencent par 'manual-' et ne sont pas en base.
-    if (userId.length != 36 || !userId.contains('-')) return;
-    try {
-      await sync!.banUser(userId, reason: reason);
-    } catch (e) {
-      syncError = 'Ban non synchronisé: $e';
-      notifyListeners();
-    }
-  }
-
-  Future<void> _syncUnban(String userId) async {
-    if (sync == null) return;
-    if (userId.length != 36 || !userId.contains('-')) return;
-    try {
-      await sync!.unbanUser(userId);
-    } catch (e) {
-      syncError = 'Levée de ban non synchronisée: $e';
-      notifyListeners();
-    }
-  }
-
   // ---------- Utilisateurs Plus ----------
   /// Ajoute manuellement un utilisateur Plus (depuis le dashboard admin).
   void addPlusUser({
@@ -428,47 +470,65 @@ class StoreController extends ChangeNotifier {
   }
 
   /// Active/désactive un abonnement Plus.
-  void togglePlusUser(PlusUser user) {
+  Future<void> togglePlusUser(PlusUser user) async {
+    final bool previousActive = user.active;
     _plus = _plus
         .map((n) => n.id == user.id ? n.copyWith(active: !n.active) : n)
         .toList();
     _store.savePlus(_plus);
     notifyListeners();
-    _syncPlusToggle(user);
-  }
-
-  /// Change la formule d'un utilisateur Plus.
-  void setPlusPlan(PlusUser user, String plan) {
-    _plus = _plus
-        .map((n) => n.id == user.id ? n.copyWith(plan: plan) : n)
-        .toList();
-    _store.savePlus(_plus);
-    notifyListeners();
-    _syncPlusToggle(user.copyWith(plan: plan));
-  }
-
-  void deletePlusUser(String id) {
-    _plus = _plus.where((n) => n.id != id).toList();
-    _store.savePlus(_plus);
-    notifyListeners();
-  }
-
-  /// Pousse l'état d'un abonnement vers Supabase (uniquement si l'ID est un
-  /// UUID valide, c'est-à-dire un vrai user_id).
-  Future<void> _syncPlusToggle(PlusUser user) async {
     if (sync == null) return;
     if (user.id.length != 36 || !user.id.contains('-')) return;
     try {
       await sync!.upsertSubscription(
         userId: user.id,
         plan: user.plan,
+        isActive: !previousActive,
+        startedAt: user.startedAt,
+      );
+    } catch (e) {
+      // Rollback.
+      _plus = _plus
+          .map((n) => n.id == user.id ? n.copyWith(active: previousActive) : n)
+          .toList();
+      _store.savePlus(_plus);
+      lastActionError = 'Abonnement non modifié (erreur serveur) : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Change la formule d'un utilisateur Plus.
+  Future<void> setPlusPlan(PlusUser user, String plan) async {
+    final String previousPlan = user.plan;
+    _plus = _plus
+        .map((n) => n.id == user.id ? n.copyWith(plan: plan) : n)
+        .toList();
+    _store.savePlus(_plus);
+    notifyListeners();
+    if (sync == null) return;
+    if (user.id.length != 36 || !user.id.contains('-')) return;
+    try {
+      await sync!.upsertSubscription(
+        userId: user.id,
+        plan: plan,
         isActive: user.active,
         startedAt: user.startedAt,
       );
     } catch (e) {
-      syncError = 'Abonnement non synchronisé: $e';
+      // Rollback.
+      _plus = _plus
+          .map((n) => n.id == user.id ? n.copyWith(plan: previousPlan) : n)
+          .toList();
+      _store.savePlus(_plus);
+      lastActionError = 'Formule non modifiée (erreur serveur) : $e';
       notifyListeners();
     }
+  }
+
+  void deletePlusUser(String id) {
+    _plus = _plus.where((n) => n.id != id).toList();
+    _store.savePlus(_plus);
+    notifyListeners();
   }
 
   // ---------- Divers ----------
@@ -500,37 +560,71 @@ class StoreController extends ChangeNotifier {
   }
 
   /// Synchronise les données depuis Supabase (lectures PostgREST) et met à
-  /// jour le cache localStorage. Les erreurs sont capturées et exposées via
-  /// [syncError] sans planter l'UI (le cache local reste affiché).
+  /// jour le cache localStorage.
+  ///
+  /// **Stratégie de fusion** : les données serveur remplacent les données
+  /// locales **uniquement pour les entrées déjà synchronisées** (UUID valide).
+  /// Les entrées locales en attente (ID temporaire) sont conservées jusqu'à
+  /// confirmation de leur écriture.
   Future<void> syncFromSupabase() async {
     if (sync == null) return;
+    // Garde anti-réentrance.
+    if (_syncing) return;
+    _syncing = true;
     isSyncing = true;
-    syncError = null;
+    // ⚠️ On NE remet pas syncError à null ici : cela effacerait une erreur
+    // d'action récente. On l'efface seulement si la sync réussit.
     notifyListeners();
     try {
       final games = await sync!.fetchGames();
       final contents = await sync!.fetchContents();
       final suggestions = await sync!.fetchSuggestions();
-      _games = games..sort(_byName);
-      _contents = contents;
-      _suggestions = suggestions;
+
+      // --- Fusion : conserve les entrées locales non encore synchronisées
+      //     (ID temporaire) et ajoute les données serveur. ---
+      final pendingGames = _games
+          .where((g) => !_isUuid(g.id))
+          .toList();
+      _games = [...games, ...pendingGames]..sort(_byName);
+
+      final pendingContents = _contents
+          .where((c) => !_isUuid(c.id))
+          .toList();
+      _contents = [...contents, ...pendingContents];
+
+      final pendingSuggestions = _suggestions
+          .where((s) => !_isUuid(s.id))
+          .toList();
+      _suggestions = [...suggestions, ...pendingSuggestions];
+
       // Met à jour le cache local pour les lectures hors-ligne.
       _store.saveGames(_games);
       _store.saveContents(_contents);
       _store.saveSuggestions(_suggestions);
+      // Sync réussie : on efface l'erreur de sync (pas l'erreur d'action).
+      syncError = null;
     } catch (e) {
       syncError = e.toString();
     } finally {
+      _syncing = false;
       isSyncing = false;
       notifyListeners();
     }
   }
 
+  /// Vrai UUID Supabase ? (36 caractères, format xxxxxxxx-xxxx-...).
+  static bool _isUuid(String id) =>
+      id.length == 36 && RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false).hasMatch(id);
+
   /// Met à jour le jeton admin pour les écritures Supabase (appelé après
-  /// login/logout). Déclenche une sync des écritures en attente si un token
-  /// valide est fourni.
+  /// login/logout).
+  ///
+  /// ⚠️ Ne resync QUE si le token a changé (évite les resync en boucle à
+  /// chaque rebuild de l'UI).
   void updateAdminToken(String? token) {
     if (sync == null) return;
+    if (token == _lastToken) return; // pas de changement → pas de resync
+    _lastToken = token;
     if (token != null && token.isNotEmpty) {
       sync!.setAdminToken(token);
       // Re-sync pour récupérer les données à jour une fois connecté.

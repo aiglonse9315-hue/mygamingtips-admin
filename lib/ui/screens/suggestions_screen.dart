@@ -454,7 +454,7 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<ContentCategory>(
-              value: _category,
+              initialValue: _category,
               decoration: const InputDecoration(labelText: 'Catégorie *'),
               items: ContentCategory.values
                   .map((c) => DropdownMenuItem(

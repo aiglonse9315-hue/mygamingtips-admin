@@ -35,6 +35,49 @@ class _AdminShellState extends State<AdminShell> {
     NavItem('Contributeurs', Icons.groups_rounded, '/contributors'),
   ];
 
+  @override
+  void initState() {
+    super.initState();
+    // Écoute les erreurs d'action (ajout/suppression) pour afficher un snackbar.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final store = context.read<StoreController>();
+      store.addListener(_onStoreChanged);
+    });
+  }
+
+  @override
+  void dispose() {
+    // Retire le listener proprement (store peut être déjà disposé en tests).
+    try {
+      context.read<StoreController>().removeListener(_onStoreChanged);
+    } catch (_) {}
+    super.dispose();
+  }
+
+  String? _lastSeenActionError;
+
+  void _onStoreChanged() {
+    final store = context.read<StoreController>();
+    final err = store.lastActionError;
+    if (err != null && err != _lastSeenActionError && mounted) {
+      _lastSeenActionError = err;
+      // Efface l'erreur côté contrôleur (le snackbar suffit).
+      store.clearActionError();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(err),
+          backgroundColor: Colors.red.shade700,
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: 'OK',
+            textColor: Colors.white,
+            onPressed: () {},
+          ),
+        ),
+      );
+    }
+  }
+
   String get _title {
     return _items.firstWhere((i) => i.route == _route).label;
   }
