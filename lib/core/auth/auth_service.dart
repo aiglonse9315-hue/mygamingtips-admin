@@ -202,6 +202,17 @@ class AuthService {
     _lockedUntil = null;
   }
 
+  /// Remplace le token courant par un nouveau token frais (sliding session).
+  ///
+  /// Appelé automatiquement après chaque écriture réussie : l'Edge Function
+  /// renvoie un `fresh_token` qui prolonge la session de 15 min. Le timer
+  /// d'auto-logout est reprogrammé en conséquence.
+  void refreshToken(String freshToken) {
+    _token = freshToken;
+    html.window.localStorage[_kToken] = freshToken;
+    _scheduleAutoLogout(freshToken);
+  }
+
   // ---------------------------------------------------------------------------
   // Vérification d'expiration JWT (côté client)
   // ---------------------------------------------------------------------------

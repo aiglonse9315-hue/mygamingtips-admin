@@ -77,4 +77,11 @@ class AuthController extends ChangeNotifier {
     _service.logout();
     notifyListeners();
   }
+
+  /// Rafraîchit le token courant (sliding session).
+  /// Appelé après chaque écriture réussie pour prolonger la session.
+  void refreshToken(String freshToken) {
+    _service.refreshToken(freshToken);
+    notifyListeners();
+  }
 }

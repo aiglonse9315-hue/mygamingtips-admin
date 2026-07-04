@@ -45,6 +45,39 @@ function json(obj: unknown, status = 200) {
   });
 }
 
+// --- Génération d'un nouveau jeton (sliding session) ---
+// Après chaque écriture réussie, on renvoie un fresh_token pour prolonger
+// la session de 15 min. Ainsi, un admin actif n'est jamais déconnecté.
+async function makeJwt(): Promise<string> {
+  const enc = new TextEncoder();
+  const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const now = Math.floor(Date.now() / 1000);
+  const payload = btoa(
+    JSON.stringify({ role: "admin", iat: now, exp: now + 60 * 15 })
+  );
+  const data = `${header}.${payload}`;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(JWT_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(data));
+  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig)))
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+  return `${data}.${sigB64}`;
+}
+
+/// Enveloppe une réponse OK avec un fresh_token (sliding session).
+/// Toutes les écritures réussies passent par ici.
+async function jsonWithFreshToken(obj: unknown) {
+  const freshToken = await makeJwt();
+  return json({ ...obj as Record<string, unknown>, fresh_token: freshToken });
+}
+
 // --- Vérification du jeton JWT admin ---
 // Le jeton admin est transmis via le header personnalisé `X-Admin-Token`
 // (et NON `Authorization`, réservé par la passerelle Supabase pour l'auth
@@ -154,7 +187,7 @@ serve(async (req) => {
         .select()
         .single();
       if (error) return json({ error: error.message }, 400);
-      return json({ game: data });
+      return await jsonWithFreshToken({ game: data });
     }
 
     if (route === "games/delete") {
@@ -170,7 +203,7 @@ serve(async (req) => {
       await supabase.from("favorite_games").delete().eq("game_id", gameId);
       const { error } = await supabase.from("games").delete().eq("id", gameId);
       if (error) return json({ error: error.message }, 400);
-      return json({ ok: true });
+      return await jsonWithFreshToken({ ok: true });
     }
 
     // ======================================================================
@@ -193,7 +226,7 @@ serve(async (req) => {
         .select()
         .single();
       if (error) return json({ error: error.message }, 400);
-      return json({ content: data });
+      return await jsonWithFreshToken({ content: data });
     }
 
     if (route === "contents/delete") {
@@ -211,7 +244,7 @@ serve(async (req) => {
         .delete()
         .eq("id", contentId);
       if (error) return json({ error: error.message }, 400);
-      return json({ ok: true });
+      return await jsonWithFreshToken({ ok: true });
     }
 
     // ======================================================================
@@ -244,7 +277,7 @@ serve(async (req) => {
         .update({ status: "accepted" })
         .eq("id", suggestionId);
       if (use) return json({ error: use.message }, 400);
-      return json({ ok: true });
+      return await jsonWithFreshToken({ ok: true });
     }
 
     if (route === "suggestions/reject") {
@@ -253,7 +286,7 @@ serve(async (req) => {
         .update({ status: "rejected" })
         .eq("id", body.id);
       if (error) return json({ error: error.message }, 400);
-      return json({ ok: true });
+      return await jsonWithFreshToken({ ok: true });
     }
 
     if (route === "suggestions/ai-recommend") {
@@ -276,7 +309,7 @@ serve(async (req) => {
         .update({ ai_recommendation: recommendation })
         .eq("id", suggestionId);
       if (error) return json({ error: error.message }, 400);
-      return json({ ok: true });
+      return await jsonWithFreshToken({ ok: true });
     }
 
     // ======================================================================
@@ -288,7 +321,7 @@ serve(async (req) => {
         .update({ is_banned: true, ban_reason: body.reason ?? "Modération" })
         .eq("id", body.user_id);
       if (error) return json({ error: error.message }, 400);
-      return json({ ok: true });
+      return await jsonWithFreshToken({ ok: true });
     }
 
     if (route === "profiles/unban") {
@@ -297,7 +330,7 @@ serve(async (req) => {
         .update({ is_banned: false, ban_reason: null })
         .eq("id", body.user_id);
       if (error) return json({ error: error.message }, 400);
-      return json({ ok: true });
+      return await jsonWithFreshToken({ ok: true });
     }
 
     // ======================================================================
@@ -319,7 +352,7 @@ serve(async (req) => {
         .select()
         .single();
       if (error) return json({ error: error.message }, 400);
-      return json({ subscription: data });
+      return await jsonWithFreshToken({ subscription: data });
     }
 
     // Route inconnue.

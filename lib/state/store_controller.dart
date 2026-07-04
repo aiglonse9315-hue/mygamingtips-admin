@@ -36,6 +36,11 @@ class StoreController extends ChangeNotifier {
   StoreController(this._store, {this.sync}) {
     _store.ensureInitialized();
     _reload();
+    // Branche le sliding session : chaque écriture réussie renvoie un
+    // fresh_token que le client propage au AuthService.
+    sync?.onTokenRefreshed = (freshToken) {
+      onTokenRefreshed?.call(freshToken);
+    };
     // En mode production, on synchronise immédiatement avec Supabase.
     if (sync != null) {
       // sync async sans bloquer l'init ; _reload() a déjà chargé le cache.
@@ -67,6 +72,10 @@ class StoreController extends ChangeNotifier {
   /// Callback invoqué quand une écriture reçoit un 401 (token expiré/invalide).
   /// Le `admin_shell` s'y branche pour forcer le logout automatique.
   void Function()? onAuthError;
+
+  /// Callback invoqué quand l'Edge Function renvoie un `fresh_token`
+  /// (sliding session). Le `admin_shell` s'y branche pour rafraîchir le token.
+  void Function(String freshToken)? onTokenRefreshed;
 
   /// Efface l'erreur de synchronisation affichée.
   void clearSyncError() {

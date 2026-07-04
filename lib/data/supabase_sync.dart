@@ -45,6 +45,11 @@ class SupabaseSync {
   /// URL de l'Edge Function admin-catalog.
   final String catalogEndpoint;
 
+  /// Callback invoqué quand l'Edge Function renvoie un `fresh_token`
+  /// (sliding session). Le client remplace son token courant pour prolonger
+  /// la session de 15 min à chaque écriture réussie.
+  void Function(String freshToken)? onTokenRefreshed;
+
   /// Jeton JWT admin (obtenu via admin-login, mis à jour après login).
   /// Vide tant que l'admin n'est pas connecté → les écritures échoueront.
   String adminToken;
@@ -255,6 +260,14 @@ class SupabaseSync {
         );
       }
       throw Exception(data['error'] ?? 'Erreur serveur (${res.statusCode})');
+    }
+    // Sliding session : si la réponse contient un fresh_token, on notifie
+    // le client pour qu'il remplace son token (prolongation 15 min).
+    final freshToken = data['fresh_token'];
+    if (freshToken is String && freshToken.isNotEmpty) {
+      onTokenRefreshed?.call(freshToken);
+      // Retire le fresh_token des données pour ne pas polluer les modèles.
+      data.remove('fresh_token');
     }
     return data;
   }
