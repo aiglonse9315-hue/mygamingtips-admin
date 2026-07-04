@@ -11,6 +11,7 @@ import 'contributors_screen.dart';
 import 'dashboard_screen.dart';
 import 'games_screen.dart';
 import 'login_screen.dart';
+import 'sentinelle_screen.dart';
 import 'suggestions_screen.dart';
 
 /// Shell du panneau admin : sidebar + topbar + contenu (route courante).
@@ -32,6 +33,7 @@ class _AdminShellState extends State<AdminShell> {
     NavItem('Jeux', Icons.sports_esports_rounded, '/games'),
     NavItem('Contenus', Icons.collections_bookmark_rounded, '/contents'),
     NavItem('Suggestions', Icons.inbox_rounded, '/suggestions'),
+    NavItem('Sentinelle', Icons.smart_toy_rounded, '/sentinelle'),
     NavItem('Contributeurs', Icons.groups_rounded, '/contributors'),
   ];
 
@@ -116,6 +118,8 @@ class _AdminShellState extends State<AdminShell> {
         return const ContentsScreen();
       case '/suggestions':
         return const SuggestionsScreen();
+      case '/sentinelle':
+        return const SentinelleScreen();
       case '/contributors':
         return const ContributorsScreen();
       default:

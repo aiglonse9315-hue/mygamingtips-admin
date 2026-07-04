@@ -146,7 +146,9 @@ class SupabaseSync {
         .toList();
   }
 
-  /// Récupère toutes les suggestions (tous statuts) avec le profil auteur.
+  /// Récupère les suggestions NON encore analysées par Sentinelle (sans
+  /// `ai_recommendation`). Ces suggestions apparaissent dans le menu
+  /// "Suggestions" classique en attendant l'analyse IA.
   ///
   /// La table `suggestions` ne stocke que `author_id` (UUID) ; on utilise la
   /// fonction de jointure PostgREST pour récupérer le profil (displayName,
@@ -155,6 +157,7 @@ class SupabaseSync {
     final Uri uri = Uri.parse(
       '$supabaseUrl/rest/v1/suggestions'
       '?select=*,author:profiles(id,display_name,avatar_preset)'
+      '&ai_recommendation=is.null'
       '&order=shared_at.desc',
     );
     final http.Response res = await http.get(uri, headers: _anonHeaders);
@@ -165,7 +168,43 @@ class SupabaseSync {
     final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
     return rows.map((r) {
       final row = r as Map<String, dynamic>;
-      // Construit l'objet author attendu par Suggestion.fromJson.
+      final authorData = row['author'];
+      final Map<String, dynamic> authorObj = authorData is Map
+          ? {
+              'id': authorData['id'] ?? row['author_id'] ?? '',
+              'displayName':
+                  authorData['display_name'] ?? 'Inconnu',
+              'avatarUrl': authorData['avatar_preset'],
+            }
+          : {
+              'id': row['author_id'] ?? '',
+              'displayName': 'Inconnu',
+            };
+      final Map<String, dynamic> mapped = _camelRow(row);
+      mapped['author'] = authorObj;
+      return Suggestion.fromJson(mapped);
+    }).toList();
+  }
+
+  /// Récupère les suggestions DÉJÀ analysées par Sentinelle (avec
+  /// `ai_recommendation` non null). Ces suggestions apparaissent dans le menu
+  /// "Sentinelle" où l'admin peut les implémenter en 1 clic ou les vérifier.
+  Future<List<Suggestion>> fetchSentinelleSuggestions() async {
+    final Uri uri = Uri.parse(
+      '$supabaseUrl/rest/v1/suggestions'
+      '?select=*,author:profiles(id,display_name,avatar_preset)'
+      '&ai_recommendation=not.is.null'
+      '&status=eq.pending'
+      '&order=shared_at.desc',
+    );
+    final http.Response res = await http.get(uri, headers: _anonHeaders);
+    if (res.statusCode != 200) {
+      throw Exception(
+          'fetchSentinelleSuggestions échec ${res.statusCode}: ${res.body}');
+    }
+    final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
+    return rows.map((r) {
+      final row = r as Map<String, dynamic>;
       final authorData = row['author'];
       final Map<String, dynamic> authorObj = authorData is Map
           ? {

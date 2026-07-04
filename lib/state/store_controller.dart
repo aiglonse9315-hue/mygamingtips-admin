@@ -92,6 +92,7 @@ class StoreController extends ChangeNotifier {
   List<Game> _games = <Game>[];
   List<Content> _contents = <Content>[];
   List<Suggestion> _suggestions = <Suggestion>[];
+  List<Suggestion> _sentinelleSuggestions = <Suggestion>[];
   List<BannedUser> _banned = <BannedUser>[];
   List<PlusUser> _plus = <PlusUser>[];
 
@@ -99,6 +100,28 @@ class StoreController extends ChangeNotifier {
   List<Content> get contents => List<Content>.unmodifiable(_contents);
   List<Suggestion> get suggestions =>
       List<Suggestion>.unmodifiable(_suggestions);
+
+  /// Suggestions analysées par Sentinelle (menu Sentinelle dédié).
+  List<Suggestion> get sentinelleSuggestions =>
+      List<Suggestion>.unmodifiable(_sentinelleSuggestions);
+
+  /// Suggestions Sentinelle avec verdict "recommended" ET confiance ≥ 0.9.
+  /// Ce sont les suggestions "99% sûr" implémentables en 1 clic.
+  List<Suggestion> get sentinelleTrusted => _sentinelleSuggestions
+      .where((s) =>
+          s.aiRecommendation != null &&
+          s.aiRecommendation!.verdict == AiVerdict.recommended &&
+          s.aiRecommendation!.confidence >= 0.9)
+      .toList();
+
+  /// Suggestions Sentinelle "à vérifier" (caution, reject, ou confiance < 0.9).
+  List<Suggestion> get sentinelleToVerify => _sentinelleSuggestions
+      .where((s) =>
+          s.aiRecommendation == null ||
+          s.aiRecommendation!.verdict != AiVerdict.recommended ||
+          s.aiRecommendation!.confidence < 0.9)
+      .toList();
+
   List<BannedUser> get banned => List<BannedUser>.unmodifiable(_banned);
   List<PlusUser> get plus => List<PlusUser>.unmodifiable(_plus);
   int get activePlusCount =>
@@ -399,6 +422,125 @@ class StoreController extends ChangeNotifier {
     }
   }
 
+  // ---------- Sentinelle (menu dédié) ----------
+
+  /// Implémente une suggestion Sentinelle en 1 clic.
+  ///
+  /// Utilise le jeu et la catégorie suggérés par l'IA. Si l'IA n'a pas proposé
+  /// de catégorie, on déduit 'video' si l'URL est YouTube, sinon 'links'.
+  /// La suggestion est ensuite retirée de la liste Sentinelle.
+  Future<void> acceptOneClick(Suggestion suggestion) async {
+    final ai = suggestion.aiRecommendation;
+    if (ai == null) {
+      lastActionError = 'Pas d\'analyse IA pour cette suggestion.';
+      notifyListeners();
+      return;
+    }
+
+    // Détermine le jeu : on cherche un jeu existant dont le nom correspond
+    // à la suggestion de l'IA, sinon on prend le premier jeu disponible.
+    final suggestedName = ai.suggestedGame?.toLowerCase();
+    Game? targetGame;
+    if (suggestedName != null) {
+      try {
+        targetGame = _games.firstWhere(
+          (g) => g.name.toLowerCase() == suggestedName,
+        );
+      } catch (_) {
+        targetGame = _games.isNotEmpty ? _games.first : null;
+      }
+    } else if (_games.isNotEmpty) {
+      targetGame = _games.first;
+    }
+    if (targetGame == null) {
+      lastActionError = 'Aucun jeu dans le catalogue pour implémenter.';
+      notifyListeners();
+      return;
+    }
+
+    // Détermine la catégorie depuis la suggestion IA.
+    final category = _categoryFromAi(ai.suggestedCategory, suggestion.url);
+
+    // Retire la suggestion de la liste Sentinelle (optimiste).
+    _sentinelleSuggestions = _sentinelleSuggestions
+        .where((s) => s.id != suggestion.id)
+        .toList();
+    notifyListeners();
+
+    if (sync == null) return;
+    try {
+      await sync!.acceptSuggestion(
+        suggestionId: suggestion.id,
+        gameId: targetGame.id,
+        category: category,
+        titleAdmin: _cleanTitle(suggestion),
+        isVideo: category == ContentCategory.video,
+      );
+      // Resync pour récupérer le contenu créé côté serveur.
+      await syncFromSupabase();
+    } catch (e) {
+      // Rollback : remet la suggestion dans Sentinelle.
+      _sentinelleSuggestions = [..._sentinelleSuggestions, suggestion];
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
+      lastActionError = 'Implémentation échouée (erreur serveur) : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Rejette une suggestion Sentinelle (la retire du menu).
+  Future<void> rejectSentinelle(Suggestion suggestion) async {
+    // Retire la suggestion de la liste Sentinelle (optimiste).
+    _sentinelleSuggestions = _sentinelleSuggestions
+        .where((s) => s.id != suggestion.id)
+        .toList();
+    notifyListeners();
+    if (sync == null) return;
+    try {
+      await sync!.rejectSuggestion(suggestion.id);
+    } catch (e) {
+      // Rollback : remet la suggestion dans Sentinelle.
+      _sentinelleSuggestions = [..._sentinelleSuggestions, suggestion];
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
+      lastActionError = 'Rejet Sentinelle échoué : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Catégorie déduite depuis la suggestion IA ou l'URL.
+  static ContentCategory _categoryFromAi(String? suggested, String url) {
+    switch (suggested?.toLowerCase()) {
+      case 'video':
+        return ContentCategory.video;
+      case 'guides':
+      case 'guide':
+        return ContentCategory.guides;
+      case 'links':
+      case 'link':
+        return ContentCategory.links;
+      default:
+        if (url.contains('youtube') || url.contains('youtu.be')) {
+          return ContentCategory.video;
+        }
+        return ContentCategory.links;
+    }
+  }
+
+  /// Nettoie le texte partagé pour en faire un titre propre.
+  static String _cleanTitle(Suggestion s) {
+    final shared = s.sharedText;
+    if (shared != null && shared.trim().isNotEmpty) {
+      final cleaned = shared.replaceAll(RegExp(r'https?://[^\s]+'), '').trim();
+      return cleaned.isEmpty ? shared : cleaned;
+    }
+    return s.url;
+  }
+
   // ---------- Bannissement ----------
   /// Bannit le compte auteur d'une suggestion (modération disciplinaire).
   Future<void> banAuthor(Suggestion suggestion, {String? reason}) async {
@@ -615,6 +757,7 @@ class StoreController extends ChangeNotifier {
       final games = await sync!.fetchGames();
       final contents = await sync!.fetchContents();
       final suggestions = await sync!.fetchSuggestions();
+      final sentinelleSuggestions = await sync!.fetchSentinelleSuggestions();
 
       // --- Fusion : conserve les entrées locales non encore synchronisées
       //     (ID temporaire) et ajoute les données serveur. ---
@@ -632,6 +775,9 @@ class StoreController extends ChangeNotifier {
           .where((s) => !_isUuid(s.id))
           .toList();
       _suggestions = [...suggestions, ...pendingSuggestions];
+
+      // Suggestions Sentinelle (analysées par IA, en attente de validation).
+      _sentinelleSuggestions = sentinelleSuggestions;
 
       // Met à jour le cache local pour les lectures hors-ligne.
       _store.saveGames(_games);
