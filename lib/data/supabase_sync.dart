@@ -280,7 +280,10 @@ class SupabaseSync {
       'cover_url': game.coverUrl,
       'active': game.active,
     });
-    return Game.fromJson(data['game'] as Map<String, dynamic>);
+    // L'Edge Function renvoie la ligne Supabase brute (snake_case) → on
+    // convertit en camelCase avant de la passer au modèle.
+    final row = data['game'] as Map<String, dynamic>;
+    return Game.fromJson(_camelRow(row));
   }
 
   Future<void> deleteGame(String id) async {
@@ -299,7 +302,10 @@ class SupabaseSync {
       'validated': content.validated,
       'is_video': content.isVideo,
     });
-    return Content.fromJson(data['content'] as Map<String, dynamic>);
+    // L'Edge Function renvoie la ligne Supabase brute (snake_case) → on
+    // convertit en camelCase avant de la passer au modèle.
+    final row = data['content'] as Map<String, dynamic>;
+    return Content.fromJson(_camelRow(row));
   }
 
   Future<void> deleteContent(String id) async {
