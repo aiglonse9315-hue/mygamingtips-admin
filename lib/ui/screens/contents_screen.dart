@@ -153,7 +153,7 @@ class _ContentsScreenState extends State<ContentsScreen> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           IconButton(
-                            tooltip: 'Modifier le titre',
+                            tooltip: 'Modifier le titre et l\'URL',
                             icon: const Icon(Icons.edit_outlined, size: 20),
                             onPressed: () => _showContentDialog(context, c),
                           ),
@@ -300,8 +300,6 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
     _title = TextEditingController(
         text: widget.content?.titleAdmin ?? widget.content?.titleSource ?? '');
     _image = TextEditingController(text: widget.content?.imageUrl ?? '');
-    // En édition, pré-remplit l'URL du contenu existant.
-    _url = TextEditingController(text: widget.content?.url ?? '');
     _gameId = widget.content?.gameId;
     _category = widget.content?.category ?? ContentCategory.video;
   }
