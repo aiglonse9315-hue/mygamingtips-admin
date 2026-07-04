@@ -184,13 +184,28 @@ class _TrustedTable extends StatelessWidget {
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
     return AdminDataTable(
-      columns: const ['Titre', 'Jeu IA', 'Catégorie', 'Confiance', 'Vues', 'Actions'],
+      columns: const ['Titre', 'Titre pour insertion', 'Jeu IA', 'Catégorie', 'Confiance', 'Vues', 'Actions'],
       rows: suggestions.map((s) {
         final ai = s.aiRecommendation!;
         return [
           Text(_cleanTitle(s),
               style:
                   const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+          // Titre réel de la vidéo YouTube (pour insertion 1 clic).
+          Container(
+            constraints: const BoxConstraints(maxWidth: 200),
+            child: Text(
+              ai.youtubeTitle ?? _cleanTitle(s),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                  color: ai.youtubeTitle != null
+                      ? AppColors.neonCyan
+                      : Theme.of(context).textTheme.bodySmall?.color),
+            ),
+          ),
           Text(ai.suggestedGame ?? '—',
               style: TextStyle(
                   fontSize: 12,
@@ -263,7 +278,7 @@ class _ToVerifyTable extends StatelessWidget {
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
     return AdminDataTable(
-      columns: const ['Titre', 'Verdict IA', 'Raison', 'Confiance', 'Actions'],
+      columns: const ['Titre', 'Titre pour insertion', 'Verdict IA', 'Raison', 'Confiance', 'Actions'],
       rows: suggestions.map((s) {
         final ai = s.aiRecommendation;
         final isReject = ai?.verdict == AiVerdict.reject;
@@ -271,6 +286,21 @@ class _ToVerifyTable extends StatelessWidget {
           Text(_cleanTitle(s),
               style:
                   const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+          // Titre réel de la vidéo YouTube (pour insertion manuelle).
+          Container(
+            constraints: const BoxConstraints(maxWidth: 200),
+            child: Text(
+              ai?.youtubeTitle ?? _cleanTitle(s),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                  color: ai?.youtubeTitle != null
+                      ? AppColors.neonCyan
+                      : Theme.of(context).textTheme.bodySmall?.color),
+            ),
+          ),
           ai == null
               ? const Text('—')
               : StatusBadge(

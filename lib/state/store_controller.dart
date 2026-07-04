@@ -559,7 +559,7 @@ class StoreController extends ChangeNotifier {
         suggestionId: suggestion.id,
         gameId: targetGame.id,
         category: category,
-        titleAdmin: _cleanTitle(suggestion),
+        titleAdmin: _titleForInsertion(suggestion),
         isVideo: category == ContentCategory.video,
       );
       // Resync pour récupérer le contenu créé côté serveur + le nouveau jeu.
@@ -625,6 +625,22 @@ class StoreController extends ChangeNotifier {
       return cleaned.isEmpty ? shared : cleaned;
     }
     return s.url;
+  }
+
+  /// Détermine le meilleur titre pour l'insertion d'un contenu.
+  ///
+  /// Priorité :
+  /// 1. Titre réel YouTube (récupéré par Sentinelle via l'API YouTube)
+  /// 2. Texte partagé nettoyé (sans URL)
+  /// 3. URL brute
+  static String _titleForInsertion(Suggestion s) {
+    // 1. Titre YouTube réel (le plus fiable).
+    final ytTitle = s.aiRecommendation?.youtubeTitle;
+    if (ytTitle != null && ytTitle.trim().isNotEmpty) {
+      return ytTitle.trim();
+    }
+    // 2. Fallback : texte partagé nettoyé.
+    return _cleanTitle(s);
   }
 
   // ---------- Bannissement ----------

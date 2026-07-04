@@ -403,21 +403,26 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
   @override
   void initState() {
     super.initState();
-    // Pré-remplissage intelligent du titre : on retire l'URL éventuelle du
-    // shared_text pour ne garder que le vrai titre.
+    // Pré-remplissage intelligent du titre (par ordre de priorité) :
+    // 1. Titre réel YouTube (récupéré par Sentinelle via l'API YouTube).
+    // 2. Texte partagé nettoyé (sans URL).
+    // 3. URL brute.
+    final ai = widget.suggestion.aiRecommendation;
     String title = widget.suggestion.url;
-    final sharedText = widget.suggestion.sharedText;
-    if (sharedText != null && sharedText.trim().isNotEmpty) {
-      final cleaned =
-          sharedText.replaceAll(RegExp(r'https?://[^\s]+'), '').trim();
-      title = cleaned.isEmpty ? sharedText : cleaned;
+    if (ai != null && ai.youtubeTitle != null && ai.youtubeTitle!.trim().isNotEmpty) {
+      title = ai.youtubeTitle!.trim();
+    } else {
+      final sharedText = widget.suggestion.sharedText;
+      if (sharedText != null && sharedText.trim().isNotEmpty) {
+        final cleaned =
+            sharedText.replaceAll(RegExp(r'https?://[^\s]+'), '').trim();
+        title = cleaned.isEmpty ? sharedText : cleaned;
+      }
     }
     _title = TextEditingController(text: title);
     _image = TextEditingController();
 
-    // Auto-remplissage depuis la recommandation IA (catégorie seulement ici,
-    // le jeu nécessite la liste des jeux qui est lue dans build).
-    final ai = widget.suggestion.aiRecommendation;
+    // Auto-remplissage de la catégorie depuis la recommandation IA.
     if (ai != null && ai.suggestedCategory != null) {
       final cat = ContentCategory.values.firstWhere(
         (e) => e.name == ai.suggestedCategory,
