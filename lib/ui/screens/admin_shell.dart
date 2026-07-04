@@ -27,6 +27,7 @@ class AdminShell extends StatefulWidget {
 
 class _AdminShellState extends State<AdminShell> {
   String _route = '/dashboard';
+  bool _loadingAfterLogin = false;
 
   static const List<NavItem> _items = [
     NavItem('Dashboard', Icons.dashboard_rounded, '/dashboard'),
@@ -129,6 +130,20 @@ class _AdminShellState extends State<AdminShell> {
 
   void _go(String route) => setState(() => _route = route);
 
+  /// Effectue un refresh complet après login puis masque l'écran de chargement.
+  ///
+  /// Garantit que les données locales sont synchronisées avec le serveur AVANT
+  /// que l'admin ne voie le dashboard (évite les données obsolètes du cache).
+  Future<void> _doPostLoginRefresh(
+      StoreController store, AuthController auth) async {
+    // Pousse le token pour autoriser les écritures.
+    store.updateAdminToken(auth.token);
+    // Refresh complet (avec timeout interne de 15s).
+    await store.syncFromSupabase();
+    // Masque l'écran de chargement.
+    if (mounted) setState(() => _loadingAfterLogin = false);
+  }
+
   @override
   Widget build(BuildContext context) {
     final AuthController auth = context.watch<AuthController>();
@@ -140,7 +155,18 @@ class _AdminShellState extends State<AdminShell> {
       if (store.sync != null) {
         store.updateAdminToken(null);
       }
-      return LoginScreen(onSuccess: () => setState(() {}));
+      _loadingAfterLogin = false;
+      return LoginScreen(onSuccess: () {
+        // Après un login réussi : force un refresh complet avant d'afficher
+        // le dashboard. On affiche un écran de chargement pendant ce temps.
+        setState(() => _loadingAfterLogin = true);
+        _doPostLoginRefresh(store, auth);
+      });
+    }
+
+    // Écran de chargement pendant le refresh post-login.
+    if (_loadingAfterLogin) {
+      return const _LoadingScreen();
     }
 
     // Au login : on pousse le jeton admin vers le StoreController pour
@@ -198,6 +224,41 @@ class _AdminShellState extends State<AdminShell> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Écran de chargement affiché pendant le refresh post-login.
+///
+/// Garantit que les données sont synchronisées avec le serveur avant que
+/// l'admin ne voie le dashboard, évitant les données obsolètes du cache
+/// (ex: nouveau menu Sentinelle pas encore visible).
+class _LoadingScreen extends StatelessWidget {
+  const _LoadingScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 48,
+              height: 48,
+              child: CircularProgressIndicator(strokeWidth: 3),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'Synchronisation des données…',
+              style: TextStyle(
+                fontSize: 14,
+                color: Theme.of(context).textTheme.bodySmall?.color,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../data/store.dart';
@@ -744,47 +746,38 @@ class StoreController extends ChangeNotifier {
   /// locales **uniquement pour les entrées déjà synchronisées** (UUID valide).
   /// Les entrées locales en attente (ID temporaire) sont conservées jusqu'à
   /// confirmation de leur écriture.
+  ///
+  /// **Anti-réentrance** : si un sync est déjà en cours, on ATTEND qu'il
+  /// termine au lieu de retourner immédiatement (évite le spinner bloqué).
+  /// **Timeout** : si une requête ne répond pas en 15s, on abandonne et on
+  /// débloque l'UI (évite le spinner infini).
   Future<void> syncFromSupabase() async {
     if (sync == null) return;
-    // Garde anti-réentrance.
-    if (_syncing) return;
+    // Garde anti-réentrance : si un sync est déjà en cours, on attend qu'il
+    // termine (au lieu de retourner silencieusement et laisser l'UI croire
+    // qu'un sync est en cours alors qu'il ne se passe rien).
+    if (_syncing) {
+      // Attend que le sync en cours se termine (avec un timeout de sécurité).
+      int attempts = 0;
+      while (_syncing && attempts < 150) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        attempts++;
+      }
+      return;
+    }
     _syncing = true;
     isSyncing = true;
     // ⚠️ On NE remet pas syncError à null ici : cela effacerait une erreur
     // d'action récente. On l'efface seulement si la sync réussit.
     notifyListeners();
     try {
-      final games = await sync!.fetchGames();
-      final contents = await sync!.fetchContents();
-      final suggestions = await sync!.fetchSuggestions();
-      final sentinelleSuggestions = await sync!.fetchSentinelleSuggestions();
-
-      // --- Fusion : conserve les entrées locales non encore synchronisées
-      //     (ID temporaire) et ajoute les données serveur. ---
-      final pendingGames = _games
-          .where((g) => !_isUuid(g.id))
-          .toList();
-      _games = [...games, ...pendingGames]..sort(_byName);
-
-      final pendingContents = _contents
-          .where((c) => !_isUuid(c.id))
-          .toList();
-      _contents = [...contents, ...pendingContents];
-
-      final pendingSuggestions = _suggestions
-          .where((s) => !_isUuid(s.id))
-          .toList();
-      _suggestions = [...suggestions, ...pendingSuggestions];
-
-      // Suggestions Sentinelle (analysées par IA, en attente de validation).
-      _sentinelleSuggestions = sentinelleSuggestions;
-
-      // Met à jour le cache local pour les lectures hors-ligne.
-      _store.saveGames(_games);
-      _store.saveContents(_contents);
-      _store.saveSuggestions(_suggestions);
-      // Sync réussie : on efface l'erreur de sync (pas l'erreur d'action).
-      syncError = null;
+      // Timeout global de 15s : si une requête pend, on abandonne proprement.
+      await _doSyncFromSupabase().timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          throw TimeoutException('Synchronisation Supabase expirée (15s).');
+        },
+      );
     } catch (e) {
       syncError = e.toString();
     } finally {
@@ -792,6 +785,42 @@ class StoreController extends ChangeNotifier {
       isSyncing = false;
       notifyListeners();
     }
+  }
+
+  /// Effectue réellement la sync (sans la garde ni le timeout — appelé par
+  /// [syncFromSupabase]).
+  Future<void> _doSyncFromSupabase() async {
+    final games = await sync!.fetchGames();
+    final contents = await sync!.fetchContents();
+    final suggestions = await sync!.fetchSuggestions();
+    final sentinelleSuggestions = await sync!.fetchSentinelleSuggestions();
+
+    // --- Fusion : conserve les entrées locales non encore synchronisées
+    //     (ID temporaire) et ajoute les données serveur. ---
+    final pendingGames = _games
+        .where((g) => !_isUuid(g.id))
+        .toList();
+    _games = [...games, ...pendingGames]..sort(_byName);
+
+    final pendingContents = _contents
+        .where((c) => !_isUuid(c.id))
+        .toList();
+    _contents = [...contents, ...pendingContents];
+
+    final pendingSuggestions = _suggestions
+        .where((s) => !_isUuid(s.id))
+        .toList();
+    _suggestions = [...suggestions, ...pendingSuggestions];
+
+    // Suggestions Sentinelle (analysées par IA, en attente de validation).
+    _sentinelleSuggestions = sentinelleSuggestions;
+
+    // Met à jour le cache local pour les lectures hors-ligne.
+    _store.saveGames(_games);
+    _store.saveContents(_contents);
+    _store.saveSuggestions(_suggestions);
+    // Sync réussie : on efface l'erreur de sync (pas l'erreur d'action).
+    syncError = null;
   }
 
   /// Vrai UUID Supabase ? (36 caractères, format xxxxxxxx-xxxx-...).
