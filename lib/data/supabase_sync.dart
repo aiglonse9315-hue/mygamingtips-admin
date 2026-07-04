@@ -7,6 +7,17 @@ import '../domain/models/content.dart';
 import '../domain/models/game.dart';
 import '../domain/models/suggestion.dart';
 
+/// Exception levée quand le token admin est expiré ou invalide (HTTP 401).
+///
+/// Permet au `StoreController` de détecter ce cas spécifique et de forcer le
+/// logout automatique, plutôt que d'afficher une simple erreur d'action.
+class AdminAuthException implements Exception {
+  const AdminAuthException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
 /// Synchronisation entre le panneau admin et Supabase.
 ///
 /// **Lectures** : via l'API REST PostgREST (anon key suffit grâce aux
@@ -236,6 +247,13 @@ class SupabaseSync {
     final Map<String, dynamic> data =
         jsonDecode(res.body) as Map<String, dynamic>;
     if (res.statusCode >= 400) {
+      // 401 = token admin expiré ou invalide → exception spécialisée pour
+      // permettre au StoreController de forcer le logout.
+      if (res.statusCode == 401) {
+        throw AdminAuthException(
+          data['error']?.toString() ?? 'Session expirée',
+        );
+      }
       throw Exception(data['error'] ?? 'Erreur serveur (${res.statusCode})');
     }
     return data;

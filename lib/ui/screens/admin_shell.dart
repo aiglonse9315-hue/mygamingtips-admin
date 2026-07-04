@@ -42,6 +42,8 @@ class _AdminShellState extends State<AdminShell> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final store = context.read<StoreController>();
       store.addListener(_onStoreChanged);
+      // Connexion du callback de logout auto sur 401 (token expiré).
+      store.onAuthError = _onAuthError;
     });
   }
 
@@ -49,7 +51,9 @@ class _AdminShellState extends State<AdminShell> {
   void dispose() {
     // Retire le listener proprement (store peut être déjà disposé en tests).
     try {
-      context.read<StoreController>().removeListener(_onStoreChanged);
+      final store = context.read<StoreController>();
+      store.removeListener(_onStoreChanged);
+      store.onAuthError = null;
     } catch (_) {}
     super.dispose();
   }
@@ -76,6 +80,21 @@ class _AdminShellState extends State<AdminShell> {
         ),
       );
     }
+  }
+
+  /// Appelé quand une écriture reçoit un 401 (token admin expiré/invalide).
+  /// Force le logout et notifie l'utilisateur.
+  void _onAuthError() {
+    if (!mounted) return;
+    final auth = context.read<AuthController>();
+    auth.logout();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Session expirée. Veuillez vous reconnecter.'),
+        backgroundColor: Colors.orange.shade700,
+        duration: const Duration(seconds: 4),
+      ),
+    );
   }
 
   String get _title {

@@ -18,6 +18,9 @@ import 'package:http/http.dart' as http;
 ///   consultable depuis la console navigateur pour audit.
 /// - **Stockage du jeton** : jamais les credentials, uniquement le jeton de
 ///   session (court terme, à valider côté serveur à chaque requête sensible).
+/// - **Vérification d'expiration JWT côté client** : le jeton est décodé au
+///   restore et son `exp` est contrôlé. Un timer auto-logout déconnecte dès
+///   que le jeton expire (même sans activité).
 ///
 /// **Mode aperçu local (démo)** : activé UNIQUEMENT via le flag de compilation
 /// `--dart-define=MGT_ADMIN_PREVIEW=true`. En production (sans ce flag), aucune
@@ -51,7 +54,17 @@ class AuthService {
 
   String? _token;
   String? get token => _token;
-  bool get isAuthenticated => _token != null;
+
+  /// Timer d'auto-logout : déconnecte automatiquement quand le JWT expire.
+  Timer? _expiryTimer;
+
+  /// Vrai uniquement si un jeton est présent ET non expiré.
+  bool get isAuthenticated {
+    if (_token == null) return false;
+    // En mode aperçu, le jeton factice n'a pas de structure JWT → on accepte.
+    if (previewMode) return true;
+    return !_isTokenExpired(_token!);
+  }
 
   // --- Limitation des tentatives ---
   int _failedAttempts = 0;
@@ -61,9 +74,32 @@ class AuthService {
   final List<AuthLogEntry> _log = <AuthLogEntry>[];
   List<AuthLogEntry> get log => List<AuthLogEntry>.unmodifiable(_log);
 
+  /// Callback invoqué quand le jeton expire (pour forcer le logout côté UI).
+  void Function()? onTokenExpired;
+
   /// Restaure la session éventuelle (jeton) au démarrage.
+  ///
+  /// ⚠️ Vérifie l'expiration du JWT : un jeton expiré est immédiatement
+  /// purgé du localStorage (l'utilisateur devra se reconnecter).
   void restore() {
-    _token = html.window.localStorage[_kToken];
+    final stored = html.window.localStorage[_kToken];
+    if (stored == null || stored.isEmpty) {
+      _token = null;
+      return;
+    }
+    // En mode aperçu, le jeton factice n'est pas un JWT → on accepte tel quel.
+    if (previewMode) {
+      _token = stored;
+      return;
+    }
+    // Vérifie l'expiration : si expiré, on purge (pas de session fantôme).
+    if (_isTokenExpired(stored)) {
+      html.window.localStorage.remove(_kToken);
+      _token = null;
+      return;
+    }
+    _token = stored;
+    _scheduleAutoLogout(stored);
   }
 
   /// Tente de connecter. Renvoie le résultat (succès + message éventuel).
@@ -75,9 +111,6 @@ class AuthService {
     required String password,
   }) async {
     // 0) Mode aperçu local (démo) : activé UNIQUEMENT au build via dart-define.
-    //    Aucun identifiant n'est vérifié ni stocké — on délivre un jeton
-    //    factice pour permettre de naviguer dans l'interface. En production,
-    //    ce bloc est désactivé (previewMode = false) → auth serveur stricte.
     if (previewMode) {
       _token = 'preview-token-${DateTime.now().millisecondsSinceEpoch}';
       html.window.localStorage[_kToken] = _token!;
@@ -92,9 +125,9 @@ class AuthService {
     if (_lockedUntil != null && DateTime.now().isBefore(_lockedUntil!)) {
       final remaining = _lockedUntil!.difference(DateTime.now());
       _log.add(AuthLogEntry(
-        at: DateTime.now(),
-        success: false,
-        detail: 'refusé (compte bloqué, ${remaining.inSeconds}s restantes)',
+          at: DateTime.now(),
+          success: false,
+          detail: 'refusé (compte bloqué, ${remaining.inSeconds}s restantes)',
       ));
       return AuthResult(
         success: false,
@@ -105,8 +138,6 @@ class AuthService {
 
     try {
       // 2) Appel au backend de vérification.
-      // Le header Authorization (anon key) est requis par la passerelle
-      // Supabase sur tous les appels d'Edge Function, même publiques.
       final Map<String, String> headers = {
         'Content-Type': 'application/json',
         if (anonKey.isNotEmpty) 'Authorization': 'Bearer $anonKey',
@@ -127,6 +158,7 @@ class AuthService {
           _lockedUntil = null;
           _log.add(AuthLogEntry(
               at: DateTime.now(), success: true, detail: 'connexion réussie'));
+          _scheduleAutoLogout(token);
           return const AuthResult(success: true);
         }
       }
@@ -163,9 +195,71 @@ class AuthService {
 
   void logout() {
     _token = null;
+    _expiryTimer?.cancel();
+    _expiryTimer = null;
     html.window.localStorage.remove(_kToken);
     _failedAttempts = 0;
     _lockedUntil = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Vérification d'expiration JWT (côté client)
+  // ---------------------------------------------------------------------------
+
+  /// Décode le payload d'un JWT et vérifie son `exp`.
+  /// Retourne `true` si le jeton est expiré (ou invalide).
+  static bool _isTokenExpired(String jwt) {
+    try {
+      final parts = jwt.split('.');
+      if (parts.length != 3) return true;
+      // Le payload est en base64url (partie 1).
+      final payload = _decodeBase64Url(parts[1]);
+      final claims = jsonDecode(payload) as Map<String, dynamic>;
+      final exp = claims['exp'];
+      if (exp == null) return false; // pas d'exp → on accepte (rare)
+      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      return now >= (exp as num).toInt();
+    } catch (_) {
+      // Jeton malformé → on le considère comme expiré (sécurité par défaut).
+      return true;
+    }
+  }
+
+  /// Décode une chaîne base64url en texte (payload JWT).
+  static String _decodeBase64Url(String b64url) {
+    // Ajoute le padding manquant si nécessaire.
+    final padded = b64url.replaceAll('-', '+').replaceAll('_', '=');
+    final normalized = padded.padRight((padded.length + 3) ~/ 4 * 4, '=');
+    return utf8.decode(base64.decode(normalized));
+  }
+
+  /// Programme un timer qui déconnecte automatiquement à l'expiration du JWT.
+  void _scheduleAutoLogout(String jwt) {
+    _expiryTimer?.cancel();
+    try {
+      final parts = jwt.split('.');
+      if (parts.length != 3) return;
+      final payload = _decodeBase64Url(parts[1]);
+      final claims = jsonDecode(payload) as Map<String, dynamic>;
+      final exp = claims['exp'];
+      if (exp == null) return;
+      final expDate =
+          DateTime.fromMillisecondsSinceEpoch((exp as num).toInt() * 1000);
+      final delay = expDate.difference(DateTime.now());
+      if (delay.isNegative) {
+        // Déjà expiré → logout immédiat.
+        logout();
+        onTokenExpired?.call();
+        return;
+      }
+      // Timer qui se déclenche à l'expiration.
+      _expiryTimer = Timer(delay, () {
+        logout();
+        onTokenExpired?.call();
+      });
+    } catch (_) {
+      // Jeton malformé → on ignore (le getter isAuthenticated gérera l'expiration).
+    }
   }
 
   /// Récupère l'endpoint depuis les variables de build/Dart-define.

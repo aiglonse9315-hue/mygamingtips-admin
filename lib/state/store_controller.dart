@@ -9,6 +9,9 @@ import '../domain/models/game.dart';
 import '../domain/models/plus_user.dart';
 import '../domain/models/suggestion.dart';
 
+/// Détecte si une erreur provient d'un token admin expiré/invalide (HTTP 401).
+bool _isAuthError(Object e) => e is AdminAuthException;
+
 /// Contrôleur applicatif (Provider) gérant l'état du catalogue et des
 /// suggestions.
 ///
@@ -60,6 +63,10 @@ class StoreController extends ChangeNotifier {
 
   /// Dernier token admin connu (pour éviter les resync inutiles).
   String? _lastToken;
+
+  /// Callback invoqué quand une écriture reçoit un 401 (token expiré/invalide).
+  /// Le `admin_shell` s'y branche pour forcer le logout automatique.
+  void Function()? onAuthError;
 
   /// Efface l'erreur de synchronisation affichée.
   void clearSyncError() {
@@ -138,6 +145,10 @@ class StoreController extends ChangeNotifier {
       // Rollback : retire le jeu qui n'a pas pu être synchronisé.
       _games = _games.where((g) => g.id != game.id).toList();
       _store.saveGames(_games);
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
       lastActionError = 'Jeu non ajouté (erreur serveur) : $e';
       notifyListeners();
     }
@@ -188,6 +199,10 @@ class StoreController extends ChangeNotifier {
       _contents = backupContents;
       _store.saveGames(_games);
       _store.saveContents(_contents);
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
       lastActionError = 'Jeu non supprimé (erreur serveur) : $e';
       notifyListeners();
     }
@@ -236,6 +251,10 @@ class StoreController extends ChangeNotifier {
       // Rollback.
       _contents = _contents.where((c) => c.id != content.id).toList();
       _store.saveContents(_contents);
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
       lastActionError = 'Contenu non ajouté (erreur serveur) : $e';
       notifyListeners();
     }
@@ -279,6 +298,10 @@ class StoreController extends ChangeNotifier {
       // Rollback.
       _contents = backup;
       _store.saveContents(_contents);
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
       lastActionError = 'Contenu non supprimé (erreur serveur) : $e';
       notifyListeners();
     }
@@ -333,6 +356,10 @@ class StoreController extends ChangeNotifier {
               : s)
           .toList();
       _store.saveSuggestions(_suggestions);
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
       lastActionError = 'Suggestion non validée (erreur serveur) : $e';
       notifyListeners();
     }
