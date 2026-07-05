@@ -30,7 +30,24 @@ import 'package:http/http.dart' as http;
 /// l'Edge Function d'authentification (cf. GUIDE_DEPLOIEMENT.md §1.7bis).
 class AuthService {
   AuthService({String? endpoint})
-      : endpoint = endpoint ?? _configuredEndpoint();
+      : endpoint = endpoint ?? _configuredEndpoint() {
+    // Restaure le verrou de sécurité au démarrage (persistant en localStorage).
+    final lockRaw = html.window.localStorage[_kLockUntil];
+    if (lockRaw != null) {
+      final lockTime = DateTime.tryParse(lockRaw);
+      if (lockTime != null && DateTime.now().isBefore(lockTime)) {
+        _lockedUntil = lockTime;
+      } else {
+        // Verrou expiré → on nettoie.
+        html.window.localStorage.remove(_kLockUntil);
+        html.window.localStorage.remove(_kFailCount);
+      }
+    }
+    final failRaw = html.window.localStorage[_kFailCount];
+    if (failRaw != null) {
+      _failedAttempts = int.tryParse(failRaw) ?? 0;
+    }
+  }
 
   /// Mode aperçu local (démo) : activé au build via dart-define.
   /// En production ce flag vaut `false` → auth strict serveur obligatoire.
@@ -49,8 +66,10 @@ class AuthService {
   final String endpoint;
 
   static const String _kToken = 'mgt_admin_token';
-  static const int _maxAttempts = 5;
-  static const Duration _lockoutDuration = Duration(minutes: 2);
+  static const String _kLockUntil = 'mgt_admin_lock_until';
+  static const String _kFailCount = 'mgt_admin_fail_count';
+  static const int _maxAttempts = 3;
+  static const Duration _lockoutDuration = Duration(minutes: 5);
 
   String? _token;
   String? get token => _token;
@@ -87,6 +106,12 @@ class AuthService {
       _token = null;
       return;
     }
+    // Si le compte est actuellement bloqué (trop d'échecs), on purge le token.
+    if (_lockedUntil != null && DateTime.now().isBefore(_lockedUntil!)) {
+      html.window.localStorage.remove(_kToken);
+      _token = null;
+      return;
+    }
     // En mode aperçu, le jeton factice n'est pas un JWT → on accepte tel quel.
     if (previewMode) {
       _token = stored;
@@ -100,6 +125,13 @@ class AuthService {
     }
     _token = stored;
     _scheduleAutoLogout(stored);
+  }
+
+  /// Temps restant de blocage (null si non bloqué).
+  Duration? get lockRemaining {
+    if (_lockedUntil == null) return null;
+    final remaining = _lockedUntil!.difference(DateTime.now());
+    return remaining.isNegative ? null : remaining;
   }
 
   /// Tente de connecter. Renvoie le résultat (succès + message éventuel).
@@ -154,8 +186,11 @@ class AuthService {
         if (token != null && token.isNotEmpty) {
           _token = token;
           html.window.localStorage[_kToken] = token;
+          // Réinitialise le compteur d'échecs après succès.
           _failedAttempts = 0;
           _lockedUntil = null;
+          html.window.localStorage.remove(_kLockUntil);
+          html.window.localStorage.remove(_kFailCount);
           _log.add(AuthLogEntry(
               at: DateTime.now(), success: true, detail: 'connexion réussie'));
           _scheduleAutoLogout(token);
@@ -165,8 +200,12 @@ class AuthService {
 
       // 3) Échec : incrémenter le compteur (brute-force protection).
       _failedAttempts += 1;
+      html.window.localStorage[_kFailCount] = _failedAttempts.toString();
       if (_failedAttempts >= _maxAttempts) {
         _lockedUntil = DateTime.now().add(_lockoutDuration);
+        // Persiste le verrou pour qu'il survive aux rafraîchissements.
+        html.window.localStorage[_kLockUntil] =
+            _lockedUntil!.toIso8601String();
         _log.add(AuthLogEntry(
             at: DateTime.now(),
             success: false,
@@ -174,11 +213,16 @@ class AuthService {
       }
       _log.add(AuthLogEntry(
           at: DateTime.now(), success: false, detail: 'identifiants invalides'));
+
+      // Message adaptatif avec compte à rebours.
+      final remaining = _lockedUntil?.difference(DateTime.now());
       return AuthResult(
           success: false,
           message: _failedAttempts >= _maxAttempts
-              ? 'Trop de tentatives. Compte bloqué temporairement.'
-              : 'Identifiants incorrects.');
+              ? (remaining != null && remaining.inMinutes > 0
+                  ? 'Trop de tentatives. Compte bloqué pendant ${remaining.inMinutes} min ${remaining.inSeconds % 60} s.'
+                  : 'Trop de tentatives. Compte bloqué pendant ${remaining?.inSeconds ?? 300} secondes.')
+              : 'Identifiants incorrects. (${_maxAttempts - _failedAttempts} tentative(s) restante(s))');
     } on TimeoutException {
       _log.add(AuthLogEntry(
           at: DateTime.now(), success: false, detail: 'timeout backend'));

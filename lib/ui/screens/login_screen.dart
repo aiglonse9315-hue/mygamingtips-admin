@@ -40,6 +40,9 @@ class _LoginScreenState extends State<LoginScreen> {
         username: _user.text, password: _pass.text);
     if (ok) {
       widget.onSuccess();
+    } else {
+      // Force un rebuild pour afficher le compte à rebours si verrouillé.
+      if (mounted) setState(() {});
     }
     // Le message d'erreur est exposé via auth.error (géré par le contrôleur).
   }

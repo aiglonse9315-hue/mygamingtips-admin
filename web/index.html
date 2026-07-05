@@ -31,6 +31,54 @@
 
   <title>MyGamingTips — Admin</title>
   <link rel="manifest" href="manifest.json">
+
+  <script>
+    // ==========================================================================
+    // Sécurité : désactive le clic droit et les raccourcis développeur
+    // ==========================================================================
+    // Le panneau admin contient des données sensibles (emails, abonnements,
+    // jetons). On complique l'inspection du code source et le débogage.
+    // NOTE : Ces protections ne sont pas invincibles (un utilisateur avancé
+    // peut les contourner), mais elles découragent la curiosité courante.
+    // ==========================================================================
+
+    // Désactive le menu contextuel (clic droit).
+    document.addEventListener('contextmenu', function(e) {
+      e.preventDefault();
+      return false;
+    });
+
+    // Désactive les raccourcis clavier développeur.
+    document.addEventListener('keydown', function(e) {
+      // F12 (Developer Tools).
+      if (e.keyCode === 123) {
+        e.preventDefault();
+        return false;
+      }
+      // Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C (DevTools).
+      if (e.ctrlKey && e.shiftKey && (e.keyCode === 73 || e.keyCode === 74 || e.keyCode === 67)) {
+        e.preventDefault();
+        return false;
+      }
+      // Ctrl+U (View Source).
+      if (e.ctrlKey && e.keyCode === 85) {
+        e.preventDefault();
+        return false;
+      }
+    });
+
+    // Désactive la sélection de texte (rend le copier-coller difficile).
+    document.addEventListener('selectstart', function(e) {
+      e.preventDefault();
+      return false;
+    });
+
+    // Désactive le glisser-déposer d'images (évite l'inspection visuelle).
+    document.addEventListener('dragstart', function(e) {
+      e.preventDefault();
+      return false;
+    });
+  </script>
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>
