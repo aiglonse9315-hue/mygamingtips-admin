@@ -527,6 +527,14 @@ class _AddPlusUserDialogState extends State<_AddPlusUserDialog> {
         return;
       }
       await sync.upsertSubscription(userId: uuid, plan: _plan);
+      // Ajoute l'utilisateur à la liste locale (optimiste) pour qu'il apparaisse
+      // immédiatement dans le dashboard. Sans ça, l'utilisateur est créé côté
+      // Supabase mais invisible dans le panneau admin.
+      store.addPlusByUserId(
+        userId: uuid,
+        displayName: _name.text.trim().isEmpty ? email : _name.text,
+        plan: _plan,
+      );
       if (mounted) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
