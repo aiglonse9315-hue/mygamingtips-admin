@@ -33,7 +33,7 @@ import { serve } from "https://deno.land/std/http/server.ts";
 const JWT_SECRET = Deno.env.get("JWT_SECRET");
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": Deno.env.get("MGT_ADMIN_ORIGIN") ?? "*",
+  "Access-Control-Allow-Origin": Deno.env.get("MGT_ADMIN_ORIGIN") ?? "https://aiglonse9315-hue.github.io",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey, X-Admin-Token",
 };
@@ -43,6 +43,14 @@ function json(obj: unknown, status = 200) {
     status,
     headers: { "Content-Type": "application/json", ...corsHeaders },
   });
+}
+
+/// Retourne une erreur générique au client tout en loggant le détail serveur.
+/// Évite de leaks les messages SQL/Postgres internes.
+function safeError(error: unknown, status = 400, context = "Opération échouée") {
+  const detail = error instanceof Error ? error.message : String(error);
+  console.error(`[admin-catalog] ${context}:`, detail);
+  return json({ error: context }, status);
 }
 
 // --- Génération d'un nouveau jeton (sliding session) ---
@@ -186,7 +194,7 @@ serve(async (req) => {
         })
         .select()
         .single();
-      if (error) return json({ error: error.message }, 400);
+      if (error) return safeError(error, 400);
       return await jsonWithFreshToken({ game: data });
     }
 
@@ -202,7 +210,7 @@ serve(async (req) => {
       await supabase.from("contents").delete().eq("game_id", gameId);
       await supabase.from("favorite_games").delete().eq("game_id", gameId);
       const { error } = await supabase.from("games").delete().eq("id", gameId);
-      if (error) return json({ error: error.message }, 400);
+      if (error) return safeError(error, 400);
       return await jsonWithFreshToken({ ok: true });
     }
 
@@ -225,7 +233,7 @@ serve(async (req) => {
         })
         .select()
         .single();
-      if (error) return json({ error: error.message }, 400);
+      if (error) return safeError(error, 400);
       return await jsonWithFreshToken({ content: data });
     }
 
@@ -243,7 +251,7 @@ serve(async (req) => {
         .from("contents")
         .delete()
         .eq("id", contentId);
-      if (error) return json({ error: error.message }, 400);
+      if (error) return safeError(error, 400);
       return await jsonWithFreshToken({ ok: true });
     }
 
@@ -285,7 +293,7 @@ serve(async (req) => {
         .from("suggestions")
         .update({ status: "rejected" })
         .eq("id", body.id);
-      if (error) return json({ error: error.message }, 400);
+      if (error) return safeError(error, 400);
       return await jsonWithFreshToken({ ok: true });
     }
 
@@ -308,7 +316,7 @@ serve(async (req) => {
         .from("suggestions")
         .update({ ai_recommendation: recommendation })
         .eq("id", suggestionId);
-      if (error) return json({ error: error.message }, 400);
+      if (error) return safeError(error, 400);
       return await jsonWithFreshToken({ ok: true });
     }
 
@@ -328,7 +336,7 @@ serve(async (req) => {
         .from("suggestions")
         .update({ sentinelle_started_at: new Date().toISOString() })
         .eq("id", suggestionId);
-      if (error) return json({ error: error.message }, 400);
+      if (error) return safeError(error, 400);
       return await jsonWithFreshToken({ ok: true });
     }
 
@@ -340,7 +348,7 @@ serve(async (req) => {
         .from("profiles")
         .update({ is_banned: true, ban_reason: body.reason ?? "Modération" })
         .eq("id", body.user_id);
-      if (error) return json({ error: error.message }, 400);
+      if (error) return safeError(error, 400);
       return await jsonWithFreshToken({ ok: true });
     }
 
@@ -349,7 +357,7 @@ serve(async (req) => {
         .from("profiles")
         .update({ is_banned: false, ban_reason: null })
         .eq("id", body.user_id);
-      if (error) return json({ error: error.message }, 400);
+      if (error) return safeError(error, 400);
       return await jsonWithFreshToken({ ok: true });
     }
 
@@ -371,7 +379,7 @@ serve(async (req) => {
         })
         .select()
         .single();
-      if (error) return json({ error: error.message }, 400);
+      if (error) return safeError(error, 400);
       return await jsonWithFreshToken({ subscription: data });
     }
 
@@ -383,7 +391,7 @@ serve(async (req) => {
         .from("subscriptions")
         .select("user_id, plan, is_active, started_at, expires_at, updated_at")
         .order("updated_at", { ascending: false });
-      if (error) return json({ error: error.message }, 400);
+      if (error) return safeError(error, 400);
 
       // Récupère les display_name des profils correspondants.
       const userIds = (subs ?? [])
@@ -411,6 +419,6 @@ serve(async (req) => {
     // Route inconnue.
     return json({ error: `Route inconnue : ${route}` }, 404);
   } catch (err) {
-    return json({ error: `Erreur serveur : ${String(err)}` }, 500);
+    return safeError(err, 500, "Erreur interne du serveur.");
   }
 });

@@ -148,10 +148,12 @@ async function logAttempt(
 
 serve(async (req) => {
   // CORS (le panneau admin web est sur un autre domaine en prod).
+  // ⚠️ En production, MGT_ADMIN_ORIGIN DOIT être défini (sinon : refus).
+  const adminOrigin = Deno.env.get("MGT_ADMIN_ORIGIN");
   const corsHeaders = {
-    "Access-Control-Allow-Origin": Deno.env.get("MGT_ADMIN_ORIGIN") ?? "*",
+    "Access-Control-Allow-Origin": adminOrigin ?? "https://aiglonse9315-hue.github.io",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey, X-Admin-Token",
   };
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
