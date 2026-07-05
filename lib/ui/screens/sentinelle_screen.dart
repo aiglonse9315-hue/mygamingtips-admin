@@ -330,6 +330,10 @@ class _TrustedTable extends StatelessWidget {
             margin: const EdgeInsets.symmetric(horizontal: 16),
             padding: const EdgeInsets.all(10),
             textStyle: const TextStyle(fontSize: 12, color: Colors.white),
+            decoration: BoxDecoration(
+              color: Colors.grey[900],
+              borderRadius: BorderRadius.circular(6),
+            ),
             child: Container(
               constraints: const BoxConstraints(maxWidth: 200),
               child: Text(
@@ -432,6 +436,10 @@ class _ToVerifyTable extends StatelessWidget {
             margin: const EdgeInsets.symmetric(horizontal: 16),
             padding: const EdgeInsets.all(10),
             textStyle: const TextStyle(fontSize: 12, color: Colors.white),
+            decoration: BoxDecoration(
+              color: Colors.grey[900],
+              borderRadius: BorderRadius.circular(6),
+            ),
             child: Container(
               constraints: const BoxConstraints(maxWidth: 200),
               child: Text(
@@ -462,6 +470,10 @@ class _ToVerifyTable extends StatelessWidget {
             margin: const EdgeInsets.symmetric(horizontal: 16),
             padding: const EdgeInsets.all(12),
             textStyle: const TextStyle(fontSize: 12, color: Colors.white),
+            decoration: BoxDecoration(
+              color: Colors.grey[900],
+              borderRadius: BorderRadius.circular(6),
+            ),
             child: Container(
               constraints: const BoxConstraints(maxWidth: 250),
               child: Text(
