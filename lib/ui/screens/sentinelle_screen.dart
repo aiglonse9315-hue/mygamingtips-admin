@@ -144,6 +144,39 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
               ),
               const Spacer(),
               if (trusted.isNotEmpty) ...[
+                // Checkbox "Tout sélectionner / Tout désélectionner".
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: InkWell(
+                    onTap: () => _selectAll(trusted),
+                    borderRadius: BorderRadius.circular(4),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 4),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _selected.length == trusted.length
+                                ? Icons.check_box_rounded
+                                : Icons.check_box_outline_blank_rounded,
+                            size: 18,
+                            color: _selected.length == trusted.length
+                                ? AppColors.neonGreen
+                                : null,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            _selected.length == trusted.length
+                                ? 'Tout désélectionner'
+                                : 'Tout sélectionner',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
                 // Bouton : valider la sélection
                 if (_selected.isNotEmpty)
                   Padding(
