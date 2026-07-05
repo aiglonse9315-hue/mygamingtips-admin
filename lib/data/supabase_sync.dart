@@ -433,4 +433,26 @@ class SupabaseSync {
       'expires_at': expiresAt?.toIso8601String(),
     });
   }
+
+  /// Récupère tous les abonnements depuis Supabase (via Edge Function).
+  ///
+  /// Retourne une liste de maps avec : user_id, plan, is_active, started_at,
+  /// expires_at, displayName (du profil joint).
+  Future<List<Map<String, dynamic>>> fetchSubscriptions() async {
+    final data = await _post('subscriptions/list', {});
+    final subs = data['subscriptions'] as List? ?? [];
+    return subs.map((s) {
+      final m = s as Map<String, dynamic>;
+      final profile = m['profile'];
+      return <String, dynamic>{
+        'id': m['user_id'] as String,
+        'plan': (m['plan'] as String?) ?? 'monthly',
+        'active': (m['is_active'] as bool?) ?? false,
+        'startedAt': m['started_at'] as String?,
+        'displayName': profile is Map
+            ? (profile['display_name'] as String?) ?? 'Inconnu'
+            : 'Inconnu',
+      };
+    }).toList();
+  }
 }

@@ -375,6 +375,20 @@ serve(async (req) => {
       return await jsonWithFreshToken({ subscription: data });
     }
 
+    if (route === "subscriptions/list") {
+      // Récupère tous les abonnements actifs, avec le profil (display_name).
+      // Utilisé par le panneau admin pour afficher la liste des abonnés Plus.
+      const { data, error } = await supabase
+        .from("subscriptions")
+        .select(
+          "user_id, plan, is_active, started_at, expires_at, updated_at, " +
+          "profile:profiles!subscriptions_user_id_fkey1(display_name)"
+        )
+        .order("updated_at", { ascending: false });
+      if (error) return json({ error: error.message }, 400);
+      return json({ subscriptions: data });
+    }
+
     // Route inconnue.
     return json({ error: `Route inconnue : ${route}` }, 404);
   } catch (err) {

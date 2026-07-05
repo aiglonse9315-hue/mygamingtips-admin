@@ -943,6 +943,15 @@ class StoreController extends ChangeNotifier {
     final sentinelleAnalyzing = await sync!.fetchSentinelleAnalyzing();
     final sentinelleSuggestions = await sync!.fetchSentinelleSuggestions();
 
+    // Récupère les abonnements Plus depuis Supabase (table subscriptions).
+    List<Map<String, dynamic>> serverPlus = [];
+    try {
+      serverPlus = await sync!.fetchSubscriptions();
+    } catch (e) {
+      // Non critique : si la récupération échoue, on garde le cache local.
+      debugPrint('fetchSubscriptions échec: $e');
+    }
+
     // --- Fusion : conserve les entrées locales non encore synchronisées
     //     (ID temporaire) et ajoute les données serveur. ---
     final pendingGames = _games
@@ -960,9 +969,26 @@ class StoreController extends ChangeNotifier {
         .toList();
     _suggestions = [...suggestions, ...pendingSuggestions];
 
-      // Suggestions Sentinelle : en cours d'analyse + analysées.
-      _sentinelleAnalyzing = sentinelleAnalyzing;
-      _sentinelleSuggestions = sentinelleSuggestions;
+    // Suggestions Sentinelle : en cours d'analyse + analysées.
+    _sentinelleAnalyzing = sentinelleAnalyzing;
+    _sentinelleSuggestions = sentinelleSuggestions;
+
+    // Abonnés Plus : fusionne serveur + locaux (non UUID = démo).
+    // On remplace les abonnés serveur (UUID) par la dernière version serveur,
+    // et on conserve les abonnés locaux (démo) non synchronisables.
+    final localOnlyPlus = _plus.where((p) => !_isUuid(p.id)).toList();
+    _plus = [
+      ...serverPlus.map((m) => PlusUser(
+            id: m['id'] as String,
+            displayName: m['displayName'] as String? ?? 'Inconnu',
+            plan: m['plan'] as String? ?? 'monthly',
+            startedAt: DateTime.tryParse(m['startedAt'] as String? ?? '') ??
+                DateTime.now(),
+            active: m['active'] as bool? ?? false,
+          )),
+      ...localOnlyPlus,
+    ];
+    _store.savePlus(_plus);
 
     // Met à jour le cache local pour les lectures hors-ligne.
     _store.saveGames(_games);
