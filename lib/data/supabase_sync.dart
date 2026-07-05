@@ -443,15 +443,12 @@ class SupabaseSync {
     final subs = data['subscriptions'] as List? ?? [];
     return subs.map((s) {
       final m = s as Map<String, dynamic>;
-      final profile = m['profile'];
       return <String, dynamic>{
         'id': m['user_id'] as String,
         'plan': (m['plan'] as String?) ?? 'monthly',
         'active': (m['is_active'] as bool?) ?? false,
         'startedAt': m['started_at'] as String?,
-        'displayName': profile is Map
-            ? (profile['display_name'] as String?) ?? 'Inconnu'
-            : 'Inconnu',
+        'displayName': m['display_name'] as String? ?? 'Inconnu',
       };
     }).toList();
   }

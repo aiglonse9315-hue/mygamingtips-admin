@@ -376,17 +376,36 @@ serve(async (req) => {
     }
 
     if (route === "subscriptions/list") {
-      // Récupère tous les abonnements actifs, avec le profil (display_name).
-      // Utilisé par le panneau admin pour afficher la liste des abonnés Plus.
-      const { data, error } = await supabase
+      // Récupère tous les abonnements, puis les profils associés.
+      // On fait 2 requêtes séparées (pas de jointure PostgREST) car la FK
+      // subscriptions.user_id → profiles.id peut ne pas être déclarée.
+      const { data: subs, error } = await supabase
         .from("subscriptions")
-        .select(
-          "user_id, plan, is_active, started_at, expires_at, updated_at, " +
-          "profile:profiles!subscriptions_user_id_fkey1(display_name)"
-        )
+        .select("user_id, plan, is_active, started_at, expires_at, updated_at")
         .order("updated_at", { ascending: false });
       if (error) return json({ error: error.message }, 400);
-      return json({ subscriptions: data });
+
+      // Récupère les display_name des profils correspondants.
+      const userIds = (subs ?? [])
+        .map((s: any) => s.user_id)
+        .filter((id: any) => id != null);
+      let profilesMap: Record<string, string> = {};
+      if (userIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from("profiles")
+          .select("id, display_name")
+          .in("id", userIds);
+        for (const p of profiles ?? []) {
+          profilesMap[p.id] = p.display_name ?? "Inconnu";
+        }
+      }
+
+      // Fusionne les abonnements avec les display_name.
+      const result = (subs ?? []).map((s: any) => ({
+        ...s,
+        display_name: profilesMap[s.user_id] ?? "Inconnu",
+      }));
+      return json({ subscriptions: result });
     }
 
     // Route inconnue.
