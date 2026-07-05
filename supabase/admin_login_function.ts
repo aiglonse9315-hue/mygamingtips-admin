@@ -26,33 +26,67 @@ const ADMIN_LOGIN = Deno.env.get("MGT_ADMIN_LOGIN");
 const ADMIN_PASSWORD_HASH = Deno.env.get("MGT_ADMIN_PASSWORD_HASH");
 const JWT_SECRET = Deno.env.get("JWT_SECRET");
 
-// --- Rate limiting basique (par IP) ---
-const attempts = new Map<string, { count: number; until: number }>();
-const MAX_ATTEMPTS = 5;
-const LOCKOUT_MS = 2 * 60 * 1000; // 2 minutes
+// --- Rate limiting PERSISTANT (par IP) via la table admin_auth_logs ---
+// Contrairement à une Map en mémoire (perdue à chaque redémarrage d'instance),
+// cette implémentation interroge la base de données pour compter les échecs
+// récents. Le blocage survit donc aux redémarrages, rafraîchissements et
+// changements d'instance Edge Function.
+const MAX_ATTEMPTS = 3;
+const LOCKOUT_MS = 5 * 60 * 1000; // 5 minutes
+const WINDOW_MS = 5 * 60 * 1000;  // fenêtre de 5 min pour compter les échecs
 
-function rateLimit(ip: string): { allowed: boolean; remainingMs: number } {
-  const now = Date.now();
-  const entry = attempts.get(ip);
-  if (entry && now < entry.until) {
-    return { allowed: false, remainingMs: entry.until - now };
+async function checkRateLimit(
+  supabase: ReturnType<typeof createClient>,
+  ip: string
+): Promise<{ allowed: boolean; remainingMs: number; failedCount: number }> {
+  // Récupère le timestamp du DERNIER SUCCÈS pour cette IP.
+  // Les échecs avant ce succès ne comptent pas (session réinitialisée).
+  const { data: lastSuccess } = await supabase
+    .from("admin_auth_logs")
+    .select("at")
+    .eq("ip", ip)
+    .eq("success", true)
+    .order("at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  // Fenêtre de comptage : depuis le dernier succès, ou les 5 dernières minutes
+  // si aucun succès n'a eu lieu.
+  const windowStart = lastSuccess
+    ? lastSuccess.at
+    : new Date(Date.now() - WINDOW_MS).toISOString();
+
+  // Compte les échecs depuis le dernier succès (ou la fenêtre de 5 min).
+  const { count, error } = await supabase
+    .from("admin_auth_logs")
+    .select("id", { count: "exact", head: true })
+    .eq("ip", ip)
+    .eq("success", false)
+    .gte("at", windowStart);
+  if (error) {
+    return { allowed: true, remainingMs: 0, failedCount: 0 };
   }
-  return { allowed: true, remainingMs: 0 };
-}
-
-function recordFailure(ip: string) {
-  const now = Date.now();
-  const entry = attempts.get(ip) ?? { count: 0, until: 0 };
-  entry.count += 1;
-  if (entry.count >= MAX_ATTEMPTS) {
-    entry.until = now + LOCKOUT_MS;
-    entry.count = 0;
+  const failedCount = count ?? 0;
+  if (failedCount >= MAX_ATTEMPTS) {
+    // Récupère le timestamp du dernier échec pour calculer le temps restant.
+    const { data: lastFail } = await supabase
+      .from("admin_auth_logs")
+      .select("at")
+      .eq("ip", ip)
+      .eq("success", false)
+      .order("at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (lastFail) {
+      const lastTime = new Date(lastFail.at).getTime();
+      const unlockAt = lastTime + LOCKOUT_MS;
+      const remaining = unlockAt - Date.now();
+      if (remaining > 0) {
+        return { allowed: false, remainingMs: remaining, failedCount };
+      }
+    }
   }
-  attempts.set(ip, entry);
-}
-
-function clearFailures(ip: string) {
-  attempts.delete(ip);
+  return { allowed: true, remainingMs: 0, failedCount };
 }
 
 // --- Vérification bcrypt via bcryptjs (pure JS, 100% compatible Deno) ---
@@ -143,12 +177,13 @@ serve(async (req) => {
     req.headers.get("x-forwarded-for") ??
     "unknown";
 
-  // 1) Rate-limiting.
-  const rl = rateLimit(ip);
+  // 1) Rate-limiting persistant (base de données).
+  const rl = await checkRateLimit(supabase, ip);
   if (!rl.allowed) {
     await logAttempt(supabase, ip, false, `bloqué (${rl.remainingMs}ms)`);
+    const remainingMin = Math.ceil(rl.remainingMs / 60000);
     return json(
-      { error: "Trop de tentatives. Réessayez plus tard." },
+      { error: `Trop de tentatives. Réessayez dans ${remainingMin} minute(s).` },
       429,
       corsHeaders
     );
@@ -188,13 +223,14 @@ serve(async (req) => {
   const ok = usernameMatches && passwordOk;
 
   if (!ok) {
-    recordFailure(ip);
+    // Le log en base sert de compteur pour le rate-limiting persistant.
     await logAttempt(supabase, ip, false, "identifiants invalides", username);
     return json({ error: "Identifiants incorrects." }, 401, corsHeaders);
   }
 
   // 4) Succès : jeton court terme.
-  clearFailures(ip);
+  // Le log de succès en base "écrase" virtuellement les échecs (le
+  // rate-limiting compte les échecs, et un succès réinitialise la fenêtre).
   await logAttempt(supabase, ip, true, "connexion réussie", username);
   const token = await makeJwt();
   return json({ token }, 200, corsHeaders);
