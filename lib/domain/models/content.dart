@@ -74,19 +74,20 @@ class Content {
     ValueGetter<String?>? titleAdmin,
     ValueGetter<String?>? imageUrl,
     ValueGetter<String?>? url,
+    ContentCategory? category,
     bool? validated,
   }) {
     return Content(
       id: id,
       gameId: gameId,
-      category: category,
+      category: category ?? this.category,
       url: url != null ? url() ?? '' : this.url,
       titleSource: titleSource,
       titleAdmin: titleAdmin != null ? titleAdmin() : this.titleAdmin,
       imageUrl: imageUrl != null ? imageUrl() : this.imageUrl,
       publishedAt: publishedAt,
       validated: validated ?? this.validated,
-      isVideo: isVideo,
+      isVideo: category == ContentCategory.video ? true : (category == null ? isVideo : false),
     );
   }
 

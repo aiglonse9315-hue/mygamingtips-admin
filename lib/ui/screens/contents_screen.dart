@@ -326,11 +326,12 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
         imageUrl: _image.text,
       );
     } else {
-      // Édition : met à jour le titre ET l'URL.
+      // Édition : met à jour le titre, l'URL et la catégorie.
       store.updateContent(
         widget.content!,
         titleAdmin: _title.text,
         url: url,
+        category: _category,
       );
     }
     Navigator.pop(context);
@@ -359,7 +360,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
                   style: TextStyle(color: AppColors.categoryVideo, fontSize: 13),
                 ),
               ),
-            // En édition, on peut changer le titre ET l'URL.
+            // En édition, on peut changer le titre, l'URL et la catégorie.
             if (edit) ...[
               TextField(
                 controller: _title,
@@ -374,6 +375,22 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
                 decoration: const InputDecoration(
                   labelText: 'URL *',
                   helperText: 'Lien YouTube (vidéo) ou page web'),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<ContentCategory>(
+                value: _category,
+                decoration: const InputDecoration(labelText: 'Catégorie'),
+                items: ContentCategory.values
+                    .map((c) => DropdownMenuItem(
+                          value: c,
+                          child: Row(children: [
+                            Icon(c.icon, size: 18, color: c.color),
+                            const SizedBox(width: 8),
+                            Text(c.label),
+                          ]),
+                        ))
+                    .toList(),
+                onChanged: (v) => setState(() => _category = v ?? _category),
               ),
             ] else ...[
               DropdownButtonFormField<String>(

@@ -376,6 +376,7 @@ class StoreController extends ChangeNotifier {
   Future<void> updateContent(Content content, {
     required String titleAdmin,
     required String url,
+    ContentCategory? category,
   }) async {
     final Content previous = _contents.firstWhere(
       (c) => c.id == content.id,
@@ -386,6 +387,7 @@ class StoreController extends ChangeNotifier {
             ? c.copyWith(
                 titleAdmin: () => titleAdmin.trim(),
                 url: () => url.trim(),
+                category: category,
               )
             : c)
         .toList();
