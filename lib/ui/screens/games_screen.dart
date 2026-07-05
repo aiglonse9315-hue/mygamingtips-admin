@@ -7,14 +7,38 @@ import '../../state/store_controller.dart';
 import '../widgets/admin_data_table.dart';
 import '../widgets/confirm_dialog.dart';
 
-/// Gestion des jeux : liste + ajout + activation + suppression.
-class GamesScreen extends StatelessWidget {
+/// Gestion des jeux : liste + ajout + activation + suppression + recherche.
+class GamesScreen extends StatefulWidget {
   const GamesScreen({super.key});
+
+  @override
+  State<GamesScreen> createState() => _GamesScreenState();
+}
+
+class _GamesScreenState extends State<GamesScreen> {
+  String _search = '';
+  final TextEditingController _searchCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final StoreController store = context.watch<StoreController>();
-    final List<Game> games = store.games;
+
+    // Filtre par recherche (nom ou éditeur).
+    List<Game> games = store.games;
+    if (_search.isNotEmpty) {
+      final q = _search.toLowerCase();
+      games = games
+          .where((g) =>
+              g.name.toLowerCase().contains(q) ||
+              (g.publisher?.toLowerCase().contains(q) ?? false))
+          .toList();
+    }
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
@@ -34,6 +58,19 @@ class GamesScreen extends StatelessWidget {
                 label: const Text('Ajouter un jeu'),
               ),
             ],
+          ),
+          const SizedBox(height: 16),
+          // Barre de recherche (identique au menu Contenus).
+          TextField(
+            controller: _searchCtrl,
+            onChanged: (v) => setState(() => _search = v),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: 'Rechercher un jeu…',
+              prefixIcon: const Icon(Icons.search_rounded),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10)),
+            ),
           ),
           const SizedBox(height: 16),
           AdminDataTable(
