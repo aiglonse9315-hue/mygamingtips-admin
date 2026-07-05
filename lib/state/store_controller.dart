@@ -463,7 +463,8 @@ class StoreController extends ChangeNotifier {
     _store.saveSuggestions(_suggestions);
     notifyListeners();
 
-    if (sync == null) return;
+    // Si l'ID n'est pas un vrai UUID (donnée de démo locale), on s'arrête.
+    if (sync == null || !_isUuid(suggestion.id)) return;
     try {
       await sync!.acceptSuggestion(
         suggestionId: suggestion.id,
@@ -500,7 +501,9 @@ class StoreController extends ChangeNotifier {
         .toList();
     _store.saveSuggestions(_suggestions);
     notifyListeners();
-    if (sync == null) return;
+    // Si l'ID n'est pas un vrai UUID (donnée de démo locale), on s'arrête :
+    // pas besoin d'appeler le serveur, la suppression locale suffit.
+    if (sync == null || !_isUuid(suggestion.id)) return;
     try {
       await sync!.rejectSuggestion(suggestion.id);
     } catch (e) {
@@ -511,6 +514,10 @@ class StoreController extends ChangeNotifier {
               : s)
           .toList();
       _store.saveSuggestions(_suggestions);
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
       lastActionError = 'Suggestion non rejetée (erreur serveur) : $e';
       notifyListeners();
     }
@@ -591,7 +598,8 @@ class StoreController extends ChangeNotifier {
         .toList();
     notifyListeners();
 
-    if (sync == null) return;
+    // Si l'ID n'est pas un vrai UUID (donnée de démo locale), on s'arrête.
+    if (sync == null || !_isUuid(suggestion.id)) return;
     try {
       await sync!.acceptSuggestion(
         suggestionId: suggestion.id,
@@ -621,7 +629,8 @@ class StoreController extends ChangeNotifier {
         .where((s) => s.id != suggestion.id)
         .toList();
     notifyListeners();
-    if (sync == null) return;
+    // Si l'ID n'est pas un vrai UUID (donnée de démo locale), on s'arrête.
+    if (sync == null || !_isUuid(suggestion.id)) return;
     try {
       await sync!.rejectSuggestion(suggestion.id);
     } catch (e) {
