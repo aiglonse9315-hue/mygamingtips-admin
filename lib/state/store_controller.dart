@@ -37,6 +37,13 @@ bool _isAuthError(Object e) => e is AdminAuthException;
 class StoreController extends ChangeNotifier {
   StoreController(this._store, {this.sync}) {
     _store.ensureInitialized();
+    // En mode production (connecté à Supabase), on purge les données de démo
+    // (IDs temporaires comme "s-1001", "g-...", "c-...") du localStorage pour
+    // éviter qu'elles reviennent en boucle après suppression. Seul le contenu
+    // réel de Supabase sera affiché.
+    if (sync != null) {
+      _purgeDemoData();
+    }
     _reload();
     // Branche le sliding session : chaque écriture réussie renvoie un
     // fresh_token que le client propage au AuthService.
@@ -863,6 +870,22 @@ class StoreController extends ChangeNotifier {
     _store.resetToSeed();
     _reload();
     notifyListeners();
+  }
+
+  /// Purge les données de démo (IDs temporaires non-UUID) du localStorage.
+  ///
+  /// En mode production, les données de démo (assets/seed) n'ont pas leur
+  /// place : elles ont des IDs temporaires ("s-1001", "g-...", "c-...") qui
+  /// font échouer les appels serveur et reviennent en boucle après suppression.
+  /// On ne conserve que les données avec un vrai UUID (synchronisées).
+  void _purgeDemoData() {
+    final games = _store.loadGames().where((g) => _isUuid(g.id)).toList();
+    _store.saveGames(games);
+    final contents = _store.loadContents().where((c) => _isUuid(c.id)).toList();
+    _store.saveContents(contents);
+    final suggestions =
+        _store.loadSuggestions().where((s) => _isUuid(s.id)).toList();
+    _store.saveSuggestions(suggestions);
   }
 
   void _reload() {
