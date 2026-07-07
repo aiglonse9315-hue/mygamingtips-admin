@@ -385,6 +385,7 @@ class StoreController extends ChangeNotifier {
     required String url,
     ContentCategory? category,
     DateTime? publishedAt,
+    String? gameId,
   }) async {
     final Content previous = _contents.firstWhere(
       (c) => c.id == content.id,
@@ -397,6 +398,7 @@ class StoreController extends ChangeNotifier {
                 url: () => url.trim(),
                 category: category,
                 publishedAt: publishedAt,
+                gameId: gameId,
               )
             : c)
         .toList();

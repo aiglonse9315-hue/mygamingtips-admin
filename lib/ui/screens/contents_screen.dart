@@ -328,13 +328,14 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
         imageUrl: _image.text,
       );
     } else {
-      // Édition : met à jour le titre, l'URL, la catégorie et la date.
+      // Édition : met à jour le titre, l'URL, le jeu, la catégorie et la date.
       store.updateContent(
         widget.content!,
         titleAdmin: _title.text,
         url: url,
         category: _category,
         publishedAt: _publishedAt,
+        gameId: _gameId,
       );
     }
     Navigator.pop(context);
@@ -426,6 +427,19 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
                     ),
                   ),
                 ),
+              ),
+              const SizedBox(height: 12),
+              // Jeu (modifiable en édition pour déplacer le contenu).
+              DropdownButtonFormField<String>(
+                value: _gameId,
+                decoration: const InputDecoration(labelText: 'Jeu'),
+                items: games
+                    .map((g) => DropdownMenuItem(
+                          value: g.id,
+                          child: Text(g.name),
+                        ))
+                    .toList(),
+                onChanged: (v) => setState(() => _gameId = v),
               ),
             ] else ...[
               DropdownButtonFormField<String>(

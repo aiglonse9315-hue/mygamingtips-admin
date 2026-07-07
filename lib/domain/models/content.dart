@@ -74,13 +74,14 @@ class Content {
     ValueGetter<String?>? titleAdmin,
     ValueGetter<String?>? imageUrl,
     ValueGetter<String?>? url,
+    String? gameId,
     ContentCategory? category,
     DateTime? publishedAt,
     bool? validated,
   }) {
     return Content(
       id: id,
-      gameId: gameId,
+      gameId: gameId ?? this.gameId,
       category: category ?? this.category,
       url: url != null ? url() ?? '' : this.url,
       titleSource: titleSource,
