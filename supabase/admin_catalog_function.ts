@@ -277,6 +277,9 @@ serve(async (req) => {
         validated: true,
         is_video: body.is_video ?? false,
         author_id: suggestion.author_id,
+        // Date de publication de la vidéo (récupérée par Sentinelle via YouTube API).
+        // Si non fournie, la base utilise la valeur par défaut (now()).
+        published_at: body.published_at ?? null,
       });
       if (ce) return json({ error: ce.message }, 400);
 

@@ -75,6 +75,7 @@ class Content {
     ValueGetter<String?>? imageUrl,
     ValueGetter<String?>? url,
     ContentCategory? category,
+    DateTime? publishedAt,
     bool? validated,
   }) {
     return Content(
@@ -85,7 +86,7 @@ class Content {
       titleSource: titleSource,
       titleAdmin: titleAdmin != null ? titleAdmin() : this.titleAdmin,
       imageUrl: imageUrl != null ? imageUrl() : this.imageUrl,
-      publishedAt: publishedAt,
+      publishedAt: publishedAt ?? this.publishedAt,
       validated: validated ?? this.validated,
       isVideo: category == ContentCategory.video ? true : (category == null ? isVideo : false),
     );

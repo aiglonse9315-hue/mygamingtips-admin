@@ -125,7 +125,7 @@ class _ContentsScreenState extends State<ContentsScreen> {
               'Titre',
               'Jeu',
               'Catégorie',
-              'Date',
+              'Créé le',
               'Actions'
             ],
             rows: list
@@ -292,6 +292,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
   late final TextEditingController _image;
   String? _gameId;
   ContentCategory _category = ContentCategory.video;
+  DateTime? _publishedAt;
 
   @override
   void initState() {
@@ -302,6 +303,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
     _image = TextEditingController(text: widget.content?.imageUrl ?? '');
     _gameId = widget.content?.gameId;
     _category = widget.content?.category ?? ContentCategory.video;
+    _publishedAt = widget.content?.publishedAt;
   }
 
   @override
@@ -326,12 +328,13 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
         imageUrl: _image.text,
       );
     } else {
-      // Édition : met à jour le titre, l'URL et la catégorie.
+      // Édition : met à jour le titre, l'URL, la catégorie et la date.
       store.updateContent(
         widget.content!,
         titleAdmin: _title.text,
         url: url,
         category: _category,
+        publishedAt: _publishedAt,
       );
     }
     Navigator.pop(context);
@@ -391,6 +394,38 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
                         ))
                     .toList(),
                 onChanged: (v) => setState(() => _category = v ?? _category),
+              ),
+              const SizedBox(height: 12),
+              // Champ date de création (modifiable manuellement).
+              InkWell(
+                onTap: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: _publishedAt ?? DateTime.now(),
+                    firstDate: DateTime(2000),
+                    lastDate: DateTime.now(),
+                  );
+                  if (picked != null) {
+                    setState(() => _publishedAt = picked);
+                  }
+                },
+                child: InputDecorator(
+                  decoration: const InputDecoration(
+                    labelText: 'Date de création',
+                    suffixIcon: Icon(Icons.calendar_today_outlined, size: 18),
+                  ),
+                  child: Text(
+                    _publishedAt != null
+                        ? '${_publishedAt!.day.toString().padLeft(2, '0')}/${_publishedAt!.month.toString().padLeft(2, '0')}/${_publishedAt!.year}'
+                        : 'Non définie',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: _publishedAt != null
+                          ? null
+                          : Theme.of(context).textTheme.bodySmall?.color,
+                    ),
+                  ),
+                ),
               ),
             ] else ...[
               DropdownButtonFormField<String>(

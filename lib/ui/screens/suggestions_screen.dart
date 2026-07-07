@@ -96,7 +96,7 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
               'URL',
               'Auteur',
               'Message',
-              'Partagée le',
+              'Créé le',
               'Statut',
               'IA',
               'Actions'
@@ -248,7 +248,11 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                                   .textTheme
                                   .bodySmall
                                   ?.color)),
-                      Text(_formatDate(s.sharedAt),
+                      // Affiche la date de création YouTube si disponible,
+                      // sinon la date de partage.
+                      Text(
+                          _formatDate(s.aiRecommendation?.youtubePublishedAt ??
+                              s.sharedAt),
                           style: TextStyle(
                               fontSize: 12,
                               color: Theme.of(context)

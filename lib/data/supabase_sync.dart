@@ -396,6 +396,7 @@ class SupabaseSync {
     required ContentCategory category,
     required String titleAdmin,
     bool isVideo = false,
+    DateTime? publishedAt,
   }) async {
     await _post('suggestions/accept', {
       'id': suggestionId,
@@ -403,6 +404,7 @@ class SupabaseSync {
       'category': category.name,
       'title_admin': titleAdmin,
       'is_video': isVideo,
+      if (publishedAt != null) 'published_at': publishedAt.toIso8601String(),
     });
   }
 

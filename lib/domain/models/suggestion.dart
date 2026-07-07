@@ -134,6 +134,7 @@ class AiRecommendation {
   final int? youtubeViews;
   final int? youtubeLikes;
   final String? youtubeTitle;
+  final DateTime? youtubePublishedAt;
   final DateTime? analyzedAt;
 
   const AiRecommendation({
@@ -145,6 +146,7 @@ class AiRecommendation {
     this.youtubeViews,
     this.youtubeLikes,
     this.youtubeTitle,
+    this.youtubePublishedAt,
     this.analyzedAt,
   });
 
@@ -161,6 +163,8 @@ class AiRecommendation {
       youtubeViews: json['youtube_views'] as int?,
       youtubeLikes: json['youtube_likes'] as int?,
       youtubeTitle: json['youtube_title'] as String?,
+      youtubePublishedAt:
+          DateTime.tryParse(json['youtube_published_at'] as String? ?? ''),
       analyzedAt: DateTime.tryParse(json['analyzed_at'] as String? ?? ''),
     );
   }
@@ -174,6 +178,8 @@ class AiRecommendation {
         if (youtubeViews != null) 'youtube_views': youtubeViews,
         if (youtubeLikes != null) 'youtube_likes': youtubeLikes,
         if (youtubeTitle != null) 'youtube_title': youtubeTitle,
+        if (youtubePublishedAt != null)
+          'youtube_published_at': youtubePublishedAt!.toIso8601String(),
         if (analyzedAt != null) 'analyzed_at': analyzedAt!.toIso8601String(),
       };
 }

@@ -384,6 +384,7 @@ class StoreController extends ChangeNotifier {
     required String titleAdmin,
     required String url,
     ContentCategory? category,
+    DateTime? publishedAt,
   }) async {
     final Content previous = _contents.firstWhere(
       (c) => c.id == content.id,
@@ -395,6 +396,7 @@ class StoreController extends ChangeNotifier {
                 titleAdmin: () => titleAdmin.trim(),
                 url: () => url.trim(),
                 category: category,
+                publishedAt: publishedAt,
               )
             : c)
         .toList();
@@ -479,6 +481,7 @@ class StoreController extends ChangeNotifier {
         category: category,
         titleAdmin: titleAdmin,
         isVideo: category == ContentCategory.video,
+        publishedAt: _dateForInsertion(suggestion),
       );
       // Resync pour récupérer le contenu créé côté serveur.
       await syncFromSupabase();
@@ -614,6 +617,7 @@ class StoreController extends ChangeNotifier {
         category: category,
         titleAdmin: _titleForInsertion(suggestion),
         isVideo: category == ContentCategory.video,
+        publishedAt: _dateForInsertion(suggestion),
       );
       // Resync pour récupérer le contenu créé côté serveur + le nouveau jeu.
       await syncFromSupabase();
@@ -695,6 +699,15 @@ class StoreController extends ChangeNotifier {
     }
     // 2. Fallback : texte partagé nettoyé.
     return _cleanTitle(s);
+  }
+
+  /// Détermine la date de publication pour l'insertion d'un contenu.
+  ///
+  /// Priorité :
+  /// 1. Date de publication YouTube (récupérée par Sentinelle)
+  /// 2. null (la base utilisera now() par défaut)
+  static DateTime? _dateForInsertion(Suggestion s) {
+    return s.aiRecommendation?.youtubePublishedAt;
   }
 
   // ---------- Bannissement ----------
