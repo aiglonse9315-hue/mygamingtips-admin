@@ -237,6 +237,22 @@ serve(async (req) => {
       return await jsonWithFreshToken({ content: data });
     }
 
+    if (route === "contents/update-date") {
+      // Met à jour uniquement la date de publication d'un contenu.
+      // Utilisé par le bot Check pour corriger les dates YouTube.
+      const contentId = uuidOrUndefined(body.id);
+      const newDate = body.published_at;
+      if (!contentId || !newDate) {
+        return json({ error: "id et published_at requis." }, 400);
+      }
+      const { error } = await supabase
+        .from("contents")
+        .update({ published_at: newDate })
+        .eq("id", contentId);
+      if (error) return safeError(error, 400, "Mise à jour date échouée");
+      return await jsonWithFreshToken({ ok: true });
+    }
+
     if (route === "contents/delete") {
       const contentId = uuidOrUndefined(body.id);
       if (!contentId) {
