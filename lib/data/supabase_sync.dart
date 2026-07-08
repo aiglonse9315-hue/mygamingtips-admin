@@ -103,6 +103,8 @@ class SupabaseSync {
           out['publishedAt'] = value;
         case 'is_video':
           out['isVideo'] = value;
+        case 'video_language':
+          out['videoLanguage'] = value;
         case 'shared_text':
           out['sharedText'] = value;
         case 'shared_at':
@@ -379,6 +381,7 @@ class SupabaseSync {
       'image_url': content.imageUrl,
       'validated': content.validated,
       'is_video': content.isVideo,
+      'video_language': content.videoLanguage,
     });
     // L'Edge Function renvoie la ligne Supabase brute (snake_case) → on
     // convertit en camelCase avant de la passer au modèle.

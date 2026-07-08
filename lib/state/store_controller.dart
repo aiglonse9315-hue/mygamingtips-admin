@@ -386,6 +386,7 @@ class StoreController extends ChangeNotifier {
     ContentCategory? category,
     DateTime? publishedAt,
     String? gameId,
+    String? videoLanguage,
   }) async {
     final Content previous = _contents.firstWhere(
       (c) => c.id == content.id,
@@ -399,6 +400,7 @@ class StoreController extends ChangeNotifier {
                 category: category,
                 publishedAt: publishedAt,
                 gameId: gameId,
+                videoLanguage: videoLanguage,
               )
             : c)
         .toList();

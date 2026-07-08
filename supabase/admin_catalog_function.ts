@@ -230,6 +230,7 @@ serve(async (req) => {
           image_url: body.image_url,
           validated: body.validated ?? true,
           is_video: body.is_video ?? false,
+          video_language: body.video_language ?? null,
         })
         .select()
         .single();

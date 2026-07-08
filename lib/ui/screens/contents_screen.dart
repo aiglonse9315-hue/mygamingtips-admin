@@ -126,6 +126,7 @@ class _ContentsScreenState extends State<ContentsScreen> {
               'Jeu',
               'Catégorie',
               'Créé le',
+              'Langue',
               'Actions'
             ],
             rows: list
@@ -149,6 +150,43 @@ class _ContentsScreenState extends State<ContentsScreen> {
                                   .textTheme
                                   .bodySmall
                                   ?.color)),
+                      // Tag de langue vidéo (FR / EN).
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: (c.videoLanguage?.toUpperCase() == 'FR'
+                                  ? Colors.blue
+                                  : c.videoLanguage?.toUpperCase() == 'EN'
+                                      ? Colors.red
+                                      : Colors.grey)
+                              .withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: (c.videoLanguage?.toUpperCase() == 'FR'
+                                    ? Colors.blue
+                                    : c.videoLanguage?.toUpperCase() == 'EN'
+                                        ? Colors.red
+                                        : Colors.grey)
+                                .withValues(alpha: 0.4),
+                          ),
+                        ),
+                        child: Text(
+                          c.videoLanguage?.toUpperCase() ?? '—',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            color: c.videoLanguage?.toUpperCase() == 'FR'
+                                ? Colors.blue
+                                : c.videoLanguage?.toUpperCase() == 'EN'
+                                    ? Colors.red
+                                    : Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.color,
+                          ),
+                        ),
+                      ),
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -293,6 +331,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
   String? _gameId;
   ContentCategory _category = ContentCategory.video;
   DateTime? _publishedAt;
+  String? _videoLanguage;
 
   @override
   void initState() {
@@ -304,6 +343,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
     _gameId = widget.content?.gameId;
     _category = widget.content?.category ?? ContentCategory.video;
     _publishedAt = widget.content?.publishedAt;
+    _videoLanguage = widget.content?.videoLanguage;
   }
 
   @override
@@ -336,6 +376,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
         category: _category,
         publishedAt: _publishedAt,
         gameId: _gameId,
+        videoLanguage: _videoLanguage,
       );
     }
     Navigator.pop(context);
@@ -440,6 +481,17 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
                         ))
                     .toList(),
                 onChanged: (v) => setState(() => _gameId = v),
+              ),
+              const SizedBox(height: 12),
+              // Langue de la vidéo (FR / EN).
+              DropdownButtonFormField<String>(
+                value: _videoLanguage,
+                decoration: const InputDecoration(labelText: 'Langue vidéo'),
+                items: const [
+                  DropdownMenuItem(value: 'FR', child: Text('🇫🇷 FR')),
+                  DropdownMenuItem(value: 'EN', child: Text('🇬🇧 EN')),
+                ],
+                onChanged: (v) => setState(() => _videoLanguage = v),
               ),
             ] else ...[
               DropdownButtonFormField<String>(

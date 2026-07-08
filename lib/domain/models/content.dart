@@ -16,6 +16,7 @@ class Content {
   final DateTime publishedAt;
   final bool validated;
   final bool isVideo;
+  final String? videoLanguage;
 
   const Content({
     required this.id,
@@ -28,6 +29,7 @@ class Content {
     required this.publishedAt,
     this.validated = true,
     this.isVideo = false,
+    this.videoLanguage,
   });
 
   factory Content.fromJson(Map<String, dynamic> json) {
@@ -47,6 +49,7 @@ class Content {
               DateTime.now(),
       validated: (json['validated'] as bool?) ?? true,
       isVideo: (json['isVideo'] as bool?) ?? false,
+      videoLanguage: json['videoLanguage'] as String?,
     );
   }
 
@@ -61,6 +64,7 @@ class Content {
         'publishedAt': publishedAt.toIso8601String(),
         'validated': validated,
         'isVideo': isVideo,
+        if (videoLanguage != null) 'videoLanguage': videoLanguage,
       };
 
   /// Titre affiché : admin en priorité, sinon source, sinon URL.
@@ -78,6 +82,7 @@ class Content {
     ContentCategory? category,
     DateTime? publishedAt,
     bool? validated,
+    String? videoLanguage,
   }) {
     return Content(
       id: id,
@@ -90,6 +95,7 @@ class Content {
       publishedAt: publishedAt ?? this.publishedAt,
       validated: validated ?? this.validated,
       isVideo: category == ContentCategory.video ? true : (category == null ? isVideo : false),
+      videoLanguage: videoLanguage ?? this.videoLanguage,
     );
   }
 
