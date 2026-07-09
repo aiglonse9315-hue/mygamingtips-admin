@@ -127,6 +127,7 @@ class _ContentsScreenState extends State<ContentsScreen> {
               'Catégorie',
               'Créé le',
               'Langue',
+              'Checked',
               'Actions'
             ],
             rows: list
@@ -186,6 +187,16 @@ class _ContentsScreenState extends State<ContentsScreen> {
                                         ?.color,
                           ),
                         ),
+                      ),
+                      // Indicateur "Checked" (vert = vérifié, rouge = non vérifié).
+                      Icon(
+                        c.checkedAt != null
+                            ? Icons.check_circle_rounded
+                            : Icons.radio_button_unchecked_rounded,
+                        size: 16,
+                        color: c.checkedAt != null
+                            ? Colors.green
+                            : Colors.red,
                       ),
                       Row(
                         mainAxisSize: MainAxisSize.min,

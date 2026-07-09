@@ -17,6 +17,7 @@ class Content {
   final bool validated;
   final bool isVideo;
   final String? videoLanguage;
+  final DateTime? checkedAt;
 
   const Content({
     required this.id,
@@ -30,6 +31,7 @@ class Content {
     this.validated = true,
     this.isVideo = false,
     this.videoLanguage,
+    this.checkedAt,
   });
 
   factory Content.fromJson(Map<String, dynamic> json) {
@@ -50,6 +52,9 @@ class Content {
       validated: (json['validated'] as bool?) ?? true,
       isVideo: (json['isVideo'] as bool?) ?? false,
       videoLanguage: json['videoLanguage'] as String?,
+      checkedAt: json['checkedAt'] != null
+          ? DateTime.tryParse(json['checkedAt'] as String)
+          : null,
     );
   }
 

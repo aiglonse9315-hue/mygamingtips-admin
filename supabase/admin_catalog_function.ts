@@ -240,13 +240,13 @@ serve(async (req) => {
 
     if (route === "suggestions/insert") {
       // Insère une suggestion découverte par le bot Vision.
-      // Contourne la RLS via service_role (Vision n'est pas un user authentifié).
       const { data, error } = await supabase
         .from("suggestions")
         .insert({
           url: body.url,
           shared_text: body.shared_text ?? null,
           status: "pending",
+          author_name: "Vision",
         })
         .select()
         .single();
@@ -259,6 +259,20 @@ serve(async (req) => {
         return json({ error: `Insertion échouée: ${error.message} (code: ${error.code})` }, 400);
       }
       return await jsonWithFreshToken({ ok: true, duplicate: false, id: data?.id });
+    }
+
+    if (route === "contents/mark-checked") {
+      // Marque un ou plusieurs contenus comme vérifiés (checked_at = now).
+      const ids = body.ids;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return json({ error: "ids (array) requis." }, 400);
+      }
+      const { error } = await supabase
+        .from("contents")
+        .update({ checked_at: new Date().toISOString() })
+        .in("id", ids);
+      if (error) return safeError(error, 400, "Marquage checked échoué");
+      return await jsonWithFreshToken({ ok: true, marked: ids.length });
     }
 
     if (route === "contents/delete-batch") {

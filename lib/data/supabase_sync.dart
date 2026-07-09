@@ -105,6 +105,8 @@ class SupabaseSync {
           out['isVideo'] = value;
         case 'video_language':
           out['videoLanguage'] = value;
+        case 'checked_at':
+          out['checkedAt'] = value;
         case 'shared_text':
           out['sharedText'] = value;
         case 'shared_at':
@@ -175,12 +177,12 @@ class SupabaseSync {
           ? {
               'id': authorData['id'] ?? row['author_id'] ?? '',
               'displayName':
-                  authorData['display_name'] ?? 'Inconnu',
+                  authorData['display_name'] ?? row['author_name'] ?? 'Inconnu',
               'avatarUrl': authorData['avatar_preset'],
             }
           : {
               'id': row['author_id'] ?? '',
-              'displayName': 'Inconnu',
+              'displayName': row['author_name'] ?? 'Inconnu',
             };
       final Map<String, dynamic> mapped = _camelRow(row);
       mapped['author'] = authorObj;
@@ -214,12 +216,12 @@ class SupabaseSync {
           ? {
               'id': authorData['id'] ?? row['author_id'] ?? '',
               'displayName':
-                  authorData['display_name'] ?? 'Inconnu',
+                  authorData['display_name'] ?? row['author_name'] ?? 'Inconnu',
               'avatarUrl': authorData['avatar_preset'],
             }
           : {
               'id': row['author_id'] ?? '',
-              'displayName': 'Inconnu',
+              'displayName': row['author_name'] ?? 'Inconnu',
             };
       final Map<String, dynamic> mapped = _camelRow(row);
       mapped['author'] = authorObj;
@@ -251,12 +253,12 @@ class SupabaseSync {
           ? {
               'id': authorData['id'] ?? row['author_id'] ?? '',
               'displayName':
-                  authorData['display_name'] ?? 'Inconnu',
+                  authorData['display_name'] ?? row['author_name'] ?? 'Inconnu',
               'avatarUrl': authorData['avatar_preset'],
             }
           : {
               'id': row['author_id'] ?? '',
-              'displayName': 'Inconnu',
+              'displayName': row['author_name'] ?? 'Inconnu',
             };
       final Map<String, dynamic> mapped = _camelRow(row);
       mapped['author'] = authorObj;
