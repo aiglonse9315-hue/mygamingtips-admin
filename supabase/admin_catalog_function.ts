@@ -238,6 +238,79 @@ serve(async (req) => {
       return await jsonWithFreshToken({ content: data });
     }
 
+    if (route === "suggestions/insert") {
+      // Insère une suggestion découverte par le bot Vision.
+      // Contourne la RLS via service_role (Vision n'est pas un user authentifié).
+      const { data, error } = await supabase
+        .from("suggestions")
+        .insert({
+          url: body.url,
+          shared_text: body.shared_text ?? null,
+          status: "pending",
+        })
+        .select()
+        .single();
+      if (error) {
+        console.error("[suggestions/insert] erreur:", JSON.stringify(error));
+        // 23505 = doublon (URL unique) → pas une erreur, on retourne ok.
+        if (error.code === "23505") {
+          return await jsonWithFreshToken({ ok: true, duplicate: true });
+        }
+        return json({ error: `Insertion échouée: ${error.message} (code: ${error.code})` }, 400);
+      }
+      return await jsonWithFreshToken({ ok: true, duplicate: false, id: data?.id });
+    }
+
+    if (route === "contents/delete-batch") {
+      // Supprime plusieurs contenus par leurs IDs (batch).
+      const ids = body.ids;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return json({ error: "ids (array) requis." }, 400);
+      }
+      const { error } = await supabase
+        .from("contents")
+        .delete()
+        .in("id", ids);
+      if (error) return safeError(error, 400, "Suppression batch échouée");
+      return await jsonWithFreshToken({ ok: true, deleted: ids.length });
+    }
+
+    if (route === "blocked-urls/insert-batch") {
+      // Insère plusieurs URLs bloqués (vidéos consolidées en playlist par Check).
+      const urls = body.urls;
+      const playlistUrl = body.playlist_url ?? null;
+      const reason = body.reason ?? "Consolidated into playlist by Check bot";
+      if (!Array.isArray(urls) || urls.length === 0) {
+        return json({ error: "urls (array) requis." }, 400);
+      }
+      const rows = urls.map((u: string) => ({
+        url: u,
+        reason: reason,
+        playlist_url: playlistUrl,
+      }));
+      // upsert pour ignorer les doublons (url est UNIQUE).
+      const { error } = await supabase
+        .from("blocked_urls")
+        .upsert(rows, { onConflict: "url", ignoreDuplicates: true });
+      if (error) return safeError(error, 400, "Insertion blocked_urls échouée");
+      return await jsonWithFreshToken({ ok: true, blocked: urls.length });
+    }
+
+    if (route === "contents/update-language") {
+      // Met à jour uniquement la langue d'un contenu.
+      const contentId = uuidOrUndefined(body.id);
+      const language = body.video_language;
+      if (!contentId) {
+        return json({ error: "id requis." }, 400);
+      }
+      const { error } = await supabase
+        .from("contents")
+        .update({ video_language: language ?? null })
+        .eq("id", contentId);
+      if (error) return safeError(error, 400, "Mise à jour langue échouée");
+      return await jsonWithFreshToken({ ok: true });
+    }
+
     if (route === "contents/update-date") {
       // Met à jour uniquement la date de publication d'un contenu.
       // Utilisé par le bot Check pour corriger les dates YouTube.

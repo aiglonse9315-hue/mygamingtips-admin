@@ -28,6 +28,9 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   /// IDs des suggestions sélectionnées (section 99% sûr).
   final Set<String> _selected = <String>{};
 
+  /// IDs des suggestions sélectionnées (section À vérifier).
+  final Set<String> _toVerifySelected = <String>{};
+
   void _toggleSelect(String id) {
     setState(() {
       if (_selected.contains(id)) {
@@ -41,12 +44,45 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   void _selectAll(List<Suggestion> trusted) {
     setState(() {
       if (_selected.length == trusted.length) {
-        _selected.clear(); // tout désélectionner
+        _selected.clear();
       } else {
         _selected.clear();
         _selected.addAll(trusted.map((s) => s.id));
       }
     });
+  }
+
+  void _toggleVerifySelect(String id) {
+    setState(() {
+      if (_toVerifySelected.contains(id)) {
+        _toVerifySelected.remove(id);
+      } else {
+        _toVerifySelected.add(id);
+      }
+    });
+  }
+
+  void _selectAllToVerify(List<Suggestion> toVerify) {
+    setState(() {
+      if (_toVerifySelected.length == toVerify.length) {
+        _toVerifySelected.clear();
+      } else {
+        _toVerifySelected.clear();
+        _toVerifySelected.addAll(toVerify.map((s) => s.id));
+      }
+    });
+  }
+
+  /// Rejette toutes les suggestions "À vérifier" (ou seulement les sélectionnées).
+  Future<void> _rejectAllToVerify(List<Suggestion> toVerify) async {
+    final store = context.read<StoreController>();
+    final toReject = _toVerifySelected.isNotEmpty
+        ? toVerify.where((s) => _toVerifySelected.contains(s.id)).toList()
+        : toVerify;
+    for (final s in toReject) {
+      await store.rejectSentinelle(s);
+    }
+    setState(() => _toVerifySelected.clear());
   }
 
   /// Valide toutes les suggestions "99% sûr" en une fois.
@@ -241,17 +277,110 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
           const SizedBox(height: 32),
 
           // Section 2 : À vérifier
-          _SectionHeader(
-            icon: Icons.visibility_rounded,
-            color: AppColors.categoryVideo,
-            title: 'À vérifier',
-            count: toVerify.length,
+          Row(
+            children: [
+              _SectionHeader(
+                icon: Icons.visibility_rounded,
+                color: AppColors.categoryVideo,
+                title: 'À vérifier',
+                count: toVerify.length,
+              ),
+              const Spacer(),
+              if (toVerify.isNotEmpty) ...[
+                // Checkbox tout sélectionner (À vérifier).
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: InkWell(
+                    onTap: () => _selectAllToVerify(toVerify),
+                    borderRadius: BorderRadius.circular(4),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 4),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _toVerifySelected.length == toVerify.length
+                                ? Icons.check_box_rounded
+                                : Icons.check_box_outline_blank_rounded,
+                            size: 18,
+                            color: _toVerifySelected.length == toVerify.length
+                                ? AppColors.categoryVideo
+                                : null,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            _toVerifySelected.length == toVerify.length
+                                ? 'Tout désélectionner'
+                                : 'Tout sélectionner',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                // Bouton : rejeter la sélection (ou tout si rien de sélectionné).
+                if (_toVerifySelected.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilledButton.icon(
+                      onPressed: () => showDialog<void>(
+                        context: context,
+                        builder: (_) => ConfirmDialog(
+                          title:
+                              'Rejeter ${_toVerifySelected.length} suggestion(s) ?',
+                          message:
+                              'Les ${_toVerifySelected.length} suggestion(s) sélectionnée(s) seront rejetées.',
+                          confirmLabel: 'Rejeter la sélection',
+                          destructive: true,
+                          onConfirm: () =>
+                              _rejectAllToVerify(toVerify),
+                        ),
+                      ),
+                      icon: const Icon(Icons.cancel_outlined, size: 16),
+                      label: Text(
+                          'Rejeter sélection (${_toVerifySelected.length})'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.orange,
+                        foregroundColor: Colors.black,
+                      ),
+                    ),
+                  ),
+                // Bouton : tout rejeter.
+                FilledButton.icon(
+                  onPressed: () => showDialog<void>(
+                    context: context,
+                    builder: (_) => ConfirmDialog(
+                      title:
+                          'Rejeter toutes les suggestions (${toVerify.length}) ?',
+                      message:
+                          'Les ${toVerify.length} suggestions "À vérifier" seront '
+                          'définitivement rejetées.',
+                      confirmLabel: 'Tout rejeter',
+                      destructive: true,
+                      onConfirm: () => _rejectAllToVerify(toVerify),
+                    ),
+                  ),
+                  icon: const Icon(Icons.delete_sweep_rounded, size: 16),
+                  label: const Text('Tout rejeter'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.categoryVideo,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ],
+            ],
           ),
           const SizedBox(height: 12),
           if (toVerify.isEmpty)
             const _EmptyHint(text: 'Aucune suggestion à vérifier. 🎉')
           else
-            _ToVerifyTable(suggestions: toVerify),
+            _ToVerifyTable(
+              suggestions: toVerify,
+              selectedIds: _toVerifySelected,
+              onToggle: _toggleVerifySelect,
+            ),
         ],
       ),
     );
@@ -447,18 +576,43 @@ class _TrustedTable extends StatelessWidget {
 }
 
 class _ToVerifyTable extends StatelessWidget {
-  const _ToVerifyTable({required this.suggestions});
+  const _ToVerifyTable({
+    required this.suggestions,
+    this.selectedIds,
+    this.onToggle,
+  });
+
   final List<Suggestion> suggestions;
+  final Set<String>? selectedIds;
+  final ValueChanged<String>? onToggle;
 
   @override
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
+    final hasCheckbox = selectedIds != null && onToggle != null;
     return AdminDataTable(
-      columns: const ['Titre', 'Titre pour insertion', 'Verdict IA', 'Raison', 'Confiance', 'Actions'],
+      columns: hasCheckbox
+          ? const ['☐', 'Titre', 'Titre pour insertion', 'Verdict IA', 'Raison', 'Confiance', 'Actions']
+          : const ['Titre', 'Titre pour insertion', 'Verdict IA', 'Raison', 'Confiance', 'Actions'],
       rows: suggestions.map((s) {
         final ai = s.aiRecommendation;
         final isReject = ai?.verdict == AiVerdict.reject;
+        final isSelected = selectedIds?.contains(s.id) ?? false;
         return [
+          if (hasCheckbox)
+            InkWell(
+              onTap: () => onToggle!(s.id),
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Icon(
+                  isSelected
+                      ? Icons.check_box_rounded
+                      : Icons.check_box_outline_blank_rounded,
+                  size: 18,
+                  color: isSelected ? AppColors.categoryVideo : null,
+                ),
+              ),
+            ),
           Text(_cleanTitle(s),
               style:
                   const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
