@@ -23,8 +23,17 @@ class _ContentsScreenState extends State<ContentsScreen> {
   String? _gameFilter; // null = tous
   /// Filtre catégorie : 'media' = vidéo+guides fusionnés, 'links' = liens, null = toutes.
   String? _catFilter;
+  /// Filtre langue : null = toutes, 'FR', 'EN', 'none' (sans langue).
+  /// FR et EN incluent les contenus sans langue (null).
+  String? _langFilter;
   String _search = '';
   final TextEditingController _searchCtrl = TextEditingController();
+
+  // ── État du tri des colonnes ──
+  /// Index de la colonne triée (null = tri par défaut publishedAt DESC).
+  /// 0=Titre, 1=Jeu, 2=Catégorie, 3=Créé le, 4=Langue, 5=Checked.
+  int? _sortColumnIndex;
+  bool _sortAscending = false; // false = décroissant par défaut.
 
   @override
   void dispose() {
@@ -36,9 +45,9 @@ class _ContentsScreenState extends State<ContentsScreen> {
   Widget build(BuildContext context) {
     final StoreController store = context.watch<StoreController>();
 
-    List<Content> list = store.contents.where((c) => c.validated).toList()
-      ..sort((a, b) => b.publishedAt.compareTo(a.publishedAt));
+    List<Content> list = store.contents.where((c) => c.validated).toList();
 
+    // ── Filtres ──
     if (_gameFilter != null) {
       list = list.where((c) => c.gameId == _gameFilter).toList();
     }
@@ -50,12 +59,30 @@ class _ContentsScreenState extends State<ContentsScreen> {
     } else if (_catFilter == 'links') {
       list = list.where((c) => c.category == ContentCategory.links).toList();
     }
+    // Filtre langue : FR/EN incluent les contenus sans langue (null).
+    // 'none' n'affiche que les contenus sans langue associée.
+    if (_langFilter == 'FR') {
+      list = list
+          .where((c) => c.videoLanguage?.toUpperCase() != 'EN')
+          .toList();
+    } else if (_langFilter == 'EN') {
+      list = list
+          .where((c) => c.videoLanguage?.toUpperCase() != 'FR')
+          .toList();
+    } else if (_langFilter == 'none') {
+      list = list
+          .where((c) => c.videoLanguage == null || c.videoLanguage!.isEmpty)
+          .toList();
+    }
     if (_search.isNotEmpty) {
       final q = _search.toLowerCase();
       list = list
           .where((c) => c.displayTitle.toLowerCase().contains(q))
           .toList();
     }
+
+    // ── Tri par colonne ──
+    _applySort(list, store);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
@@ -117,6 +144,20 @@ class _ContentsScreenState extends State<ContentsScreen> {
                 selectedValue: _catFilter,
                 onChanged: (v) => setState(() => _catFilter = v),
               ),
+              _FilterChip(
+                label: 'Langue',
+                value: _langFilter == null
+                    ? 'Toutes'
+                    : _langFilter == 'FR'
+                        ? '🇫🇷 FR'
+                        : _langFilter == 'EN'
+                            ? '🇬🇧 EN'
+                            : 'Sans langue',
+                items: const ['🇫🇷 FR', '🇬🇧 EN', 'Sans langue'],
+                values: const ['FR', 'EN', 'none'],
+                selectedValue: _langFilter,
+                onChanged: (v) => setState(() => _langFilter = v),
+              ),
             ],
           ),
           const SizedBox(height: 16),
@@ -130,6 +171,20 @@ class _ContentsScreenState extends State<ContentsScreen> {
               'Checked',
               'Actions'
             ],
+            sortColumnIndex: _sortColumnIndex,
+            sortAscending: _sortAscending,
+            nonSortableColumns: const ['Actions'],
+            onSort: (colIdx) {
+              setState(() {
+                if (_sortColumnIndex == colIdx) {
+                  // Même colonne : on inverse le sens.
+                  _sortAscending = !_sortAscending;
+                } else {
+                  _sortColumnIndex = colIdx;
+                  _sortAscending = true;
+                }
+              });
+            },
             rows: list
                 .map((c) => [
                       Text(c.displayTitle,
@@ -245,6 +300,54 @@ class _ContentsScreenState extends State<ContentsScreen> {
         ],
       ),
     );
+  }
+
+  /// Applique le tri sur [list] en place, selon la colonne et le sens choisis.
+  /// Si aucune colonne n'est sélectionnée (_sortColumnIndex == null),
+  /// tri par défaut : publishedAt décroissant (plus récent en premier).
+  void _applySort(List<Content> list, StoreController store) {
+    if (_sortColumnIndex == null) {
+      // Tri par défaut : publishedAt décroissant.
+      list.sort((a, b) => b.publishedAt.compareTo(a.publishedAt));
+      return;
+    }
+
+    int compare(Content a, Content b) {
+      int cmp;
+      switch (_sortColumnIndex) {
+        case 0: // Titre
+          cmp = a.displayTitle
+              .toLowerCase()
+              .compareTo(b.displayTitle.toLowerCase());
+          break;
+        case 1: // Jeu
+          final nameA = store.gameById(a.gameId)?.name ?? '';
+          final nameB = store.gameById(b.gameId)?.name ?? '';
+          cmp = nameA.toLowerCase().compareTo(nameB.toLowerCase());
+          break;
+        case 2: // Catégorie
+          cmp = a.category.label.compareTo(b.category.label);
+          break;
+        case 3: // Créé le
+          cmp = a.publishedAt.compareTo(b.publishedAt);
+          break;
+        case 4: // Langue (null remonte en premier en ascendant)
+          final langA = a.videoLanguage?.toUpperCase() ?? '';
+          final langB = b.videoLanguage?.toUpperCase() ?? '';
+          cmp = langA.compareTo(langB);
+          break;
+        case 5: // Checked (vérifiés en premier en ascendant)
+          final checkedA = a.checkedAt != null ? 1 : 0;
+          final checkedB = b.checkedAt != null ? 1 : 0;
+          cmp = checkedA.compareTo(checkedB);
+          break;
+        default:
+          cmp = 0;
+      }
+      return _sortAscending ? cmp : -cmp;
+    }
+
+    list.sort(compare);
   }
 
   void _showContentDialog(BuildContext context, Content? existing) {
