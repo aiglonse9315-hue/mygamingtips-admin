@@ -48,6 +48,11 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                   label: '${store.pendingSuggestionsCount} en attente',
                   color: AppColors.plusGold,
                 ),
+              const SizedBox(width: 8),
+              StatusBadge(
+                label: '${store.suggestions.length} total',
+                color: Colors.grey,
+              ),
             ],
           ),
           const SizedBox(height: 8),

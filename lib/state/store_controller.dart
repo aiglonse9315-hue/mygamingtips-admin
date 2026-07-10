@@ -979,9 +979,31 @@ class StoreController extends ChangeNotifier {
   Future<void> _doSyncFromSupabase() async {
     final games = await sync!.fetchGames();
     final contents = await sync!.fetchContents();
-    final suggestions = await sync!.fetchSuggestions();
-    final sentinelleAnalyzing = await sync!.fetchSentinelleAnalyzing();
-    final sentinelleSuggestions = await sync!.fetchSentinelleSuggestions();
+
+    // Pagination : récupère toutes les suggestions par pages de 500.
+    final allSuggestions = <Suggestion>[];
+    final allAnalyzing = <Suggestion>[];
+    final allSentinelle = <Suggestion>[];
+
+    for (var page = 0; ; page++) {
+      final batch = await sync!.fetchSuggestions(page: page, pageSize: 500);
+      allSuggestions.addAll(batch);
+      if (batch.length < 500) break;
+    }
+    for (var page = 0; ; page++) {
+      final batch = await sync!.fetchSentinelleAnalyzing(page: page, pageSize: 500);
+      allAnalyzing.addAll(batch);
+      if (batch.length < 500) break;
+    }
+    for (var page = 0; ; page++) {
+      final batch = await sync!.fetchSentinelleSuggestions(page: page, pageSize: 500);
+      allSentinelle.addAll(batch);
+      if (batch.length < 500) break;
+    }
+
+    final suggestions = allSuggestions;
+    final sentinelleAnalyzing = allAnalyzing;
+    final sentinelleSuggestions = allSentinelle;
 
     // Récupère les abonnements Plus depuis Supabase (table subscriptions).
     List<Map<String, dynamic>> serverPlus = [];

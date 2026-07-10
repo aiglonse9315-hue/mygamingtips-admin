@@ -157,12 +157,14 @@ class SupabaseSync {
   /// La table `suggestions` ne stocke que `author_id` (UUID) ; on utilise la
   /// fonction de jointure PostgREST pour récupérer le profil (displayName,
   /// avatar) via la FK `author_id → profiles.id`.
-  Future<List<Suggestion>> fetchSuggestions() async {
+  Future<List<Suggestion>> fetchSuggestions({int page = 0, int pageSize = 500}) async {
+    final offset = page * pageSize;
     final Uri uri = Uri.parse(
       '$supabaseUrl/rest/v1/suggestions'
       '?select=*,author:profiles(id,display_name,avatar_preset)'
       '&sentinelle_started_at=is.null'
-      '&order=shared_at.desc',
+      '&order=shared_at.desc'
+      '&limit=$pageSize&offset=$offset',
     );
     final http.Response res = await http.get(uri, headers: _anonHeaders);
     if (res.statusCode != 200) {
@@ -194,14 +196,16 @@ class SupabaseSync {
   /// (`sentinelle_started_at NOT NULL` MAIS `ai_recommendation IS NULL`).
   /// Ces suggestions apparaissent dans le menu "Sentinelle" → section
   /// "Analyse en cours" (Sentinelle travaille dessus).
-  Future<List<Suggestion>> fetchSentinelleAnalyzing() async {
+  Future<List<Suggestion>> fetchSentinelleAnalyzing({int page = 0, int pageSize = 500}) async {
+    final offset = page * pageSize;
     final Uri uri = Uri.parse(
       '$supabaseUrl/rest/v1/suggestions'
       '?select=*,author:profiles(id,display_name,avatar_preset)'
       '&sentinelle_started_at=not.is.null'
       '&ai_recommendation=is.null'
       '&status=eq.pending'
-      '&order=shared_at.desc',
+      '&order=shared_at.desc'
+      '&limit=$pageSize&offset=$offset',
     );
     final http.Response res = await http.get(uri, headers: _anonHeaders);
     if (res.statusCode != 200) {
@@ -232,13 +236,15 @@ class SupabaseSync {
   /// Récupère les suggestions DÉJÀ analysées par Sentinelle (avec
   /// `ai_recommendation` non null). Ces suggestions apparaissent dans le menu
   /// "Sentinelle" où l'admin peut les implémenter en 1 clic ou les vérifier.
-  Future<List<Suggestion>> fetchSentinelleSuggestions() async {
+  Future<List<Suggestion>> fetchSentinelleSuggestions({int page = 0, int pageSize = 500}) async {
+    final offset = page * pageSize;
     final Uri uri = Uri.parse(
       '$supabaseUrl/rest/v1/suggestions'
       '?select=*,author:profiles(id,display_name,avatar_preset)'
       '&ai_recommendation=not.is.null'
       '&status=eq.pending'
-      '&order=shared_at.desc',
+      '&order=shared_at.desc'
+      '&limit=$pageSize&offset=$offset',
     );
     final http.Response res = await http.get(uri, headers: _anonHeaders);
     if (res.statusCode != 200) {
@@ -316,6 +322,31 @@ class SupabaseSync {
     } catch (_) {
       return null;
     }
+  }
+
+  // ===========================================================================
+  // COMPTEURS (pour la pagination)
+  // ===========================================================================
+
+  /// Compte le nombre total de suggestions par catégorie (pour la pagination).
+  Future<int> countSuggestions({String? filter}) async {
+    var query = '$supabaseUrl/rest/v1/suggestions?select=id';
+    if (filter != null) query += '&$filter';
+    final res = await http.get(
+      Uri.parse(query),
+      headers: {..._anonHeaders, 'Prefer': 'count=exact'},
+    );
+    if (res.statusCode == 200) {
+      final range = res.headers['content-range'];
+      if (range != null) {
+        final parts = range.split('/');
+        if (parts.length == 2) {
+          return int.tryParse(parts[1]) ?? 0;
+        }
+      }
+      return (jsonDecode(res.body) as List).length;
+    }
+    return 0;
   }
 
   // ===========================================================================
