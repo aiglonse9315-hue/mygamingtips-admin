@@ -21,6 +21,7 @@ class SuggestionsScreen extends StatefulWidget {
 
 class _SuggestionsScreenState extends State<SuggestionsScreen> {
   SuggestionStatus? _statusFilter; // null = toutes
+  bool _hideVision = false; // true = exclure les suggestions du bot Vision
   int _currentPage = 0;
   static const int _pageSize = 500;
 
@@ -31,6 +32,13 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
     List<Suggestion> list = store.suggestionsByDate;
     if (_statusFilter != null) {
       list = list.where((s) => s.status == _statusFilter).toList();
+    }
+    // Filtre Vision : exclut les suggestions du bot Vision pour ne voir
+    // que celles des vrais utilisateurs.
+    if (_hideVision) {
+      list = list
+          .where((s) => s.author.displayName.toLowerCase() != 'vision')
+          .toList();
     }
 
     // Pagination locale : découpe la liste filtrée en pages de 500.
@@ -105,6 +113,13 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                   color: AppColors.categoryVideo,
                   onTap: () => setState(() =>
                       _statusFilter = SuggestionStatus.rejected)),
+              _StatusTab(
+                  label: _hideVision
+                      ? 'Réels uniquement (Vision masqué)'
+                      : 'Masquer Vision',
+                  selected: _hideVision,
+                  color: AppColors.neonViolet,
+                  onTap: () => setState(() => _hideVision = !_hideVision)),
             ],
           ),
           const SizedBox(height: 16),
