@@ -120,7 +120,8 @@ class DashboardScreen extends StatelessWidget {
                                     fontSize: 13)),
                           ),
                           const SizedBox(width: 8),
-                          Expanded(
+                          Flexible(
+                            flex: 3,
                             child: ClipRRect(
                               borderRadius: BorderRadius.circular(6),
                               child: LinearProgressIndicator(
@@ -133,8 +134,7 @@ class DashboardScreen extends StatelessWidget {
                             ),
                           ),
                           const SizedBox(width: 12),
-                          SizedBox(
-                            width: 30,
+                          Expanded(
                             child: Text('$count',
                                 textAlign: TextAlign.right,
                                 style: const TextStyle(
