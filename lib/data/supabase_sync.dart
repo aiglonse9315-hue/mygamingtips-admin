@@ -123,8 +123,15 @@ class SupabaseSync {
   }
 
   /// Récupère tous les jeux (actifs ou non).
-  Future<List<Game>> fetchGames() async {
-    final Uri uri = Uri.parse('$supabaseUrl/rest/v1/games?select=*');
+  /// Récupère les jeux par page.
+  ///
+  /// [page] : index de la page (0-based).
+  /// [pageSize] : nombre de jeux par page (défaut 1000).
+  Future<List<Game>> fetchGames({int page = 0, int pageSize = 1000}) async {
+    final Uri uri = Uri.parse(
+      '$supabaseUrl/rest/v1/games?select=*'
+      '&limit=$pageSize&offset=${page * pageSize}',
+    );
     final http.Response res = await http.get(uri, headers: _anonHeaders);
     if (res.statusCode != 200) {
       throw Exception('fetchGames échec ${res.statusCode}: ${res.body}');

@@ -19,6 +19,10 @@ class _GamesScreenState extends State<GamesScreen> {
   String _search = '';
   final TextEditingController _searchCtrl = TextEditingController();
 
+  // ── Pagination ──
+  int _currentPage = 0;
+  static const int _pageSize = 200;
+
   @override
   void dispose() {
     _searchCtrl.dispose();
@@ -29,7 +33,7 @@ class _GamesScreenState extends State<GamesScreen> {
   Widget build(BuildContext context) {
     final StoreController store = context.watch<StoreController>();
 
-    // Filtre par recherche (nom ou éditeur).
+    // Filtre par recherche (nom ou éditeur) — sur l'ensemble des jeux.
     List<Game> games = store.games;
     if (_search.isNotEmpty) {
       final q = _search.toLowerCase();
@@ -39,6 +43,18 @@ class _GamesScreenState extends State<GamesScreen> {
               (g.publisher?.toLowerCase().contains(q) ?? false))
           .toList();
     }
+
+    // ── Pagination locale : découpe la liste filtrée en pages de 200 ──
+    final totalPages = (games.length / _pageSize).ceil();
+    if (_currentPage >= totalPages && totalPages > 0) {
+      _currentPage = totalPages - 1;
+    }
+    if (_currentPage < 0) _currentPage = 0;
+    final startIndex = _currentPage * _pageSize;
+    final endIndex = startIndex + _pageSize > games.length
+        ? games.length
+        : startIndex + _pageSize;
+    final pagedGames = games.sublist(startIndex, endIndex);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
@@ -73,9 +89,54 @@ class _GamesScreenState extends State<GamesScreen> {
             ),
           ),
           const SizedBox(height: 16),
+          // ── Barre de pagination ──
+          if (totalPages > 1) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.first_page_rounded),
+                  onPressed: _currentPage > 0
+                      ? () => setState(() => _currentPage = 0)
+                      : null,
+                  tooltip: 'Première page',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.chevron_left_rounded),
+                  onPressed: _currentPage > 0
+                      ? () => setState(() => _currentPage--)
+                      : null,
+                  tooltip: 'Page précédente',
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Page ${_currentPage + 1} / $totalPages'
+                  ' (${startIndex + 1}-$endIndex sur ${games.length})',
+                  style:
+                      const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.chevron_right_rounded),
+                  onPressed: _currentPage < totalPages - 1
+                      ? () => setState(() => _currentPage++)
+                      : null,
+                  tooltip: 'Page suivante',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.last_page_rounded),
+                  onPressed: _currentPage < totalPages - 1
+                      ? () => setState(() => _currentPage = totalPages - 1)
+                      : null,
+                  tooltip: 'Dernière page',
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ],
           AdminDataTable(
             columns: const ['Jeu', 'Éditeur', 'Contenus', 'Statut', 'Actions'],
-            rows: games
+            rows: pagedGames
                 .map((g) => [
                       Row(
                         children: [
