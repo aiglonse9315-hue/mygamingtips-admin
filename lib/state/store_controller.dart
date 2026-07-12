@@ -979,13 +979,19 @@ class StoreController extends ChangeNotifier {
   Future<void> _doSyncFromSupabase() async {
     final games = await sync!.fetchGames();
 
-    // Pagination : récupère tous les contenus par pages de 500 (dépasse
-    // la limite par défaut de 1000 lignes de PostgREST).
+    // Pagination : récupère jusqu'à 10 000 contenus par pages de 1000
+    // (dépasse la limite par défaut de 1000 lignes de PostgREST).
+    // Le plafond de 10 000 protège le navigateur contre une surcharge
+    // mémoire : si vous dépassez 10 000 contenus validés, seuls les 10 000
+    // plus récents seront chargés.
+    const int maxContents = 10000;
+    const int contentsPageSize = 1000;
     final allContents = <Content>[];
-    for (var page = 0; ; page++) {
-      final batch = await sync!.fetchContents(page: page, pageSize: 500);
+    for (var page = 0; page * contentsPageSize < maxContents; page++) {
+      final batch =
+          await sync!.fetchContents(page: page, pageSize: contentsPageSize);
       allContents.addAll(batch);
-      if (batch.length < 500) break;
+      if (batch.length < contentsPageSize) break; // Fin des données.
     }
     final contents = allContents;
 
