@@ -35,6 +35,10 @@ class _ContentsScreenState extends State<ContentsScreen> {
   int? _sortColumnIndex;
   bool _sortAscending = false; // false = décroissant par défaut.
 
+  // ── Pagination ──
+  int _currentPage = 0;
+  static const int _pageSize = 250;
+
   @override
   void dispose() {
     _searchCtrl.dispose();
@@ -83,6 +87,18 @@ class _ContentsScreenState extends State<ContentsScreen> {
 
     // ── Tri par colonne ──
     _applySort(list, store);
+
+    // ── Pagination locale : découpe la liste filtrée+triée en pages de 250 ──
+    final totalPages = (list.length / _pageSize).ceil();
+    if (_currentPage >= totalPages && totalPages > 0) {
+      _currentPage = totalPages - 1;
+    }
+    if (_currentPage < 0) _currentPage = 0;
+    final startIndex = _currentPage * _pageSize;
+    final endIndex = startIndex + _pageSize > list.length
+        ? list.length
+        : startIndex + _pageSize;
+    final pagedList = list.sublist(startIndex, endIndex);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
@@ -161,6 +177,51 @@ class _ContentsScreenState extends State<ContentsScreen> {
             ],
           ),
           const SizedBox(height: 16),
+          // ── Barre de pagination ──
+          if (totalPages > 1) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.first_page_rounded),
+                  onPressed: _currentPage > 0
+                      ? () => setState(() => _currentPage = 0)
+                      : null,
+                  tooltip: 'Première page',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.chevron_left_rounded),
+                  onPressed: _currentPage > 0
+                      ? () => setState(() => _currentPage--)
+                      : null,
+                  tooltip: 'Page précédente',
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Page ${_currentPage + 1} / $totalPages'
+                  ' (${startIndex + 1}-$endIndex sur ${list.length})',
+                  style:
+                      const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.chevron_right_rounded),
+                  onPressed: _currentPage < totalPages - 1
+                      ? () => setState(() => _currentPage++)
+                      : null,
+                  tooltip: 'Page suivante',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.last_page_rounded),
+                  onPressed: _currentPage < totalPages - 1
+                      ? () => setState(() => _currentPage = totalPages - 1)
+                      : null,
+                  tooltip: 'Dernière page',
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ],
           AdminDataTable(
             columns: const [
               'Titre',
@@ -185,7 +246,7 @@ class _ContentsScreenState extends State<ContentsScreen> {
                 }
               });
             },
-            rows: list
+            rows: pagedList
                 .map((c) => [
                       Text(c.displayTitle,
                           style: const TextStyle(

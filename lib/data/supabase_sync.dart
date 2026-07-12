@@ -135,10 +135,14 @@ class SupabaseSync {
         .toList();
   }
 
-  /// Récupère tous les contenus validés.
-  Future<List<Content>> fetchContents() async {
+  /// Récupère les contenus validés par page.
+  ///
+  /// [page] : index de la page (0-based).
+  /// [pageSize] : nombre de contenus par page (défaut 1000 pour la rétrocompatibilité).
+  Future<List<Content>> fetchContents({int page = 0, int pageSize = 1000}) async {
     final Uri uri = Uri.parse(
-      '$supabaseUrl/rest/v1/contents?select=*&order=published_at.desc',
+      '$supabaseUrl/rest/v1/contents?select=*&order=published_at.desc'
+      '&limit=$pageSize&offset=${page * pageSize}',
     );
     final http.Response res = await http.get(uri, headers: _anonHeaders);
     if (res.statusCode != 200) {
