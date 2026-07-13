@@ -227,7 +227,8 @@ class _ContentsScreenState extends State<ContentsScreen> {
               'Titre',
               'Jeu',
               'Catégorie',
-              'Créé le',
+              'Publié le',
+              'Ajouté le',
               'Langue',
               'Checked',
               'Actions'
@@ -261,6 +262,17 @@ class _ContentsScreenState extends State<ContentsScreen> {
                       StatusBadge(
                           label: c.category.label, color: c.category.color),
                       Text(_formatDate(c.publishedAt),
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.color)),
+                      // Date d'ajout dans la base (created_at).
+                      Text(
+                          c.createdAt != null
+                              ? _formatDate(c.createdAt!)
+                              : '—',
                           style: TextStyle(
                               fontSize: 12,
                               color: Theme.of(context)
@@ -389,15 +401,20 @@ class _ContentsScreenState extends State<ContentsScreen> {
         case 2: // Catégorie
           cmp = a.category.label.compareTo(b.category.label);
           break;
-        case 3: // Créé le
+        case 3: // Publié le (publishedAt = date YouTube)
           cmp = a.publishedAt.compareTo(b.publishedAt);
           break;
-        case 4: // Langue (null remonte en premier en ascendant)
+        case 4: // Ajouté le (createdAt = date d'ajout en base)
+          final createdA = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+          final createdB = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+          cmp = createdA.compareTo(createdB);
+          break;
+        case 5: // Langue (null remonte en premier en ascendant)
           final langA = a.videoLanguage?.toUpperCase() ?? '';
           final langB = b.videoLanguage?.toUpperCase() ?? '';
           cmp = langA.compareTo(langB);
           break;
-        case 5: // Checked (vérifiés en premier en ascendant)
+        case 6: // Checked (vérifiés en premier en ascendant)
           final checkedA = a.checkedAt != null ? 1 : 0;
           final checkedB = b.checkedAt != null ? 1 : 0;
           cmp = checkedA.compareTo(checkedB);

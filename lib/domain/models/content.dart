@@ -14,6 +14,7 @@ class Content {
   final String? titleAdmin;
   final String? imageUrl;
   final DateTime publishedAt;
+  final DateTime? createdAt; // date d'ajout dans la base
   final bool validated;
   final bool isVideo;
   final String? videoLanguage;
@@ -28,6 +29,7 @@ class Content {
     this.titleAdmin,
     this.imageUrl,
     required this.publishedAt,
+    this.createdAt,
     this.validated = true,
     this.isVideo = false,
     this.videoLanguage,
@@ -49,6 +51,9 @@ class Content {
       publishedAt:
           DateTime.tryParse(json['publishedAt'] as String? ?? '') ??
               DateTime.now(),
+      createdAt: json['createdAt'] != null
+          ? DateTime.tryParse(json['createdAt'] as String)
+          : null,
       validated: (json['validated'] as bool?) ?? true,
       isVideo: (json['isVideo'] as bool?) ?? false,
       videoLanguage: json['videoLanguage'] as String?,
