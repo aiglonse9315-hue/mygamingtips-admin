@@ -409,6 +409,35 @@ class _PlusAccordionState extends State<_PlusAccordion> {
                       : AppColors.plus),
             ),
           ),
+          const SizedBox(width: 6),
+          // Badge source : Google Play (lecture seule) ou Manuel (admin).
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            decoration: BoxDecoration(
+              color: (n.isGoogle ? Colors.green : Colors.blue)
+                  .withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  n.isGoogle ? Icons.shopping_cart_rounded : Icons.person_rounded,
+                  size: 10,
+                  color: n.isGoogle ? Colors.green : Colors.blue,
+                ),
+                const SizedBox(width: 3),
+                Text(
+                  n.isGoogle ? 'Google' : 'Manuel',
+                  style: TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w800,
+                      color: n.isGoogle ? Colors.green : Colors.blue),
+                ),
+              ],
+            ),
+          ),
           if (!n.active) ...[
             const SizedBox(width: 6),
             StatusBadge(label: 'Expiré', color: Colors.grey),
@@ -423,24 +452,27 @@ class _PlusAccordionState extends State<_PlusAccordion> {
         mainAxisSize: MainAxisSize.min,
         children: [
           // Bouton "Suspendre" : affiché uniquement si l'abonné est actif.
-          // La réactivation est volontairement verrouillée (abonnés inactifs
-          // = expirés, gérés côté Google Play Billing).
           if (n.active)
             IconButton(
-              tooltip: 'Suspendre',
+              tooltip: n.isGoogle
+                  ? 'Suspendre (Google Play — vérifier d\'abord l\'abonnement Play)'
+                  : 'Suspendre',
               icon: const Icon(Icons.pause_circle_outline_rounded,
                   size: 20, color: AppColors.plusGold),
               onPressed: () => store.togglePlusUser(n),
             ),
-          PopupMenuButton<String>(
-            tooltip: 'Changer la formule',
-            icon: const Icon(Icons.swap_horiz_rounded, size: 20),
-            onSelected: (plan) => store.setPlusPlan(n, plan),
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'monthly', child: Text('Mensuel')),
-              PopupMenuItem(value: 'yearly', child: Text('Annuel')),
-            ],
-          ),
+          // Les abonnés Google sont en lecture seule : on ne change pas
+          // le plan (géré par Google Play).
+          if (!n.isGoogle)
+            PopupMenuButton<String>(
+              tooltip: 'Changer la formule',
+              icon: const Icon(Icons.swap_horiz_rounded, size: 20),
+              onSelected: (plan) => store.setPlusPlan(n, plan),
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'monthly', child: Text('Mensuel')),
+                PopupMenuItem(value: 'yearly', child: Text('Annuel')),
+              ],
+            ),
           IconButton(
             tooltip: 'Supprimer',
             icon: const Icon(Icons.delete_outline_rounded, size: 20),

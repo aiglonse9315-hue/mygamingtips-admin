@@ -473,6 +473,7 @@ class SupabaseSync {
     bool isActive = true,
     DateTime? startedAt,
     DateTime? expiresAt,
+    String source = 'admin',
   }) async {
     await _post('subscriptions/upsert', {
       'user_id': userId,
@@ -480,6 +481,7 @@ class SupabaseSync {
       'is_active': isActive,
       'started_at': startedAt?.toIso8601String(),
       'expires_at': expiresAt?.toIso8601String(),
+      'source': source,
     });
   }
 
@@ -498,6 +500,7 @@ class SupabaseSync {
         'active': (m['is_active'] as bool?) ?? false,
         'startedAt': m['started_at'] as String?,
         'displayName': m['display_name'] as String? ?? 'Inconnu',
+        'source': (m['source'] as String?) ?? 'admin',
       };
     }).toList();
   }

@@ -877,6 +877,15 @@ class StoreController extends ChangeNotifier {
   }
 
   void deletePlusUser(String id) {
+    // Désactive côté serveur AVANT de supprimer localement.
+    final user = _plus.where((n) => n.id == id).firstOrNull;
+    if (user != null && sync != null) {
+      sync!.upsertSubscription(
+        userId: id,
+        plan: user.plan,
+        isActive: false,
+      );
+    }
     _plus = _plus.where((n) => n.id != id).toList();
     _store.savePlus(_plus);
     notifyListeners();

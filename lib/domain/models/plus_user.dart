@@ -9,6 +9,7 @@ class PlusUser {
   final String plan; // 'monthly' ou 'yearly'
   final DateTime startedAt;
   final bool active;
+  final String source; // 'google' (Google Play) ou 'admin' (manuel)
 
   const PlusUser({
     required this.id,
@@ -17,6 +18,7 @@ class PlusUser {
     required this.plan,
     required this.startedAt,
     this.active = true,
+    this.source = 'admin',
   });
 
   factory PlusUser.fromJson(Map<String, dynamic> json) {
@@ -29,6 +31,7 @@ class PlusUser {
           DateTime.tryParse(json['startedAt'] as String? ?? '') ??
               DateTime.now(),
       active: (json['active'] as bool?) ?? true,
+      source: (json['source'] as String?) ?? 'admin',
     );
   }
 
@@ -39,7 +42,10 @@ class PlusUser {
         'plan': plan,
         'startedAt': startedAt.toIso8601String(),
         'active': active,
+        'source': source,
       };
+
+  bool get isGoogle => source == 'google';
 
   PlusUser copyWith({
     bool? active,
@@ -52,6 +58,7 @@ class PlusUser {
       plan: plan ?? this.plan,
       startedAt: startedAt,
       active: active ?? this.active,
+      source: source,
     );
   }
 
