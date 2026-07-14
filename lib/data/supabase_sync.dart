@@ -285,12 +285,13 @@ class SupabaseSync {
 
   /// Récupère le top 20 des contributeurs (par suggestions acceptées).
   ///
-  /// Utilise la vue `contributor_stats` jointe à `profiles`.
+  /// Utilise la vue `contributor_stats` qui inclut désormais `display_name`
+  /// directement (pour Vision et les contributeurs sans profil lié).
   Future<List<Map<String, dynamic>>> fetchTopContributors(
       {int limit = 20}) async {
     final Uri uri = Uri.parse(
       '$supabaseUrl/rest/v1/contributor_stats'
-      '?select=accepted_count,author:profiles(id,display_name,avatar_preset)'
+      '?select=accepted_count,display_name,author_id'
       '&order=accepted_count.desc'
       '&limit=$limit',
     );
@@ -302,12 +303,13 @@ class SupabaseSync {
     final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
     return rows.map((r) {
       final row = r as Map<String, dynamic>;
-      final author = row['author'] as Map<String, dynamic>?;
+      final name = (row['display_name'] as String?) ?? 'Inconnu';
       return <String, dynamic>{
-        'userId': author?['id'] ?? '',
-        'displayName': author?['display_name'] ?? 'Inconnu',
-        'avatarPreset': author?['avatar_preset'],
+        'userId': row['author_id'] as String? ?? '',
+        'displayName': name,
+        'avatarPreset': null,
         'acceptedCount': row['accepted_count'] ?? 0,
+        'isVision': name.toLowerCase() == 'vision',
       };
     }).toList();
   }
