@@ -499,6 +499,7 @@ class SupabaseSync {
         'plan': (m['plan'] as String?) ?? 'monthly',
         'active': (m['is_active'] as bool?) ?? false,
         'startedAt': m['started_at'] as String?,
+        'expiresAt': m['expires_at'] as String?,
         'displayName': m['display_name'] as String? ?? 'Inconnu',
         'source': (m['source'] as String?) ?? 'admin',
       };

@@ -6,6 +6,7 @@ import '../../state/store_controller.dart';
 import '../widgets/admin_sidebar.dart';
 import '../widgets/admin_topbar.dart';
 import '../widgets/confirm_dialog.dart';
+import 'abonnements_screen.dart';
 import 'contents_screen.dart';
 import 'contributors_screen.dart';
 import 'dashboard_screen.dart';
@@ -35,6 +36,7 @@ class _AdminShellState extends State<AdminShell> {
     NavItem('Contenus', Icons.collections_bookmark_rounded, '/contents'),
     NavItem('Suggestions', Icons.inbox_rounded, '/suggestions'),
     NavItem('Sentinelle', Icons.smart_toy_rounded, '/sentinelle'),
+    NavItem('Abonnements', Icons.card_membership_rounded, '/abonnements'),
     NavItem('Contributeurs', Icons.groups_rounded, '/contributors'),
   ];
 
@@ -121,6 +123,8 @@ class _AdminShellState extends State<AdminShell> {
         return const SuggestionsScreen();
       case '/sentinelle':
         return const SentinelleScreen();
+      case '/abonnements':
+        return const AbonnementsScreen();
       case '/contributors':
         return const ContributorsScreen();
       default:

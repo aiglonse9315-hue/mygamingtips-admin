@@ -487,7 +487,7 @@ class _PlusAccordionState extends State<_PlusAccordion> {
   void _showAddDialog(BuildContext context) {
     showDialog<void>(
       context: context,
-      builder: (_) => const _AddPlusUserDialog(),
+      builder: (_) => const AddPlusUserDialog(),
     );
   }
 
@@ -496,14 +496,14 @@ class _PlusAccordionState extends State<_PlusAccordion> {
 }
 
 /// Dialog d'ajout manuel d'un utilisateur Plus.
-class _AddPlusUserDialog extends StatefulWidget {
-  const _AddPlusUserDialog();
+class AddPlusUserDialog extends StatefulWidget {
+  const AddPlusUserDialog();
 
   @override
-  State<_AddPlusUserDialog> createState() => _AddPlusUserDialogState();
+  State<AddPlusUserDialog> createState() => _AddPlusUserDialogState();
 }
 
-class _AddPlusUserDialogState extends State<_AddPlusUserDialog> {
+class _AddPlusUserDialogState extends State<AddPlusUserDialog> {
   final TextEditingController _name = TextEditingController();
   final TextEditingController _email = TextEditingController();
   String _plan = 'monthly';

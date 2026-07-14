@@ -1099,6 +1099,7 @@ class StoreController extends ChangeNotifier {
             startedAt: DateTime.tryParse(m['startedAt'] as String? ?? '') ??
                 DateTime.now(),
             active: m['active'] as bool? ?? false,
+            source: m['source'] as String? ?? 'admin',
           )),
       ...localOnlyPlus,
     ];
