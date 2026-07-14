@@ -250,7 +250,7 @@ class _ContributorsScreenState extends State<ContributorsScreen>
                 ),
               ),
               child: Text(
-                '🤖 Bot IA • Vous êtes bien trop forts pour nous !',
+                '🤖 IA Vision veille sur vous .',
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
