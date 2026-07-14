@@ -774,12 +774,34 @@ class StoreController extends ChangeNotifier {
 
   /// Bannit manuellement un compte (sans suggestion associée).
   /// Utilisé par le bouton « Bannir » du dashboard.
-  void banManually({
+  /// Bannit manuellement un utilisateur par email.
+  ///
+  /// Résout l'email → UUID via `findProfileByEmail`, puis appelle
+  /// `banUser` sur Supabase pour réellement activer le ban côté base.
+  /// Si l'email n'est pas trouvé, on garde quand même une trace locale
+  /// pour information, mais le ban ne sera pas effectif côté mobile.
+  Future<void> banManually({
     required String displayName,
     String? email,
     String? reason,
-  }) {
-    final id = 'manual-${DateTime.now().millisecondsSinceEpoch}';
+  }) async {
+    final cleanReason = reason?.trim().isEmpty == true
+        ? 'Banni manuellement'
+        : reason!.trim();
+
+    // Tente de résoudre l'email → UUID pour un vrai ban côté base.
+    String? userId;
+    if (email != null && email.trim().isNotEmpty && sync != null) {
+      userId = await sync!.findProfileByEmail(email.trim());
+    }
+
+    if (userId != null && sync != null) {
+      // UUID trouvé → on bannit vraiment côté Supabase.
+      await sync!.banUser(userId, reason: cleanReason);
+    }
+
+    // Ajoute à la liste locale (avec le vrai UUID si trouvé, sinon un ID temp).
+    final id = userId ?? 'manual-${DateTime.now().millisecondsSinceEpoch}';
     _banned = [
       ..._banned,
       BannedUser(
@@ -787,15 +809,11 @@ class StoreController extends ChangeNotifier {
         displayName: displayName.trim(),
         email: email?.trim().isEmpty == true ? null : email?.trim(),
         bannedAt: DateTime.now(),
-        reason: reason?.trim().isEmpty == true
-            ? 'Banni manuellement'
-            : reason!.trim(),
+        reason: cleanReason,
       )
     ];
     _store.saveBanned(_banned);
     notifyListeners();
-    // Pas de sync Supabase : les bans manuels sans user_id valide ne
-    // correspondent à aucun profil en base.
   }
 
   // ---------- Utilisateurs Plus ----------

@@ -660,6 +660,7 @@ class _AddBannedUserDialogState extends State<_AddBannedUserDialog> {
   final TextEditingController _name = TextEditingController();
   final TextEditingController _email = TextEditingController();
   final TextEditingController _reason = TextEditingController();
+  bool _saving = false;
 
   @override
   void dispose() {
@@ -669,14 +670,16 @@ class _AddBannedUserDialogState extends State<_AddBannedUserDialog> {
     super.dispose();
   }
 
-  void _save() {
+  void _save() async {
     if (_name.text.trim().isEmpty) return;
-    context.read<StoreController>().banManually(
+    // Affiche un indicateur pendant la résolution email → UUID.
+    setState(() => _saving = true);
+    await context.read<StoreController>().banManually(
           displayName: _name.text,
           email: _email.text,
           reason: _reason.text,
         );
-    Navigator.pop(context);
+    if (mounted) Navigator.pop(context);
   }
 
   @override
@@ -750,16 +753,22 @@ class _AddBannedUserDialogState extends State<_AddBannedUserDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context),
+          onPressed: _saving ? null : () => Navigator.pop(context),
           child: const Text('Annuler'),
         ),
         FilledButton.icon(
           style: FilledButton.styleFrom(
             backgroundColor: AppColors.categoryVideo,
           ),
-          onPressed: _save,
-          icon: const Icon(Icons.block_rounded),
-          label: const Text('Bannir'),
+          onPressed: _saving ? null : _save,
+          icon: _saving
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.block_rounded),
+          label: Text(_saving ? 'Bannissement...' : 'Bannir'),
         ),
       ],
     );
