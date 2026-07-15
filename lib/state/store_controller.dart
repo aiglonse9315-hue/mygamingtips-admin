@@ -103,6 +103,7 @@ class StoreController extends ChangeNotifier {
   List<Suggestion> _suggestions = <Suggestion>[];
   List<Suggestion> _sentinelleAnalyzing = <Suggestion>[];
   List<Suggestion> _sentinelleSuggestions = <Suggestion>[];
+  List<Suggestion> _gamesToCreate = <Suggestion>[];
   List<BannedUser> _banned = <BannedUser>[];
   List<PlusUser> _plus = <PlusUser>[];
 
@@ -110,6 +111,10 @@ class StoreController extends ChangeNotifier {
   List<Content> get contents => List<Content>.unmodifiable(_contents);
   List<Suggestion> get suggestions =>
       List<Suggestion>.unmodifiable(_suggestions);
+
+  /// Suggestions marquées « Jeux à créer » (flag needs_game_creation).
+  List<Suggestion> get gamesToCreate =>
+      List<Suggestion>.unmodifiable(_gamesToCreate);
 
   /// Suggestions analysées par Sentinelle (menu Sentinelle dédié).
   List<Suggestion> get sentinelleSuggestions =>
@@ -660,6 +665,115 @@ class StoreController extends ChangeNotifier {
     }
   }
 
+  // ── « Jeux à créer » ──
+
+  /// Crée un nouveau jeu puis ajoute le contenu depuis une suggestion
+  /// « Jeux à créer ». Le [gameName] est le nom saisi par l'admin (pré-rempli
+  /// avec le suggestedGame de l'IA).
+  Future<void> acceptGameToCreate(
+      Suggestion suggestion, String gameName) async {
+    final trimmed = gameName.trim();
+    if (trimmed.isEmpty) {
+      lastActionError = 'Le nom du jeu est requis.';
+      notifyListeners();
+      return;
+    }
+
+    // Retrait optimiste de la liste « Jeux à créer ».
+    _gamesToCreate = _gamesToCreate.where((s) => s.id != suggestion.id).toList();
+    notifyListeners();
+
+    if (sync == null || !_isUuid(suggestion.id)) return;
+
+    // 1. Crée le jeu (addGame crée + resync l'UUID réel).
+    await addGame(name: trimmed);
+
+    // 2. Trouve le jeu fraîchement créé.
+    Game? targetGame;
+    try {
+      targetGame = _games.firstWhere(
+          (g) => g.name.toLowerCase() == trimmed.toLowerCase());
+    } catch (_) {
+      lastActionError = 'Création du jeu échouée.';
+      _gamesToCreate = [..._gamesToCreate, suggestion];
+      notifyListeners();
+      return;
+    }
+
+    // 3. Accepte la suggestion (crée le contenu + marque accepted).
+    final ai = suggestion.aiRecommendation;
+    try {
+      await sync!.acceptSuggestion(
+        suggestionId: suggestion.id,
+        gameId: targetGame.id,
+        category: _categoryFromAi(ai?.suggestedCategory, suggestion.url),
+        titleAdmin: _titleForInsertion(suggestion),
+        isVideo:
+            _categoryFromAi(ai?.suggestedCategory, suggestion.url) ==
+                ContentCategory.video,
+        publishedAt: _dateForInsertion(suggestion),
+      );
+      await syncFromSupabase();
+    } catch (e) {
+      _gamesToCreate = [..._gamesToCreate, suggestion];
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
+      lastActionError = 'Création du contenu échouée : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Supprime une entrée « Jeux à créer » (marque rejected).
+  Future<void> rejectGameToCreate(Suggestion suggestion) async {
+    _gamesToCreate =
+        _gamesToCreate.where((s) => s.id != suggestion.id).toList();
+    notifyListeners();
+    if (sync == null || !_isUuid(suggestion.id)) return;
+    try {
+      await sync!.deleteGameToCreateEntry(suggestion.id);
+    } catch (e) {
+      _gamesToCreate = [..._gamesToCreate, suggestion];
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
+      lastActionError = 'Suppression échouée : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Supprime un lot d'entrées « Jeux à créer ».
+  Future<void> rejectGamesToCreateBatch(List<Suggestion> items) async {
+    final ids = items.map((s) => s.id).toSet();
+    _gamesToCreate = _gamesToCreate.where((s) => !ids.contains(s.id)).toList();
+    notifyListeners();
+    if (sync == null) return;
+    final uuidIds = items.where((s) => _isUuid(s.id)).map((s) => s.id).toList();
+    if (uuidIds.isEmpty) return;
+    try {
+      await sync!.deleteGamesToCreateBatch(uuidIds);
+    } catch (e) {
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
+      lastActionError = 'Suppression par lot échouée : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Accepte toutes les suggestions « Jeux à créer » (crée les jeux + contenus).
+  Future<void> acceptAllGamesToCreate(List<Suggestion> items) async {
+    for (final s in items) {
+      final gameName = s.aiRecommendation?.suggestedGame ?? '';
+      if (gameName.trim().isNotEmpty) {
+        await acceptGameToCreate(s, gameName);
+      }
+    }
+  }
+
   /// Catégorie déduite depuis la suggestion IA ou l'URL.
   static ContentCategory _categoryFromAi(String? suggested, String url) {
     switch (suggested?.toLowerCase()) {
@@ -1053,9 +1167,18 @@ class StoreController extends ChangeNotifier {
       if (batch.length < 500) break;
     }
 
+    // Récupère les suggestions « Jeux à créer » (needs_game_creation = true).
+    final allGamesToCreate = <Suggestion>[];
+    for (var page = 0; ; page++) {
+      final batch = await sync!.fetchGamesToCreate(page: page, pageSize: 500);
+      allGamesToCreate.addAll(batch);
+      if (batch.length < 500) break;
+    }
+
     final suggestions = allSuggestions;
     final sentinelleAnalyzing = allAnalyzing;
     final sentinelleSuggestions = allSentinelle;
+    final gamesToCreate = allGamesToCreate;
 
     // Récupère les abonnements Plus depuis Supabase (table subscriptions).
     List<Map<String, dynamic>> serverPlus = [];
@@ -1086,6 +1209,7 @@ class StoreController extends ChangeNotifier {
     // Suggestions Sentinelle : en cours d'analyse + analysées.
     _sentinelleAnalyzing = sentinelleAnalyzing;
     _sentinelleSuggestions = sentinelleSuggestions;
+    _gamesToCreate = gamesToCreate;
 
     // Abonnés Plus : fusionne serveur + locaux (non UUID = démo).
     // On remplace les abonnés serveur (UUID) par la dernière version serveur,

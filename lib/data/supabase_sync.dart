@@ -283,6 +283,56 @@ class SupabaseSync {
     }).toList();
   }
 
+  /// Récupère les suggestions marquées « Jeux à créer » : le flag
+  /// `needs_game_creation` est vrai dans `ai_recommendation`, le statut est
+  /// pending, et l'auteur n'est pas Vision.
+  Future<List<Suggestion>> fetchGamesToCreate(
+      {int page = 0, int pageSize = 500}) async {
+    final offset = page * pageSize;
+    final Uri uri = Uri.parse(
+      '$supabaseUrl/rest/v1/suggestions'
+      '?select=*,author:profiles(id,display_name,avatar_preset)'
+      '&ai_recommendation->needs_game_creation=eq.true'
+      '&status=eq.pending'
+      '&order=shared_at.desc'
+      '&limit=$pageSize&offset=$offset',
+    );
+    final http.Response res = await http.get(uri, headers: _anonHeaders);
+    if (res.statusCode != 200) {
+      throw Exception(
+          'fetchGamesToCreate échec ${res.statusCode}: ${res.body}');
+    }
+    final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
+    return rows.map((r) {
+      final row = r as Map<String, dynamic>;
+      final authorData = row['author'];
+      final Map<String, dynamic> authorObj = authorData is Map
+          ? {
+              'id': authorData['id'] ?? row['author_id'] ?? '',
+              'displayName':
+                  authorData['display_name'] ?? row['author_name'] ?? 'Inconnu',
+              'avatarUrl': authorData['avatar_preset'],
+            }
+          : {
+              'id': row['author_id'] ?? '',
+              'displayName': row['author_name'] ?? 'Inconnu'
+            };
+      final Map<String, dynamic> mapped = _camelRow(row);
+      mapped['author'] = authorObj;
+      return Suggestion.fromJson(mapped);
+    }).toList();
+  }
+
+  /// Supprime une entrée « Jeux à créer » (marque la suggestion rejected).
+  Future<void> deleteGameToCreateEntry(String suggestionId) async {
+    await _post('games-to-create/delete', {'id': suggestionId});
+  }
+
+  /// Supprime un lot d'entrées « Jeux à créer ».
+  Future<void> deleteGamesToCreateBatch(List<String> suggestionIds) async {
+    await _post('games-to-create/delete-batch', {'ids': suggestionIds});
+  }
+
   /// Récupère le top 20 des contributeurs (par suggestions acceptées).
   ///
   /// Utilise la vue `contributor_stats` qui inclut désormais `display_name`
@@ -291,7 +341,7 @@ class SupabaseSync {
       {int limit = 20}) async {
     final Uri uri = Uri.parse(
       '$supabaseUrl/rest/v1/contributor_stats'
-      '?select=accepted_count,display_name,author_id'
+      '?select=accepted_count,total_accepted_count,display_name,author_id'
       '&order=accepted_count.desc'
       '&limit=$limit',
     );
@@ -309,6 +359,7 @@ class SupabaseSync {
         'displayName': name,
         'avatarPreset': null,
         'acceptedCount': row['accepted_count'] ?? 0,
+        'totalAcceptedCount': row['total_accepted_count'],
         'isVision': name.toLowerCase() == 'vision',
       };
     }).toList();

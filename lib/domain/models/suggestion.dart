@@ -137,6 +137,11 @@ class AiRecommendation {
   final DateTime? youtubePublishedAt;
   final DateTime? analyzedAt;
 
+  /// Vrai quand Sentinelle a détecté que le jeu suggéré n'existe pas dans la
+  /// base mais que la vidéo est un tuto/guide valide. L'admin peut créer le
+  /// jeu depuis le tableau « Jeux à créer ».
+  final bool needsGameCreation;
+
   const AiRecommendation({
     required this.verdict,
     required this.confidence,
@@ -148,6 +153,7 @@ class AiRecommendation {
     this.youtubeTitle,
     this.youtubePublishedAt,
     this.analyzedAt,
+    this.needsGameCreation = false,
   });
 
   factory AiRecommendation.fromJson(Map<String, dynamic> json) {
@@ -166,6 +172,7 @@ class AiRecommendation {
       youtubePublishedAt:
           DateTime.tryParse(json['youtube_published_at'] as String? ?? ''),
       analyzedAt: DateTime.tryParse(json['analyzed_at'] as String? ?? ''),
+      needsGameCreation: json['needs_game_creation'] as bool? ?? false,
     );
   }
 
@@ -181,5 +188,6 @@ class AiRecommendation {
         if (youtubePublishedAt != null)
           'youtube_published_at': youtubePublishedAt!.toIso8601String(),
         if (analyzedAt != null) 'analyzed_at': analyzedAt!.toIso8601String(),
+        if (needsGameCreation) 'needs_game_creation': true,
       };
 }

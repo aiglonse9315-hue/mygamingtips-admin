@@ -31,6 +31,30 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   /// IDs des suggestions sélectionnées (section À vérifier).
   final Set<String> _toVerifySelected = <String>{};
 
+  /// IDs des suggestions sélectionnées (section Jeux à créer).
+  final Set<String> _gtcSelected = <String>{};
+
+  void _toggleGtcSelect(String id) {
+    setState(() {
+      if (_gtcSelected.contains(id)) {
+        _gtcSelected.remove(id);
+      } else {
+        _gtcSelected.add(id);
+      }
+    });
+  }
+
+  void _selectAllGtc(List<Suggestion> gtc) {
+    setState(() {
+      if (_gtcSelected.length == gtc.length) {
+        _gtcSelected.clear();
+      } else {
+        _gtcSelected.clear();
+        _gtcSelected.addAll(gtc.map((s) => s.id));
+      }
+    });
+  }
+
   void _toggleSelect(String id) {
     setState(() {
       if (_selected.contains(id)) {
@@ -110,6 +134,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     final analyzing = store.sentinelleAnalyzing;
     final trusted = store.sentinelleTrusted;
     final toVerify = store.sentinelleToVerify;
+    final gamesToCreate = store.gamesToCreate;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
@@ -385,6 +410,184 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                 suggestions: toVerify,
                 selectedIds: _toVerifySelected,
                 onToggle: _toggleVerifySelect,
+              ),
+            ),
+          const SizedBox(height: 32),
+
+          // Section 3 : Jeux à créer
+          Row(
+            children: [
+              _SectionHeader(
+                icon: Icons.auto_fix_high_rounded,
+                color: AppColors.neonViolet,
+                title: 'Jeux à créer',
+                count: gamesToCreate.length,
+              ),
+              const Spacer(),
+              if (gamesToCreate.isNotEmpty) ...[
+                // Checkbox tout sélectionner.
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: InkWell(
+                    onTap: () => _selectAllGtc(gamesToCreate),
+                    borderRadius: BorderRadius.circular(4),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 4),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _gtcSelected.length == gamesToCreate.length
+                                ? Icons.check_box_rounded
+                                : Icons.check_box_outline_blank_rounded,
+                            size: 18,
+                            color: _gtcSelected.length == gamesToCreate.length
+                                ? AppColors.neonViolet
+                                : null,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            _gtcSelected.length == gamesToCreate.length
+                                ? 'Tout désélectionner'
+                                : 'Tout sélectionner',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                // Bouton : valider la sélection
+                if (_gtcSelected.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilledButton.icon(
+                      onPressed: () => showDialog<void>(
+                        context: context,
+                        builder: (_) => ConfirmDialog(
+                          title:
+                              'Valider ${_gtcSelected.length} suggestion(s) ?',
+                          message:
+                              'Les jeux seront créés automatiquement avec le '
+                              'nom suggéré par l\'IA, puis le contenu ajouté.',
+                          confirmLabel: 'Valider la sélection',
+                          onConfirm: () {
+                            final selected = gamesToCreate
+                                .where((s) => _gtcSelected.contains(s.id))
+                                .toList();
+                            context
+                                .read<StoreController>()
+                                .acceptAllGamesToCreate(selected);
+                            setState(() => _gtcSelected.clear());
+                          },
+                        ),
+                      ),
+                      icon: const Icon(Icons.check_circle_outline_rounded,
+                          size: 16),
+                      label: Text(
+                          'Valider sélection (${_gtcSelected.length})'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.neonCyan,
+                        foregroundColor: Colors.black,
+                      ),
+                    ),
+                  ),
+                // Bouton : supprimer la sélection
+                if (_gtcSelected.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilledButton.icon(
+                      onPressed: () => showDialog<void>(
+                        context: context,
+                        builder: (_) => ConfirmDialog(
+                          title:
+                              'Supprimer ${_gtcSelected.length} entrée(s) ?',
+                          message:
+                              'Les suggestions sélectionnées seront rejetées '
+                              'et retirées de la file « Jeux à créer ».',
+                          confirmLabel: 'Supprimer',
+                          destructive: true,
+                          onConfirm: () {
+                            final selected = gamesToCreate
+                                .where((s) => _gtcSelected.contains(s.id))
+                                .toList();
+                            context
+                                .read<StoreController>()
+                                .rejectGamesToCreateBatch(selected);
+                            setState(() => _gtcSelected.clear());
+                          },
+                        ),
+                      ),
+                      icon:
+                          const Icon(Icons.delete_outline_rounded, size: 16),
+                      label: const Text('Supprimer sélection'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.categoryVideo,
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                  ),
+                // Bouton : tout accepter
+                FilledButton.icon(
+                  onPressed: () => showDialog<void>(
+                    context: context,
+                    builder: (_) => ConfirmDialog(
+                      title:
+                          'Accepter toutes les suggestions (${gamesToCreate.length}) ?',
+                      message:
+                          'Tous les jeux seront créés automatiquement avec le '
+                          'nom suggéré par l\'IA, puis les contenus ajoutés.',
+                      confirmLabel: 'Tout accepter',
+                      onConfirm: () => context
+                          .read<StoreController>()
+                          .acceptAllGamesToCreate(gamesToCreate),
+                    ),
+                  ),
+                  icon: const Icon(Icons.done_all_rounded, size: 16),
+                  label: const Text('Tout accepter'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.neonGreen,
+                    foregroundColor: Colors.black,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Bouton : tout supprimer
+                IconButton(
+                  tooltip: 'Tout supprimer',
+                  icon: const Icon(Icons.delete_forever_rounded),
+                  color: AppColors.categoryVideo,
+                  onPressed: () => showDialog<void>(
+                    context: context,
+                    builder: (_) => ConfirmDialog(
+                      title:
+                          'Supprimer toutes les entrées (${gamesToCreate.length}) ?',
+                      message:
+                          'Toutes les suggestions « Jeux à créer » seront '
+                          'rejetées définitivement.',
+                      confirmLabel: 'Tout supprimer',
+                      destructive: true,
+                      onConfirm: () {
+                        context
+                            .read<StoreController>()
+                            .rejectGamesToCreateBatch(gamesToCreate);
+                        setState(() => _gtcSelected.clear());
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (gamesToCreate.isEmpty)
+            const _EmptyHint(text: 'Aucun jeu à créer pour le moment.')
+          else
+            RepaintBoundary(
+              child: _GamesToCreateTable(
+                suggestions: gamesToCreate,
+                selectedIds: _gtcSelected,
+                onToggle: _toggleGtcSelect,
               ),
             ),
         ],
@@ -994,4 +1197,235 @@ String _formatViews(int? views) {
 String _formatElapsed(Duration d) {
   if (d.inMinutes > 0) return '${d.inMinutes} min';
   return '${d.inSeconds} s';
+}
+
+// ---------------------------------------------------------------------------
+// Table « Jeux à créer »
+// ---------------------------------------------------------------------------
+
+/// Tableau des suggestions marquées « Jeux à créer » : le jeu n'existe pas
+/// dans la base mais la vidéo est un tuto/guide valide. L'admin crée le jeu
+/// (nom pré-rempli par l'IA, modifiable) puis le contenu est ajouté.
+class _GamesToCreateTable extends StatefulWidget {
+  const _GamesToCreateTable({
+    required this.suggestions,
+    required this.selectedIds,
+    required this.onToggle,
+  });
+
+  final List<Suggestion> suggestions;
+  final Set<String> selectedIds;
+  final ValueChanged<String> onToggle;
+
+  @override
+  State<_GamesToCreateTable> createState() => _GamesToCreateTableState();
+}
+
+class _GamesToCreateTableState extends State<_GamesToCreateTable> {
+  static const int _pageSize = 50;
+  int _currentPage = 0;
+
+  /// Contrôleurs de texte pour le champ « nom du jeu » éditable.
+  /// Keyed par suggestion ID pour préserver la saisie entre les pages.
+  final Map<String, TextEditingController> _gameNameControllers = {};
+
+  TextEditingController _controllerFor(Suggestion s) {
+    final ai = s.aiRecommendation;
+    final suggested = ai?.suggestedGame ?? '';
+    return _gameNameControllers.putIfAbsent(
+      s.id,
+      () => TextEditingController(text: suggested),
+    );
+  }
+
+  @override
+  void dispose() {
+    for (final c in _gameNameControllers.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  int get _totalPages =>
+      (widget.suggestions.length / _pageSize).ceil().clamp(1, 999999);
+
+  List<Suggestion> get _page {
+    final start = _currentPage * _pageSize;
+    final end = (_currentPage + 1) * _pageSize;
+    return widget.suggestions.sublist(
+        start.clamp(0, widget.suggestions.length),
+        end.clamp(0, widget.suggestions.length));
+  }
+
+  void _goToPage(int page) {
+    setState(() => _currentPage = page.clamp(0, _totalPages - 1));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final store = context.read<StoreController>();
+    final pageItems = _page;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '${widget.suggestions.length} résultat(s)',
+          style: TextStyle(
+            fontSize: 12,
+            color: Theme.of(context).textTheme.bodySmall?.color,
+          ),
+        ),
+        const SizedBox(height: 8),
+        AdminDataTable(
+          columns: const [
+            '☐',
+            'Titre',
+            'Jeu suggéré (modifiable)',
+            'Catégorie',
+            'Vues',
+            'Actions'
+          ],
+          rows: pageItems.map((s) {
+            final ai = s.aiRecommendation;
+            final isSelected = widget.selectedIds.contains(s.id);
+            final controller = _controllerFor(s);
+            return [
+              // Checkbox.
+              InkWell(
+                onTap: () => widget.onToggle(s.id),
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(
+                    isSelected
+                        ? Icons.check_box_rounded
+                        : Icons.check_box_outline_blank_rounded,
+                    size: 18,
+                    color: isSelected ? AppColors.neonViolet : null,
+                  ),
+                ),
+              ),
+              // Titre.
+              Tooltip(
+                message: ai?.youtubeTitle ?? _cleanTitle(s),
+                showDuration: const Duration(seconds: 8),
+                child: Container(
+                  constraints: const BoxConstraints(maxWidth: 200),
+                  child: Text(
+                    ai?.youtubeTitle ?? _cleanTitle(s),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: ai?.youtubeTitle != null
+                            ? AppColors.neonCyan
+                            : null),
+                  ),
+                ),
+              ),
+              // Nom du jeu (éditable, pré-rempli par l'IA).
+              SizedBox(
+                width: 180,
+                child: TextField(
+                  controller: controller,
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 6),
+                    hintText: 'Nom du jeu',
+                  ),
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+              // Catégorie.
+              StatusBadge(
+                label: ai?.suggestedCategory ?? 'video',
+                color: AppColors.neonCyan,
+              ),
+              // Vues.
+              Text(
+                _formatViews(ai?.youtubeViews),
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).textTheme.bodySmall?.color),
+              ),
+              // Actions : Créer + Ajouter, Voir le lien, Supprimer.
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FilledButton.icon(
+                    onPressed: () => store.acceptGameToCreate(
+                        s, controller.text),
+                    icon: const Icon(Icons.add_circle_rounded, size: 16),
+                    label: const Text('Créer'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.neonGreen,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Voir le lien',
+                    icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                    onPressed: () => _openUrl(s.url),
+                  ),
+                  IconButton(
+                    tooltip: 'Supprimer',
+                    icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                    color: AppColors.categoryVideo,
+                    onPressed: () => showDialog<void>(
+                      context: context,
+                      builder: (_) => ConfirmDialog(
+                        title: 'Supprimer cette entrée ?',
+                        message:
+                            '« ${_cleanTitle(s)} » sera retirée de la file.',
+                        confirmLabel: 'Supprimer',
+                        destructive: true,
+                        onConfirm: () => store.rejectGameToCreate(s),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ];
+          }).toList(),
+        ),
+        // Pagination.
+        if (_totalPages > 1) ...[
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.chevron_left_rounded),
+                onPressed: _currentPage > 0
+                    ? () => _goToPage(_currentPage - 1)
+                    : null,
+                tooltip: 'Page précédente',
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Text(
+                  'Page ${_currentPage + 1} / $_totalPages',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: Theme.of(context).textTheme.bodyLarge?.color,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.chevron_right_rounded),
+                onPressed: _currentPage < _totalPages - 1
+                    ? () => _goToPage(_currentPage + 1)
+                    : null,
+                tooltip: 'Page suivante',
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
 }
