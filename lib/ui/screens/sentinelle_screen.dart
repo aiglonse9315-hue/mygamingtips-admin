@@ -165,7 +165,9 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
           if (analyzing.isEmpty)
             const _EmptyHint(text: 'Aucune analyse en cours.')
           else
-            _AnalyzingTable(suggestions: analyzing),
+            RepaintBoundary(
+              child: _AnalyzingTable(suggestions: analyzing),
+            ),
 
           const SizedBox(height: 32),
 
@@ -267,11 +269,13 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
           if (trusted.isEmpty)
             const _EmptyHint(text: 'Aucune suggestion à haute confiance pour le moment.')
           else
-            _TrustedTable(
-              suggestions: trusted,
-              selectedIds: _selected,
-              onToggle: _toggleSelect,
-              onSelectAll: () => _selectAll(trusted),
+            RepaintBoundary(
+              child: _TrustedTable(
+                suggestions: trusted,
+                selectedIds: _selected,
+                onToggle: _toggleSelect,
+                onSelectAll: () => _selectAll(trusted),
+              ),
             ),
 
           const SizedBox(height: 32),
@@ -376,10 +380,12 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
           if (toVerify.isEmpty)
             const _EmptyHint(text: 'Aucune suggestion à vérifier. 🎉')
           else
-            _ToVerifyTable(
-              suggestions: toVerify,
-              selectedIds: _toVerifySelected,
-              onToggle: _toggleVerifySelect,
+            RepaintBoundary(
+              child: _ToVerifyTable(
+                suggestions: toVerify,
+                selectedIds: _toVerifySelected,
+                onToggle: _toggleVerifySelect,
+              ),
             ),
         ],
       ),
@@ -446,7 +452,7 @@ class _AnalyzingTable extends StatelessWidget {
   }
 }
 
-class _TrustedTable extends StatelessWidget {
+class _TrustedTable extends StatefulWidget {
   const _TrustedTable({
     required this.suggestions,
     required this.selectedIds,
@@ -460,17 +466,69 @@ class _TrustedTable extends StatelessWidget {
   final VoidCallback onSelectAll;
 
   @override
+  State<_TrustedTable> createState() => _TrustedTableState();
+}
+
+class _TrustedTableState extends State<_TrustedTable> {
+  /// Tri local : index de colonne (null = tri par défaut = ordre d'origine).
+  /// Colonne 5 = Confiance, colonne 6 = Vues.
+  int? _sortColumnIndex;
+  bool _sortAscending = true;
+
+  /// Tri la liste selon la colonne active. Retourne une nouvelle liste triée
+  /// sans muter l'originale (le controller reste la source de vérité).
+  List<Suggestion> get _sorted {
+    if (_sortColumnIndex == null) return widget.suggestions;
+    final list = List<Suggestion>.from(widget.suggestions);
+    int compare(Suggestion a, Suggestion b) {
+      final ai = a.aiRecommendation!;
+      final bi = b.aiRecommendation!;
+      int cmp;
+      switch (_sortColumnIndex) {
+        case 5: // Confiance
+          cmp = ai.confidence.compareTo(bi.confidence);
+          break;
+        case 6: // Vues
+          cmp = (ai.youtubeViews ?? 0).compareTo(bi.youtubeViews ?? 0);
+          break;
+        default:
+          return 0;
+      }
+      return _sortAscending ? cmp : -cmp;
+    }
+    list.sort(compare);
+    return list;
+  }
+
+  void _onSort(int columnIndex) {
+    setState(() {
+      if (_sortColumnIndex == columnIndex) {
+        _sortAscending = !_sortAscending;
+      } else {
+        _sortColumnIndex = columnIndex;
+        _sortAscending = true;
+      }
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
+    final suggestions = _sorted;
     return AdminDataTable(
       columns: const ['☐', 'Titre', 'Titre pour insertion', 'Jeu IA', 'Catégorie', 'Confiance', 'Vues', 'Actions'],
+      sortColumnIndex: _sortColumnIndex,
+      sortAscending: _sortAscending,
+      onSort: _onSort,
+      // Colonnes non triables : la checkbox, le titre d'insertion, les actions.
+      nonSortableColumns: const ['☐', 'Titre', 'Titre pour insertion', 'Jeu IA', 'Catégorie', 'Actions'],
       rows: suggestions.map((s) {
         final ai = s.aiRecommendation!;
-        final isSelected = selectedIds.contains(s.id);
+        final isSelected = widget.selectedIds.contains(s.id);
         return [
           // Checkbox de sélection (cliquable).
           InkWell(
-            onTap: () => onToggle(s.id),
+            onTap: () => widget.onToggle(s.id),
             child: Padding(
               padding: const EdgeInsets.all(4),
               child: Icon(
