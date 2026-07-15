@@ -633,7 +633,7 @@ class _TrustedTableState extends State<_TrustedTable> {
   }
 }
 
-class _ToVerifyTable extends StatelessWidget {
+class _ToVerifyTable extends StatefulWidget {
   const _ToVerifyTable({
     required this.suggestions,
     this.selectedIds,
@@ -645,134 +645,258 @@ class _ToVerifyTable extends StatelessWidget {
   final ValueChanged<String>? onToggle;
 
   @override
+  State<_ToVerifyTable> createState() => _ToVerifyTableState();
+}
+
+class _ToVerifyTableState extends State<_ToVerifyTable> {
+  static const int _pageSize = 100;
+  int _currentPage = 0;
+
+  /// Filtre : null = tout, AiVerdict.caution = uniquement "À vérifier".
+  AiVerdict? _verdictFilter;
+
+  /// Liste filtrée par verdict IA.
+  List<Suggestion> get _filtered {
+    if (_verdictFilter == null) return widget.suggestions;
+    return widget.suggestions
+        .where((s) => s.aiRecommendation?.verdict == _verdictFilter)
+        .toList();
+  }
+
+  int get _totalPages => (_filtered.length / _pageSize).ceil().clamp(1, 999999);
+
+  List<Suggestion> get _page {
+    final start = _currentPage * _pageSize;
+    final end = (_currentPage + 1) * _pageSize;
+    return _filtered.sublist(
+        start.clamp(0, _filtered.length), end.clamp(0, _filtered.length));
+  }
+
+  void _goToPage(int page) {
+    setState(() => _currentPage = page.clamp(0, _totalPages - 1));
+  }
+
+  void _toggleVerdictFilter() {
+    setState(() {
+      _verdictFilter =
+          _verdictFilter == AiVerdict.caution ? null : AiVerdict.caution;
+      _currentPage = 0;
+    });
+  }
+
+  /// Construit une ligne du tableau.
+  List<Widget> _buildRow(
+      BuildContext context, StoreController store, Suggestion s) {
+    final ai = s.aiRecommendation;
+    final isReject = ai?.verdict == AiVerdict.reject;
+    final isSelected = widget.selectedIds?.contains(s.id) ?? false;
+    final hasCheckbox = widget.selectedIds != null && widget.onToggle != null;
+    return [
+      if (hasCheckbox)
+        InkWell(
+          onTap: () => widget.onToggle!(s.id),
+          child: Padding(
+            padding: const EdgeInsets.all(4),
+            child: Icon(
+              isSelected
+                  ? Icons.check_box_rounded
+                  : Icons.check_box_outline_blank_rounded,
+              size: 18,
+              color: isSelected ? AppColors.categoryVideo : null,
+            ),
+          ),
+        ),
+      Text(_cleanTitle(s),
+          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+      Tooltip(
+        message: ai?.youtubeTitle ?? _cleanTitle(s),
+        showDuration: const Duration(seconds: 8),
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.all(10),
+        textStyle: const TextStyle(fontSize: 12, color: Colors.white),
+        decoration: BoxDecoration(
+          color: Colors.grey[900],
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 200),
+          child: Text(
+            ai?.youtubeTitle ?? _cleanTitle(s),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                fontSize: 12,
+                fontStyle: FontStyle.italic,
+                color: ai?.youtubeTitle != null
+                    ? AppColors.neonCyan
+                    : Theme.of(context).textTheme.bodySmall?.color),
+          ),
+        ),
+      ),
+      ai == null
+          ? const Text('—')
+          : StatusBadge(
+              label: ai.verdict.label,
+              color: isReject
+                  ? AppColors.categoryVideo
+                  : AppColors.plusGold,
+            ),
+      Tooltip(
+        message: ai?.reason ?? 'Pas d\'analyse.',
+        showDuration: const Duration(seconds: 10),
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.all(12),
+        textStyle: const TextStyle(fontSize: 12, color: Colors.white),
+        decoration: BoxDecoration(
+          color: Colors.grey[900],
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 250),
+          child: Text(
+            ai?.reason ?? 'Pas d\'analyse.',
+            style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(context).textTheme.bodySmall?.color),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ),
+      Text(ai != null ? '${(ai.confidence * 100).round()}%' : '—',
+          style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: isReject
+                  ? AppColors.categoryVideo
+                  : AppColors.plusGold)),
+      Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: 'Vérifier le lien',
+            icon: const Icon(Icons.open_in_new_rounded, size: 18),
+            onPressed: () => _openUrl(s.url),
+          ),
+          IconButton(
+            tooltip: 'Ajouter manuellement',
+            icon: const Icon(Icons.edit_outlined, size: 20),
+            onPressed: () => showDialog<void>(
+              context: context,
+              builder: (_) => SuggestionReviewDialog(suggestion: s),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Rejeter',
+            icon: const Icon(Icons.close_rounded, size: 20),
+            color: AppColors.categoryVideo,
+            onPressed: () => showDialog<void>(
+              context: context,
+              builder: (_) => ConfirmDialog(
+                title: 'Rejeter cette suggestion ?',
+                message: '« ${_cleanTitle(s)} » sera marquée comme rejetée.',
+                confirmLabel: 'Rejeter',
+                destructive: true,
+                onConfirm: () => store.rejectSentinelle(s),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ];
+  }
+
+  @override
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
-    final hasCheckbox = selectedIds != null && onToggle != null;
-    return AdminDataTable(
-      columns: hasCheckbox
-          ? const ['☐', 'Titre', 'Titre pour insertion', 'Verdict IA', 'Raison', 'Confiance', 'Actions']
-          : const ['Titre', 'Titre pour insertion', 'Verdict IA', 'Raison', 'Confiance', 'Actions'],
-      rows: suggestions.map((s) {
-        final ai = s.aiRecommendation;
-        final isReject = ai?.verdict == AiVerdict.reject;
-        final isSelected = selectedIds?.contains(s.id) ?? false;
-        return [
-          if (hasCheckbox)
-            InkWell(
-              onTap: () => onToggle!(s.id),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(
-                  isSelected
-                      ? Icons.check_box_rounded
-                      : Icons.check_box_outline_blank_rounded,
-                  size: 18,
-                  color: isSelected ? AppColors.categoryVideo : null,
-                ),
-              ),
-            ),
-          Text(_cleanTitle(s),
-              style:
-                  const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
-          // Titre réel de la vidéo YouTube (pour insertion manuelle).
-          Tooltip(
-            message: ai?.youtubeTitle ?? _cleanTitle(s),
-            showDuration: const Duration(seconds: 8),
-            margin: const EdgeInsets.symmetric(horizontal: 16),
-            padding: const EdgeInsets.all(10),
-            textStyle: const TextStyle(fontSize: 12, color: Colors.white),
-            decoration: BoxDecoration(
-              color: Colors.grey[900],
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Container(
-              constraints: const BoxConstraints(maxWidth: 200),
-              child: Text(
-                ai?.youtubeTitle ?? _cleanTitle(s),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 12,
-                    fontStyle: FontStyle.italic,
-                    color: ai?.youtubeTitle != null
-                        ? AppColors.neonCyan
-                        : Theme.of(context).textTheme.bodySmall?.color),
-              ),
-            ),
-          ),
-          ai == null
-              ? const Text('—')
-              : StatusBadge(
-                  label: ai.verdict.label,
-                  color: isReject
-                      ? AppColors.categoryVideo
-                      : AppColors.plusGold,
-                ),
-          // Raison : texte tronqué à 2 lignes, tooltip complet au survol.
-          Tooltip(
-            message: ai?.reason ?? 'Pas d\'analyse.',
-            showDuration: const Duration(seconds: 10),
-            margin: const EdgeInsets.symmetric(horizontal: 16),
-            padding: const EdgeInsets.all(12),
-            textStyle: const TextStyle(fontSize: 12, color: Colors.white),
-            decoration: BoxDecoration(
-              color: Colors.grey[900],
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Container(
-              constraints: const BoxConstraints(maxWidth: 250),
-              child: Text(
-                ai?.reason ?? 'Pas d\'analyse.',
-                style: TextStyle(
-                    fontSize: 11,
-                    color: Theme.of(context).textTheme.bodySmall?.color),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ),
-          Text(ai != null ? '${(ai.confidence * 100).round()}%' : '—',
-              style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: isReject
-                      ? AppColors.categoryVideo
-                      : AppColors.plusGold)),
-          Row(
-            mainAxisSize: MainAxisSize.min,
+    final hasCheckbox = widget.selectedIds != null && widget.onToggle != null;
+    final pageItems = _page;
+    final totalFiltered = _filtered.length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── Barre d'outils : filtre verdict + compteur ──
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(
             children: [
-              IconButton(
-                tooltip: 'Vérifier le lien',
-                icon: const Icon(Icons.open_in_new_rounded, size: 18),
-                onPressed: () => _openUrl(s.url),
-              ),
-              IconButton(
-                tooltip: 'Ajouter manuellement',
-                icon: const Icon(Icons.edit_outlined, size: 20),
-                onPressed: () => showDialog<void>(
-                  context: context,
-                  builder: (_) => SuggestionReviewDialog(suggestion: s),
+              // Bouton filtre : "À vérifier" (caution) uniquement.
+              FilterChip(
+                label: const Text('Verdict « À vérifier » uniquement'),
+                selected: _verdictFilter == AiVerdict.caution,
+                onSelected: (_) => _toggleVerdictFilter(),
+                selectedColor: AppColors.plusGold.withValues(alpha: 0.3),
+                checkmarkColor: AppColors.plusGold,
+                labelStyle: TextStyle(
+                  fontSize: 12,
+                  fontWeight: _verdictFilter == AiVerdict.caution
+                      ? FontWeight.w800
+                      : FontWeight.w500,
+                  color: _verdictFilter == AiVerdict.caution
+                      ? AppColors.plusGold
+                      : null,
                 ),
               ),
-              IconButton(
-                tooltip: 'Rejeter',
-                icon: const Icon(Icons.close_rounded, size: 20),
-                color: AppColors.categoryVideo,
-                onPressed: () => showDialog<void>(
-                  context: context,
-                  builder: (_) => ConfirmDialog(
-                    title: 'Rejeter cette suggestion ?',
-                    message: '« ${_cleanTitle(s)} » sera marquée comme rejetée.',
-                    confirmLabel: 'Rejeter',
-                    destructive: true,
-                    onConfirm: () => store.rejectSentinelle(s),
-                  ),
+              const SizedBox(width: 12),
+              Text(
+                '$totalFiltered résultat(s)'
+                '${_verdictFilter != null ? " (filtré)" : ""}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).textTheme.bodySmall?.color,
                 ),
               ),
             ],
           ),
-        ];
-      }).toList(),
+        ),
+        // ── Tableau (page courante) ──
+        AdminDataTable(
+          columns: hasCheckbox
+              ? const ['☐', 'Titre', 'Titre pour insertion', 'Verdict IA', 'Raison', 'Confiance', 'Actions']
+              : const ['Titre', 'Titre pour insertion', 'Verdict IA', 'Raison', 'Confiance', 'Actions'],
+          rows: pageItems
+              .map((s) => _buildRow(context, store, s))
+              .toList(),
+        ),
+        // ── Pagination ──
+        if (_totalPages > 1) ...[
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // Bouton précédent.
+              IconButton(
+                icon: const Icon(Icons.chevron_left_rounded),
+                onPressed: _currentPage > 0
+                    ? () => _goToPage(_currentPage - 1)
+                    : null,
+                tooltip: 'Page précédente',
+              ),
+              // Indicateur de page.
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Text(
+                  'Page ${_currentPage + 1} / $_totalPages',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: Theme.of(context).textTheme.bodyLarge?.color,
+                  ),
+                ),
+              ),
+              // Bouton suivant.
+              IconButton(
+                icon: const Icon(Icons.chevron_right_rounded),
+                onPressed: _currentPage < _totalPages - 1
+                    ? () => _goToPage(_currentPage + 1)
+                    : null,
+                tooltip: 'Page suivante',
+              ),
+            ],
+          ),
+        ],
+      ],
     );
   }
 }
