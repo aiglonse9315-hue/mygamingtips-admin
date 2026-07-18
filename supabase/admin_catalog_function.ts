@@ -389,7 +389,7 @@ serve(async (req) => {
 
       const { error: use } = await supabase
         .from("suggestions")
-        .update({ status: "accepted" })
+        .update({ status: "accepted", accepted_at: new Date().toISOString() })
         .eq("id", suggestionId);
       if (use) return json({ error: use.message }, 400);
       return await jsonWithFreshToken({ ok: true });
@@ -402,6 +402,36 @@ serve(async (req) => {
         .eq("id", body.id);
       if (error) return safeError(error, 400);
       return await jsonWithFreshToken({ ok: true });
+    }
+
+    if (route === "games-to-create/delete") {
+      // Retire une suggestion de la file « Jeux à créer » en la marquant
+      // rejected (le flag needs_game_creation reste dans ai_recommendation
+      // mais status='rejected' la sort des résultats pending).
+      const suggestionId = uuidOrUndefined(body.id);
+      if (!suggestionId) {
+        return json({ error: "id manquant ou invalide." }, 400);
+      }
+      const { error } = await supabase
+        .from("suggestions")
+        .update({ status: "rejected" })
+        .eq("id", suggestionId);
+      if (error) return safeError(error, 400);
+      return await jsonWithFreshToken({ ok: true });
+    }
+
+    if (route === "games-to-create/delete-batch") {
+      // Suppression par lot des suggestions « Jeux à créer ».
+      const ids: string[] = Array.isArray(body.ids) ? body.ids : [];
+      if (ids.length === 0) {
+        return json({ error: "Aucun id fourni." }, 400);
+      }
+      const { error } = await supabase
+        .from("suggestions")
+        .update({ status: "rejected" })
+        .in("id", ids);
+      if (error) return safeError(error, 400);
+      return await jsonWithFreshToken({ ok: true, count: ids.length });
     }
 
     if (route === "suggestions/ai-recommend") {

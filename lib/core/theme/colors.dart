@@ -24,13 +24,15 @@ class AppColors {
   static const Color categoryLink = Color(0xFF00A3FF); // bleu
 
   // ---- Palette MODE JOUR ----
-  static const Color lightBackground = Color(0xFFF5F7FB);
-  static const Color lightSurface = Colors.white;
-  static const Color lightSurfaceAlt = Color(0xFFEEF1F7);
+  // Synchronisée avec lib/core/theme/colors.dart (app mobile) : surfaces
+  // légèrement assombries / adoucies pour réduire l'éblouissement.
+  static const Color lightBackground = Color(0xFFE9EDF4);
+  static const Color lightSurface = Color(0xFFF2F4FA);
+  static const Color lightSurfaceAlt = Color(0xFFE2E7F0);
   static const Color lightTextPrimary = Color(0xFF11131A);
-  static const Color lightTextSecondary = Color(0xFF5A6172);
-  static const Color lightBorder = Color(0xFFD9DEE9);
-  static const Color lightAccent = Color(0xFF6A11CB); // violet profond jour
+  static const Color lightTextSecondary = Color(0xFF525968);
+  static const Color lightBorder = Color(0xFFC9D0DE);
+  static const Color lightAccent = Color(0xFF5A0FB0); // violet profond jour, plus saturé
 
   // ---- Palette MODE NUIT ----
   static const Color darkBackground = Color(0xFF070912);

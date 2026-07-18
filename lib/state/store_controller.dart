@@ -124,22 +124,39 @@ class StoreController extends ChangeNotifier {
   List<Suggestion> get sentinelleAnalyzing =>
       List<Suggestion>.unmodifiable(_sentinelleAnalyzing);
 
-  /// Suggestions Sentinelle avec verdict "recommended" ET confiance ≥ 0.9.
-  /// Ce sont les suggestions "99% sûr" implémentables en 1 clic.
+  /// Suggestions Sentinelle "trusted" (implémentables en 1 clic).
+  ///
+  /// **Seuil de confiance conditionnel** :
+  /// - FR/EN (langues natives) → seuil ≥ 0.90 (comportement historique).
+  /// - Autres langues du pack 12 → seuil ≥ 0.95 (plus strict, car l'IA est
+  ///   moins fiable hors FR/EN et l'utilisateur a demandé > 95% pour les
+  ///   nouvelles langues).
+  /// - Langue inconnue/absente → fallback conservateur 0.95.
   List<Suggestion> get sentinelleTrusted => _sentinelleSuggestions
       .where((s) =>
           s.aiRecommendation != null &&
           s.aiRecommendation!.verdict == AiVerdict.recommended &&
-          s.aiRecommendation!.confidence >= 0.9)
+          s.aiRecommendation!.confidence >=
+              _trustThresholdFor(s.aiRecommendation!.youtubeLanguage))
       .toList();
 
-  /// Suggestions Sentinelle "à vérifier" (caution, reject, ou confiance < 0.9).
+  /// Suggestions Sentinelle "à vérifier" (tout ce qui n'est pas trusted).
   List<Suggestion> get sentinelleToVerify => _sentinelleSuggestions
       .where((s) =>
           s.aiRecommendation == null ||
           s.aiRecommendation!.verdict != AiVerdict.recommended ||
-          s.aiRecommendation!.confidence < 0.9)
+          s.aiRecommendation!.confidence <
+              _trustThresholdFor(s.aiRecommendation?.youtubeLanguage))
       .toList();
+
+  /// Seuil de confiance requis pour qu'une suggestion soit "trusted".
+  /// FR/EN = 0.90 (langues natives), autres = 0.95 (stricte).
+  static double _trustThresholdFor(String? youtubeLanguage) {
+    const nativeCodes = {'FR', 'EN'};
+    final lang = youtubeLanguage?.toUpperCase().trim();
+    if (lang == null || lang.isEmpty) return 0.95; // inconnu = strict
+    return nativeCodes.contains(lang) ? 0.90 : 0.95;
+  }
 
   List<BannedUser> get banned => List<BannedUser>.unmodifiable(_banned);
   List<PlusUser> get plus => List<PlusUser>.unmodifiable(_plus);

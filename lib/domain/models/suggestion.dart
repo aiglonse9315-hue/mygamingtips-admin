@@ -142,6 +142,13 @@ class AiRecommendation {
   /// jeu depuis le tableau « Jeux à créer ».
   final bool needsGameCreation;
 
+  /// Code langue YouTube détecté par Sentinelle (ex : 'FR', 'EN', 'JA').
+  /// Utilisé pour appliquer un seuil de confiance plus strict (0.95) aux
+  /// langues non natives (tout sauf FR/EN), conformément à la demande
+  /// utilisateur : seules les suggestions > 95% sont auto-acceptées pour
+  /// les autres langues du pack 12.
+  final String? youtubeLanguage;
+
   const AiRecommendation({
     required this.verdict,
     required this.confidence,
@@ -154,6 +161,7 @@ class AiRecommendation {
     this.youtubePublishedAt,
     this.analyzedAt,
     this.needsGameCreation = false,
+    this.youtubeLanguage,
   });
 
   factory AiRecommendation.fromJson(Map<String, dynamic> json) {
@@ -173,6 +181,7 @@ class AiRecommendation {
           DateTime.tryParse(json['youtube_published_at'] as String? ?? ''),
       analyzedAt: DateTime.tryParse(json['analyzed_at'] as String? ?? ''),
       needsGameCreation: json['needs_game_creation'] as bool? ?? false,
+      youtubeLanguage: json['youtube_language'] as String?,
     );
   }
 
@@ -189,5 +198,6 @@ class AiRecommendation {
           'youtube_published_at': youtubePublishedAt!.toIso8601String(),
         if (analyzedAt != null) 'analyzed_at': analyzedAt!.toIso8601String(),
         if (needsGameCreation) 'needs_game_creation': true,
+        if (youtubeLanguage != null) 'youtube_language': youtubeLanguage,
       };
 }

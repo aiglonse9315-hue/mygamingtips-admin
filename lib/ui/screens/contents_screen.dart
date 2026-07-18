@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart' as ul;
 
+import '../../core/i18n/app_languages.dart';
+import '../../core/i18n/language_chip.dart';
 import '../../core/theme/colors.dart';
 import '../../domain/models/category.dart';
 import '../../domain/models/content.dart';
@@ -23,9 +25,12 @@ class _ContentsScreenState extends State<ContentsScreen> {
   String? _gameFilter; // null = tous
   /// Filtre catégorie : 'media' = vidéo+guides fusionnés, 'links' = liens, null = toutes.
   String? _catFilter;
-  /// Filtre langue : null = toutes, 'FR', 'EN', 'none' (sans langue).
-  /// FR et EN incluent les contenus sans langue (null).
-  String? _langFilter;
+  /// Filtre langue multi-sélection : codes MAJUSCULES actifs.
+  /// Vide = toutes les langues (sauf cas « Sans langue » ci-dessous).
+  Set<String> _activeLanguages = <String>{};
+  /// Si vrai, inclut aussi les contenus sans langue (`videoLanguage` null).
+  /// Cumulable avec [_activeLanguages].
+  bool _showNoLanguage = false;
   String _search = '';
   final TextEditingController _searchCtrl = TextEditingController();
 
@@ -63,20 +68,12 @@ class _ContentsScreenState extends State<ContentsScreen> {
     } else if (_catFilter == 'links') {
       list = list.where((c) => c.category == ContentCategory.links).toList();
     }
-    // Filtre langue : FR/EN incluent les contenus sans langue (null).
-    // 'none' n'affiche que les contenus sans langue associée.
-    if (_langFilter == 'FR') {
-      list = list
-          .where((c) => c.videoLanguage?.toUpperCase() != 'EN')
-          .toList();
-    } else if (_langFilter == 'EN') {
-      list = list
-          .where((c) => c.videoLanguage?.toUpperCase() != 'FR')
-          .toList();
-    } else if (_langFilter == 'none') {
-      list = list
-          .where((c) => c.videoLanguage == null || c.videoLanguage!.isEmpty)
-          .toList();
+    // Filtre langue multi-sélection.
+    // - Si _showNoLanguage est vrai, on inclut les contenus sans langue.
+    // - Si _activeLanguages est vide ET !_showNoLanguage, on garde tout.
+    // - Sinon, on ne garde que les contenus dont la langue est dans l'ensemble.
+    if (_activeLanguages.isNotEmpty || _showNoLanguage) {
+      list = list.where(passesLanguageFilter).toList();
     }
     if (_search.isNotEmpty) {
       final q = _search.toLowerCase();
@@ -160,19 +157,12 @@ class _ContentsScreenState extends State<ContentsScreen> {
                 selectedValue: _catFilter,
                 onChanged: (v) => setState(() => _catFilter = v),
               ),
-              _FilterChip(
-                label: 'Langue',
-                value: _langFilter == null
-                    ? 'Toutes'
-                    : _langFilter == 'FR'
-                        ? '🇫🇷 FR'
-                        : _langFilter == 'EN'
-                            ? '🇬🇧 EN'
-                            : 'Sans langue',
-                items: const ['🇫🇷 FR', '🇬🇧 EN', 'Sans langue'],
-                values: const ['FR', 'EN', 'none'],
-                selectedValue: _langFilter,
-                onChanged: (v) => setState(() => _langFilter = v),
+              // Filtre langue multi-sélection (dialogue avec checkboxes).
+              _LanguageFilterButton(
+                label: _languageFilterLabel,
+                hasSelection:
+                    _activeLanguages.isNotEmpty || _showNoLanguage,
+                onTap: _showLanguageFilterDialog,
               ),
             ],
           ),
@@ -279,42 +269,10 @@ class _ContentsScreenState extends State<ContentsScreen> {
                                   .textTheme
                                   .bodySmall
                                   ?.color)),
-                      // Tag de langue vidéo (FR / EN).
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: (c.videoLanguage?.toUpperCase() == 'FR'
-                                  ? Colors.blue
-                                  : c.videoLanguage?.toUpperCase() == 'EN'
-                                      ? Colors.red
-                                      : Colors.grey)
-                              .withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                            color: (c.videoLanguage?.toUpperCase() == 'FR'
-                                    ? Colors.blue
-                                    : c.videoLanguage?.toUpperCase() == 'EN'
-                                        ? Colors.red
-                                        : Colors.grey)
-                                .withValues(alpha: 0.4),
-                          ),
-                        ),
-                        child: Text(
-                          c.videoLanguage?.toUpperCase() ?? '—',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
-                            color: c.videoLanguage?.toUpperCase() == 'FR'
-                                ? Colors.blue
-                                : c.videoLanguage?.toUpperCase() == 'EN'
-                                    ? Colors.red
-                                    : Theme.of(context)
-                                        .textTheme
-                                        .bodySmall
-                                        ?.color,
-                          ),
-                        ),
+                      // Badge de langue (drapeau + code + couleur sémantique).
+                      LanguageBadge(
+                        languageCode: c.videoLanguage,
+                        size: BadgeSize.small,
                       ),
                       // Indicateur "Checked" (vert = vérifié, rouge = non vérifié).
                       Icon(
@@ -435,6 +393,126 @@ class _ContentsScreenState extends State<ContentsScreen> {
     );
   }
 
+  /// Vrai si [c] passe le filtre de langue courant (multi-sélection).
+  ///
+  /// Règles :
+  /// - contenu sans langue → gardé seulement si [_showNoLanguage] est vrai ;
+  /// - contenu avec langue → gardé si [_activeLanguages] est vide (= pas de
+  ///   filtre actif sur les langues) ou si sa langue est dans l'ensemble.
+  bool passesLanguageFilter(Content c) {
+    final lang = c.videoLanguage?.toUpperCase();
+    if (lang == null || lang.isEmpty) return _showNoLanguage;
+    if (_activeLanguages.isEmpty) return true; // pas de filtre actif
+    return _activeLanguages.contains(lang);
+  }
+
+  /// Ouvre un dialogue de multi-sélection des langues (12 entrées générées
+  /// depuis [kSupportedLanguages] + 1 case « Sans langue »).
+  Future<void> _showLanguageFilterDialog() async {
+    // Copie de travail locale, appliquée à la fermeture.
+    Set<String> tmpActive = Set<String>.of(_activeLanguages);
+    bool tmpNoLang = _showNoLanguage;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setStateDialog) {
+            return AlertDialog(
+              title: const Text('Filtrer par langue'),
+              content: SizedBox(
+                width: 340,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Les 12 langues supportées.
+                      for (final lang in kSupportedLanguages)
+                        CheckboxListTile(
+                          dense: true,
+                          value: tmpActive.contains(lang.code),
+                          onChanged: (v) {
+                            setStateDialog(() {
+                              if (v == true) {
+                                tmpActive.add(lang.code);
+                              } else {
+                                tmpActive.remove(lang.code);
+                              }
+                            });
+                          },
+                          title: Text('${lang.flag} ${lang.label} '
+                              '(${lang.code})'),
+                        ),
+                      const Divider(height: 16),
+                      // Cas « Sans langue ».
+                      CheckboxListTile(
+                        dense: true,
+                        value: tmpNoLang,
+                        onChanged: (v) {
+                          setStateDialog(() => tmpNoLang = v ?? false);
+                        },
+                        title: const Text('🔇 Sans langue'),
+                        subtitle: const Text(
+                            'Contenus sans langue associée',
+                            style: TextStyle(fontSize: 11)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    // Réinitialise le filtre.
+                    setStateDialog(() {
+                      tmpActive = <String>{};
+                      tmpNoLang = false;
+                    });
+                  },
+                  child: const Text('Tout réinitialiser'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Annuler'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Appliquer'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    // Applique la sélection à l'état du widget parent.
+    setState(() {
+      _activeLanguages = tmpActive;
+      _showNoLanguage = tmpNoLang;
+      _currentPage = 0; // reset pagination après changement de filtre.
+    });
+  }
+
+  /// Libellé résumant l'état du filtre langue pour le chip.
+  String get _languageFilterLabel {
+    final hasLang = _activeLanguages.isNotEmpty;
+    final hasNoLang = _showNoLanguage;
+    if (!hasLang && !hasNoLang) return 'Toutes';
+    // Construit le résumé : « FR, EN (+2) » si > 2 langues, + « +sans ».
+    final codes = _activeLanguages.toList()..sort();
+    final List<String> parts = <String>[];
+    if (codes.length <= 2) {
+      parts.addAll(codes);
+    } else {
+      parts
+        ..addAll(codes.sublist(0, 2))
+        ..add('+${codes.length - 2}');
+    }
+    if (hasNoLang) parts.add('∅');
+    return parts.join(', ');
+  }
+
   static String _formatDate(DateTime d) =>
       '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
 }
@@ -502,6 +580,64 @@ class _FilterChip extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Bouton de filtre langue multi-sélection, visuellement cohérent avec
+/// [_FilterChip] mais qui ouvre un dialogue (cases à cocher) au lieu d'un
+/// popup mono-sélection.
+class _LanguageFilterButton extends StatelessWidget {
+  const _LanguageFilterButton({
+    required this.label,
+    required this.hasSelection,
+    required this.onTap,
+  });
+
+  /// Texte résumant la sélection courante (ex: « Toutes », « FR, EN », « +2 »).
+  final String label;
+
+  /// Vrai si au moins une langue (ou « Sans langue ») est sélectionnée —
+  /// met en évidence le chip visuellement.
+  final bool hasSelection;
+
+  /// Appelé au tap : ouvre le dialogue de multi-sélection.
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: Theme.of(context).canvasColor,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: hasSelection
+                ? accent.withValues(alpha: 0.6)
+                : Theme.of(context).dividerColor,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Langue : ',
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).textTheme.bodySmall?.color,
+                    fontWeight: FontWeight.w700)),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: hasSelection ? accent : null)),
+            const Icon(Icons.tune_rounded, size: 16),
+          ],
+        ),
       ),
     );
   }
@@ -675,13 +811,22 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
                 onChanged: (v) => setState(() => _gameId = v),
               ),
               const SizedBox(height: 12),
-              // Langue de la vidéo (FR / EN).
+              // Langue de la vidéo (12 langues + Aucune).
               DropdownButtonFormField<String>(
                 value: _videoLanguage,
                 decoration: const InputDecoration(labelText: 'Langue vidéo'),
-                items: const [
-                  DropdownMenuItem(value: 'FR', child: Text('🇫🇷 FR')),
-                  DropdownMenuItem(value: 'EN', child: Text('🇬🇧 EN')),
+                items: [
+                  // Option « Aucune » = null (langue non définie).
+                  const DropdownMenuItem<String>(
+                    value: null,
+                    child: Text('Aucune'),
+                  ),
+                  ...kSupportedLanguages.map(
+                    (lang) => DropdownMenuItem<String>(
+                      value: lang.code,
+                      child: Text('${lang.flag} ${lang.label} (${lang.code})'),
+                    ),
+                  ),
                 ],
                 onChanged: (v) => setState(() => _videoLanguage = v),
               ),
