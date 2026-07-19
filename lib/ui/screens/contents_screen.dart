@@ -395,14 +395,14 @@ class _ContentsScreenState extends State<ContentsScreen> {
 
   /// Vrai si [c] passe le filtre de langue courant (multi-sélection).
   ///
-  /// Règles :
+  /// Règles (appelée uniquement quand un filtre est actif) :
   /// - contenu sans langue → gardé seulement si [_showNoLanguage] est vrai ;
-  /// - contenu avec langue → gardé si [_activeLanguages] est vide (= pas de
-  ///   filtre actif sur les langues) ou si sa langue est dans l'ensemble.
+  /// - contenu avec langue → gardé si sa langue est dans [_activeLanguages].
+  ///   Donc si seule la case « Sans langue » est cochée, les contenus avec
+  ///   langue sont exclus (comportement voulu).
   bool passesLanguageFilter(Content c) {
     final lang = c.videoLanguage?.toUpperCase();
     if (lang == null || lang.isEmpty) return _showNoLanguage;
-    if (_activeLanguages.isEmpty) return true; // pas de filtre actif
     return _activeLanguages.contains(lang);
   }
 
