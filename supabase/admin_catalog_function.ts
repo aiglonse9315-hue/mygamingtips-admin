@@ -21,19 +21,27 @@
 //   POST /profiles/ban     → bannir un utilisateur (is_banned = true)
 //   POST /profiles/unban   → lever un ban (is_banned = false)
 //   POST /subscriptions/upsert → créer/modifier un abonnement Plus manuel
+//   POST /suggestions/list → lecture suggestions par mode (service_role)
+//   POST /profiles/find-by-email → résolution email → UUID (service_role)
 //
-// Lecture : les lectures du catalogue se font directement via l'API REST
-// PostgREST (anon key suffit grâce aux politiques RLS publiques en lecture).
-// Cette fonction ne gère QUE les écritures.
+// Lecture : les lectures du catalogue (games, contents) se font via l'API
+// REST PostgREST (anon key suffit grâce aux politiques RLS publiques).
+// Les lectures suggestions/profils passent par les routes service_role
+// ci-dessus (durcissement RLS progressif — Phases 1 à 3).
+// Cette fonction ne gère QUE ces lectures dédiées + les écritures.
 // ============================================================================
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { serve } from "https://deno.land/std/http/server.ts";
 
 const JWT_SECRET = Deno.env.get("JWT_SECRET");
+const ADMIN_ORIGIN = Deno.env.get("MGT_ADMIN_ORIGIN");
 
+// Fail-closed : sans origine configurée, la fonction refuse TOUT (503).
+// Pas de repli codé en dur — un fallback masquerait une mauvaise config.
+// Prérequis déploiement : supabase secrets set MGT_ADMIN_ORIGIN=<origine du panneau>
 const corsHeaders = {
-  "Access-Control-Allow-Origin": Deno.env.get("MGT_ADMIN_ORIGIN") ?? "https://aiglonse9315-hue.github.io",
+  "Access-Control-Allow-Origin": ADMIN_ORIGIN ?? "",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey, X-Admin-Token",
 };
@@ -128,6 +136,14 @@ async function verifyAdminToken(req: Request): Promise<boolean> {
 }
 
 serve(async (req) => {
+  // Garde fail-closed : origine admin requise (sinon on ne sert rien).
+  if (!ADMIN_ORIGIN) {
+    return json(
+      { error: "Service non configuré (MGT_ADMIN_ORIGIN manquant)." },
+      503
+    );
+  }
+
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -551,6 +567,98 @@ serve(async (req) => {
         display_name: profilesMap[s.user_id] ?? "Inconnu",
       }));
       return json({ subscriptions: result });
+    }
+
+    // ======================================================================
+    // LECTURES service_role (Phase 1 — durcissement RLS progressif)
+    // Ces routes remplacent à terme les lectures PostgREST anon du panneau
+    // sur suggestions/profils ; elles fonctionnent quel que soit l'état des
+    // policies (ajout pur — aucune route existante n'est modifiée).
+    // ======================================================================
+    if (route === "suggestions/list") {
+      // Lecture des suggestions par mode (filtres strictement identiques
+      // aux requêtes PostgREST actuelles du panneau).
+      const mode = typeof body.mode === "string" ? body.mode : "new";
+      const page =
+        typeof body.page === "number" && body.page >= 0 ? body.page : 0;
+      const pageSize =
+        typeof body.pageSize === "number" &&
+        body.pageSize > 0 &&
+        body.pageSize <= 1000
+          ? body.pageSize
+          : 500;
+
+      let query = supabase
+        .from("suggestions")
+        .select("*")
+        .order("shared_at", { ascending: false })
+        .range(page * pageSize, (page + 1) * pageSize - 1);
+
+      switch (mode) {
+        case "analyzing":
+          // En cours d'analyse Sentinelle (démarrée, pas encore de verdict).
+          query = query
+            .not("sentinelle_started_at", "is", "null")
+            .is("ai_recommendation", null)
+            .eq("status", "pending");
+          break;
+        case "analyzed":
+          // Analysées par Sentinelle (verdict IA présent).
+          query = query
+            .not("ai_recommendation", "is", "null")
+            .eq("status", "pending");
+          break;
+        case "games-to-create":
+          // File « Jeux à créer » (flag dans la recommandation IA).
+          query = query
+            .eq("ai_recommendation->needs_game_creation", true)
+            .eq("status", "pending");
+          break;
+        default:
+          // "new" : jamais prises en charge par Sentinelle.
+          query = query.is("sentinelle_started_at", null);
+      }
+
+      const { data: rows, error } = await query;
+      if (error) return safeError(error, 400, "Lecture des suggestions échouée");
+
+      // Reproduit l'embed PostgREST author:profiles(id,display_name,avatar_preset)
+      // via une 2ᵉ requête (service_role — indépendant de la RLS profiles).
+      const authorIds = [
+        ...new Set(
+          (rows ?? [])
+            .map((r: any) => r.author_id)
+            .filter((id: any) => typeof id === "string" && id.length > 0)
+        ),
+      ];
+      const authorsMap: Record<string, any> = {};
+      if (authorIds.length > 0) {
+        const { data: profs } = await supabase
+          .from("profiles")
+          .select("id, display_name, avatar_preset")
+          .in("id", authorIds);
+        for (const p of profs ?? []) authorsMap[p.id] = p;
+      }
+      const suggestions = (rows ?? []).map((r: any) => ({
+        ...r,
+        author: r.author_id ? authorsMap[r.author_id] ?? null : null,
+      }));
+      return await jsonWithFreshToken({ suggestions });
+    }
+
+    if (route === "profiles/find-by-email") {
+      // Résolution email → UUID profil (ajout manuel Plus / ban par email).
+      // Délègue à la fonction SQL existante : exécutée ici en service_role,
+      // elle reste utilisable après révocation du grant anon (Phase 3).
+      const email = body.email;
+      if (typeof email !== "string" || email.length === 0) {
+        return json({ error: "email requis." }, 400);
+      }
+      const { data, error } = await supabase.rpc("find_profile_by_email", {
+        email,
+      });
+      if (error) return safeError(error, 400, "Recherche par email échouée");
+      return await jsonWithFreshToken({ id: data ?? null });
     }
 
     // Route inconnue.

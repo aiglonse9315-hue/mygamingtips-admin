@@ -1124,7 +1124,13 @@ class StoreController extends ChangeNotifier {
         },
       );
     } catch (e) {
-      syncError = e.toString();
+      if (_isAuthError(e)) {
+        // 401 détecté pendant une lecture service_role (suggestions) → même
+        // traitement que pour les écritures : logout forcé.
+        onAuthError?.call();
+      } else {
+        syncError = e.toString();
+      }
     } finally {
       _syncing = false;
       isSyncing = false;

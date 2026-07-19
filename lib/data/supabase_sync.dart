@@ -20,9 +20,10 @@ class AdminAuthException implements Exception {
 
 /// Synchronisation entre le panneau admin et Supabase.
 ///
-/// **Lectures** : via l'API REST PostgREST (anon key suffit grâce aux
-/// politiques RLS publiques en lecture sur `games` et `contents` validés).
-/// **Écritures** : via l'Edge Function `admin-catalog` (service_role,
+/// **Lectures catalogue** (`games`, `contents`, `contributor_stats`) : via
+/// l'API REST PostgREST (anon key suffit — données publiques par design).
+/// **Lectures sensibles** (`suggestions`, résolution email → UUID) et
+/// **écritures** : via l'Edge Function `admin-catalog` (service_role,
 /// protégée par jeton JWT admin émis par `admin-login`).
 ///
 /// Cette classe ne fait aucune persistance locale — c'est le `Store`
@@ -78,7 +79,7 @@ class SupabaseSync {
   void setAdminToken(String token) => adminToken = token;
 
   // ===========================================================================
-  // LECTURES (PostgREST — anon key)
+  // LECTURES CATALOGUE (PostgREST — anon key, données publiques par design)
   // ===========================================================================
 
   /// Convertit une ligne Supabase (snake_case) vers le format camelCase
@@ -161,28 +162,17 @@ class SupabaseSync {
         .toList();
   }
 
-  /// Récupère les suggestions VRAIMENT nouvelles : jamais prises en charge
-  /// par Sentinelle (`sentinelle_started_at IS NULL` ET pas encore
-  /// d'analyse IA). Ces suggestions apparaissent dans le menu "Suggestions".
-  ///
-  /// La table `suggestions` ne stocke que `author_id` (UUID) ; on utilise la
-  /// fonction de jointure PostgREST pour récupérer le profil (displayName,
-  /// avatar) via la FK `author_id → profiles.id`.
-  Future<List<Suggestion>> fetchSuggestions({int page = 0, int pageSize = 500}) async {
-    final offset = page * pageSize;
-    final Uri uri = Uri.parse(
-      '$supabaseUrl/rest/v1/suggestions'
-      '?select=*,author:profiles(id,display_name,avatar_preset)'
-      '&sentinelle_started_at=is.null'
-      '&order=shared_at.desc'
-      '&limit=$pageSize&offset=$offset',
-    );
-    final http.Response res = await http.get(uri, headers: _anonHeaders);
-    if (res.statusCode != 200) {
-      throw Exception(
-          'fetchSuggestions échec ${res.statusCode}: ${res.body}');
-    }
-    final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
+  // ── Suggestions : lectures service_role (Phase 2 du durcissement RLS) ──
+  // Les lectures suggestions/profils du panneau passent par la route
+  // `suggestions/list` de l'Edge Function admin-catalog (service_role) au
+  // lieu de PostgREST anon. Filtres et shape de retour strictement
+  // identiques aux anciennes requêtes (embed `author` reconstitué côté
+  // fonction) : aucun changement de comportement pour l'UI.
+
+  /// Convertit les lignes suggestions (snake_case + embed `author`) en
+  /// modèles [Suggestion]. Mapping identique à l'ancien embed PostgREST
+  /// `author:profiles(id,display_name,avatar_preset)`.
+  static List<Suggestion> _mapSuggestionRows(List<dynamic> rows) {
     return rows.map((r) {
       final row = r as Map<String, dynamic>;
       final authorData = row['author'];
@@ -202,126 +192,46 @@ class SupabaseSync {
       return Suggestion.fromJson(mapped);
     }).toList();
   }
+
+  /// Lecture des suggestions par mode via la route service_role
+  /// `suggestions/list` (pagination identique : page/pageSize 0-based).
+  Future<List<Suggestion>> _fetchSuggestionsByMode(
+    String mode, {
+    int page = 0,
+    int pageSize = 500,
+  }) async {
+    final Map<String, dynamic> data = await _post('suggestions/list', {
+      'mode': mode,
+      'page': page,
+      'pageSize': pageSize,
+    });
+    return _mapSuggestionRows(data['suggestions'] as List? ?? []);
+  }
+
+  /// Récupère les suggestions VRAIMENT nouvelles : jamais prises en charge
+  /// par Sentinelle (`sentinelle_started_at IS NULL` ET pas encore
+  /// d'analyse IA). Ces suggestions apparaissent dans le menu "Suggestions".
+  Future<List<Suggestion>> fetchSuggestions({int page = 0, int pageSize = 500}) =>
+      _fetchSuggestionsByMode('new', page: page, pageSize: pageSize);
 
   /// Récupère les suggestions EN COURS d'analyse par Sentinelle
   /// (`sentinelle_started_at NOT NULL` MAIS `ai_recommendation IS NULL`).
   /// Ces suggestions apparaissent dans le menu "Sentinelle" → section
   /// "Analyse en cours" (Sentinelle travaille dessus).
-  Future<List<Suggestion>> fetchSentinelleAnalyzing({int page = 0, int pageSize = 500}) async {
-    final offset = page * pageSize;
-    final Uri uri = Uri.parse(
-      '$supabaseUrl/rest/v1/suggestions'
-      '?select=*,author:profiles(id,display_name,avatar_preset)'
-      '&sentinelle_started_at=not.is.null'
-      '&ai_recommendation=is.null'
-      '&status=eq.pending'
-      '&order=shared_at.desc'
-      '&limit=$pageSize&offset=$offset',
-    );
-    final http.Response res = await http.get(uri, headers: _anonHeaders);
-    if (res.statusCode != 200) {
-      throw Exception(
-          'fetchSentinelleAnalyzing échec ${res.statusCode}: ${res.body}');
-    }
-    final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
-    return rows.map((r) {
-      final row = r as Map<String, dynamic>;
-      final authorData = row['author'];
-      final Map<String, dynamic> authorObj = authorData is Map
-          ? {
-              'id': authorData['id'] ?? row['author_id'] ?? '',
-              'displayName':
-                  authorData['display_name'] ?? row['author_name'] ?? 'Inconnu',
-              'avatarUrl': authorData['avatar_preset'],
-            }
-          : {
-              'id': row['author_id'] ?? '',
-              'displayName': row['author_name'] ?? 'Inconnu',
-            };
-      final Map<String, dynamic> mapped = _camelRow(row);
-      mapped['author'] = authorObj;
-      return Suggestion.fromJson(mapped);
-    }).toList();
-  }
+  Future<List<Suggestion>> fetchSentinelleAnalyzing({int page = 0, int pageSize = 500}) =>
+      _fetchSuggestionsByMode('analyzing', page: page, pageSize: pageSize);
 
   /// Récupère les suggestions DÉJÀ analysées par Sentinelle (avec
   /// `ai_recommendation` non null). Ces suggestions apparaissent dans le menu
   /// "Sentinelle" où l'admin peut les implémenter en 1 clic ou les vérifier.
-  Future<List<Suggestion>> fetchSentinelleSuggestions({int page = 0, int pageSize = 500}) async {
-    final offset = page * pageSize;
-    final Uri uri = Uri.parse(
-      '$supabaseUrl/rest/v1/suggestions'
-      '?select=*,author:profiles(id,display_name,avatar_preset)'
-      '&ai_recommendation=not.is.null'
-      '&status=eq.pending'
-      '&order=shared_at.desc'
-      '&limit=$pageSize&offset=$offset',
-    );
-    final http.Response res = await http.get(uri, headers: _anonHeaders);
-    if (res.statusCode != 200) {
-      throw Exception(
-          'fetchSentinelleSuggestions échec ${res.statusCode}: ${res.body}');
-    }
-    final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
-    return rows.map((r) {
-      final row = r as Map<String, dynamic>;
-      final authorData = row['author'];
-      final Map<String, dynamic> authorObj = authorData is Map
-          ? {
-              'id': authorData['id'] ?? row['author_id'] ?? '',
-              'displayName':
-                  authorData['display_name'] ?? row['author_name'] ?? 'Inconnu',
-              'avatarUrl': authorData['avatar_preset'],
-            }
-          : {
-              'id': row['author_id'] ?? '',
-              'displayName': row['author_name'] ?? 'Inconnu',
-            };
-      final Map<String, dynamic> mapped = _camelRow(row);
-      mapped['author'] = authorObj;
-      return Suggestion.fromJson(mapped);
-    }).toList();
-  }
+  Future<List<Suggestion>> fetchSentinelleSuggestions({int page = 0, int pageSize = 500}) =>
+      _fetchSuggestionsByMode('analyzed', page: page, pageSize: pageSize);
 
   /// Récupère les suggestions marquées « Jeux à créer » : le flag
   /// `needs_game_creation` est vrai dans `ai_recommendation`, le statut est
   /// pending, et l'auteur n'est pas Vision.
-  Future<List<Suggestion>> fetchGamesToCreate(
-      {int page = 0, int pageSize = 500}) async {
-    final offset = page * pageSize;
-    final Uri uri = Uri.parse(
-      '$supabaseUrl/rest/v1/suggestions'
-      '?select=*,author:profiles(id,display_name,avatar_preset)'
-      '&ai_recommendation->needs_game_creation=eq.true'
-      '&status=eq.pending'
-      '&order=shared_at.desc'
-      '&limit=$pageSize&offset=$offset',
-    );
-    final http.Response res = await http.get(uri, headers: _anonHeaders);
-    if (res.statusCode != 200) {
-      throw Exception(
-          'fetchGamesToCreate échec ${res.statusCode}: ${res.body}');
-    }
-    final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
-    return rows.map((r) {
-      final row = r as Map<String, dynamic>;
-      final authorData = row['author'];
-      final Map<String, dynamic> authorObj = authorData is Map
-          ? {
-              'id': authorData['id'] ?? row['author_id'] ?? '',
-              'displayName':
-                  authorData['display_name'] ?? row['author_name'] ?? 'Inconnu',
-              'avatarUrl': authorData['avatar_preset'],
-            }
-          : {
-              'id': row['author_id'] ?? '',
-              'displayName': row['author_name'] ?? 'Inconnu'
-            };
-      final Map<String, dynamic> mapped = _camelRow(row);
-      mapped['author'] = authorObj;
-      return Suggestion.fromJson(mapped);
-    }).toList();
-  }
+  Future<List<Suggestion>> fetchGamesToCreate({int page = 0, int pageSize = 500}) =>
+      _fetchSuggestionsByMode('games-to-create', page: page, pageSize: pageSize);
 
   /// Supprime une entrée « Jeux à créer » (marque la suggestion rejected).
   Future<void> deleteGameToCreateEntry(String suggestionId) async {
@@ -368,21 +278,19 @@ class SupabaseSync {
   /// Recherche un profil par email (pour l'ajout d'abonné Plus par email).
   ///
   /// Retourne l'UUID du profil trouvé, ou null si introuvable.
-  /// Note : la table `profiles` ne contient pas `email` par défaut — cette
-  /// méthode utilise une jointure avec `auth.users` via PostgREST si la FK
-  /// existe, sinon retourne null.
+  /// Passe par la route service_role `profiles/find-by-email` de l'Edge
+  /// Function admin-catalog (le RPC SQL est exécuté côté fonction).
   Future<String?> findProfileByEmail(String email) async {
     try {
-      final Uri uri = Uri.parse(
-        '$supabaseUrl/rest/v1/rpc/find_profile_by_email?email=${Uri.encodeComponent(email)}',
-      );
-      final http.Response res = await http.get(uri, headers: _anonHeaders);
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
-        if (data is String && data.isNotEmpty) return data;
-        if (data is Map) return data['id'] as String?;
-      }
-      return null;
+      // Route service_role (Phase 2) : fonctionne quel que soit l'état des
+      // grants sur le RPC SQL `find_profile_by_email` (révoqué en Phase 3).
+      final Map<String, dynamic> data =
+          await _post('profiles/find-by-email', {'email': email});
+      final id = data['id'];
+      return id is String && id.isNotEmpty ? id : null;
+    } on AdminAuthException {
+      // 401 = session expirée → on laisse remonter pour le logout forcé.
+      rethrow;
     } catch (_) {
       return null;
     }

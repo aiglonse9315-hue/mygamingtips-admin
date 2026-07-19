@@ -37,56 +37,80 @@ const WINDOW_MS = 5 * 60 * 1000;  // fenêtre de 5 min pour compter les échecs
 
 async function checkRateLimit(
   supabase: ReturnType<typeof createClient>,
-  ip: string
+  ip: string,
+  username?: string
 ): Promise<{ allowed: boolean; remainingMs: number; failedCount: number }> {
-  // Récupère le timestamp du DERNIER SUCCÈS pour cette IP.
-  // Les échecs avant ce succès ne comptent pas (session réinitialisée).
-  const { data: lastSuccess } = await supabase
-    .from("admin_auth_logs")
-    .select("at")
-    .eq("ip", ip)
-    .eq("success", true)
-    .order("at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  // Fenêtre de comptage : depuis le dernier succès, ou les 5 dernières minutes
-  // si aucun succès n'a eu lieu.
-  const windowStart = lastSuccess
-    ? lastSuccess.at
-    : new Date(Date.now() - WINDOW_MS).toISOString();
-
-  // Compte les échecs depuis le dernier succès (ou la fenêtre de 5 min).
-  const { count, error } = await supabase
-    .from("admin_auth_logs")
-    .select("id", { count: "exact", head: true })
-    .eq("ip", ip)
-    .eq("success", false)
-    .gte("at", windowStart);
-  if (error) {
-    return { allowed: true, remainingMs: 0, failedCount: 0 };
-  }
-  const failedCount = count ?? 0;
-  if (failedCount >= MAX_ATTEMPTS) {
-    // Récupère le timestamp du dernier échec pour calculer le temps restant.
-    const { data: lastFail } = await supabase
+  // Compte les échecs récents pour une clé donnée (IP ou login), depuis le
+  // dernier succès correspondant (ou la fenêtre de 5 min si aucun succès).
+  async function countFailures(
+    column: "ip" | "username",
+    value: string
+  ): Promise<{ blocked: boolean; remainingMs: number; count: number }> {
+    const { data: lastSuccess } = await supabase
       .from("admin_auth_logs")
       .select("at")
-      .eq("ip", ip)
-      .eq("success", false)
+      .eq(column, value)
+      .eq("success", true)
       .order("at", { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (lastFail) {
-      const lastTime = new Date(lastFail.at).getTime();
-      const unlockAt = lastTime + LOCKOUT_MS;
-      const remaining = unlockAt - Date.now();
-      if (remaining > 0) {
-        return { allowed: false, remainingMs: remaining, failedCount };
+
+    const windowStart = lastSuccess
+      ? lastSuccess.at
+      : new Date(Date.now() - WINDOW_MS).toISOString();
+
+    const { count, error } = await supabase
+      .from("admin_auth_logs")
+      .select("id", { count: "exact", head: true })
+      .eq(column, value)
+      .eq("success", false)
+      .gte("at", windowStart);
+    if (error) {
+      return { blocked: false, remainingMs: 0, count: 0 };
+    }
+    const failedCount = count ?? 0;
+    if (failedCount >= MAX_ATTEMPTS) {
+      const { data: lastFail } = await supabase
+        .from("admin_auth_logs")
+        .select("at")
+        .eq(column, value)
+        .eq("success", false)
+        .order("at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (lastFail) {
+        const lastTime = new Date(lastFail.at).getTime();
+        const remaining = lastTime + LOCKOUT_MS - Date.now();
+        if (remaining > 0) {
+          return { blocked: true, remainingMs: remaining, count: failedCount };
+        }
       }
     }
+    return { blocked: false, remainingMs: 0, count: failedCount };
   }
-  return { allowed: true, remainingMs: 0, failedCount };
+
+  // Blocage par IP (comportement existant, inchangé).
+  const byIp = await countFailures("ip", ip);
+  if (byIp.blocked) {
+    return {
+      allowed: false,
+      remainingMs: byIp.remainingMs,
+      failedCount: byIp.count,
+    };
+  }
+  // Blocage par LOGIN : empêche la force brute distribuée (rotation d'IP).
+  // Le compteur s'applique au login SAISI, sans jamais révéler s'il existe.
+  if (username) {
+    const byUser = await countFailures("username", username);
+    if (byUser.blocked) {
+      return {
+        allowed: false,
+        remainingMs: byUser.remainingMs,
+        failedCount: byUser.count,
+      };
+    }
+  }
+  return { allowed: true, remainingMs: 0, failedCount: byIp.count };
 }
 
 // --- Vérification bcrypt via bcryptjs (pure JS, 100% compatible Deno) ---
@@ -147,11 +171,20 @@ async function logAttempt(
 }
 
 serve(async (req) => {
-  // CORS (le panneau admin web est sur un autre domaine en prod).
-  // ⚠️ En production, MGT_ADMIN_ORIGIN DOIT être défini (sinon : refus).
+  // CORS fail-closed : MGT_ADMIN_ORIGIN DOIT être défini, sinon on refuse
+  // tout (pas de repli codé en dur qui masquerait une mauvaise config).
+  // Prérequis : supabase secrets set MGT_ADMIN_ORIGIN=<origine du panneau>
   const adminOrigin = Deno.env.get("MGT_ADMIN_ORIGIN");
+  if (!adminOrigin) {
+    return new Response(
+      JSON.stringify({
+        error: "Service admin non configuré (MGT_ADMIN_ORIGIN manquant).",
+      }),
+      { status: 503, headers: { "Content-Type": "application/json" } }
+    );
+  }
   const corsHeaders = {
-    "Access-Control-Allow-Origin": adminOrigin ?? "https://aiglonse9315-hue.github.io",
+    "Access-Control-Allow-Origin": adminOrigin,
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey, X-Admin-Token",
   };
@@ -174,24 +207,13 @@ serve(async (req) => {
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")! // contourne RLS côté serveur
   );
 
-  const ip =
-    req.headers.get("x-real-ip") ??
-    req.headers.get("x-forwarded-for") ??
-    "unknown";
+  // IP vue par la passerelle Supabase uniquement. Ne JAMAIS replier sur
+  // x-forwarded-for ici : ce header est contrôlé par le client et
+  // permettrait de contourner le rate-limiting par simple rotation.
+  const ip = req.headers.get("x-real-ip") ?? "unknown";
 
-  // 1) Rate-limiting persistant (base de données).
-  const rl = await checkRateLimit(supabase, ip);
-  if (!rl.allowed) {
-    await logAttempt(supabase, ip, false, `bloqué (${rl.remainingMs}ms)`);
-    const remainingMin = Math.ceil(rl.remainingMs / 60000);
-    return json(
-      { error: `Trop de tentatives. Réessayez dans ${remainingMin} minute(s).` },
-      429,
-      corsHeaders
-    );
-  }
-
-  // 2) Lecture du corps.
+  // 1) Lecture du corps (avant le rate-limiting : le compteur par login
+  //    a besoin du username saisi).
   let body: { username?: string; password?: string };
   try {
     body = await req.json();
@@ -203,19 +225,31 @@ serve(async (req) => {
     return json({ error: "Champs manquants." }, 400, corsHeaders);
   }
 
+  // 2) Rate-limiting persistant (base de données) : par IP ET par login.
+  const rl = await checkRateLimit(supabase, ip, username);
+  if (!rl.allowed) {
+    await logAttempt(
+      supabase,
+      ip,
+      false,
+      `bloqué (${rl.remainingMs}ms)`,
+      username
+    );
+    const remainingMin = Math.ceil(rl.remainingMs / 60000);
+    return json(
+      { error: `Trop de tentatives. Réessayez dans ${remainingMin} minute(s).` },
+      429,
+      corsHeaders
+    );
+  }
+
   // 3) Vérification serveur (bcrypt).
-  const loginConfigured = !!ADMIN_LOGIN;
   const hashConfigured = !!ADMIN_PASSWORD_HASH;
-  const hashPrefix = ADMIN_PASSWORD_HASH?.substring(0, 7) ?? "(vide)";
   const usernameMatches = username === ADMIN_LOGIN;
-  console.log("Tentative login:", {
-    reçu: username,
-    attendu: ADMIN_LOGIN ? `"${ADMIN_LOGIN}"` : "(non configuré)",
-    usernameMatches,
-    loginConfigured,
-    hashConfigured,
-    hashPrefix,
-  });
+  // Log minimal volontaire : ne JAMAIS logger le login attendu, le résultat
+  // de la comparaison ni le préfixe du hash — quiconque lit les logs
+  // apprendrait l'identifiant admin.
+  console.log("Tentative login:", { reçu: username, hashConfigured });
 
   let passwordOk = false;
   if (usernameMatches && hashConfigured && ADMIN_PASSWORD_HASH) {
