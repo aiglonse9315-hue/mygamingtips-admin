@@ -22,6 +22,7 @@
 //   POST /profiles/unban   → lever un ban (is_banned = false)
 //   POST /subscriptions/upsert → créer/modifier un abonnement Plus manuel
 //   POST /suggestions/list → lecture suggestions par mode (service_role)
+//   POST /suggestions/urls → URLs de toutes les suggestions, paginé (anti-doublons Vision)
 //   POST /profiles/find-by-email → résolution email → UUID (service_role)
 //
 // Lecture : les lectures du catalogue (games, contents) se font via l'API
@@ -588,11 +589,10 @@ serve(async (req) => {
           ? body.pageSize
           : 500;
 
-      let query = supabase
-        .from("suggestions")
-        .select("*")
-        .order("shared_at", { ascending: false })
-        .range(page * pageSize, (page + 1) * pageSize - 1);
+      let query = supabase.from("suggestions").select("*");
+      // Ordre antéchronologique pour les vues du panneau, chronologique pour
+      // la file de travail des bots (mode "pending-no-ai").
+      let ascending = false;
 
       switch (mode) {
         case "analyzing":
@@ -614,10 +614,24 @@ serve(async (req) => {
             .eq("ai_recommendation->needs_game_creation", true)
             .eq("status", "pending");
           break;
+        case "pending-no-ai":
+          // File de travail des bots Sentinelle/Vision : en attente, sans
+          // verdict IA (inclut les reprises après crash), plus anciennes
+          // d'abord. Filtre strictement identique à l'ancienne lecture
+          // PostgREST anon des bots.
+          query = query
+            .eq("status", "pending")
+            .is("ai_recommendation", null);
+          ascending = true;
+          break;
         default:
           // "new" : jamais prises en charge par Sentinelle.
           query = query.is("sentinelle_started_at", null);
       }
+
+      query = query
+        .order("shared_at", { ascending })
+        .range(page * pageSize, (page + 1) * pageSize - 1);
 
       const { data: rows, error } = await query;
       if (error) return safeError(error, 400, "Lecture des suggestions échouée");
@@ -659,6 +673,29 @@ serve(async (req) => {
       });
       if (error) return safeError(error, 400, "Recherche par email échouée");
       return await jsonWithFreshToken({ id: data ?? null });
+    }
+
+    if (route === "suggestions/urls") {
+      // Anti-doublons Vision : TOUTES les URLs de suggestions (tous statuts,
+      // y compris rejected pour ne jamais reproposer un lien refusé), paginé.
+      // service_role — remplace la lecture PostgREST anon du bot (Phase 3.2b).
+      const page =
+        typeof body.page === "number" && body.page >= 0 ? body.page : 0;
+      const pageSize =
+        typeof body.pageSize === "number" &&
+        body.pageSize > 0 &&
+        body.pageSize <= 1000
+          ? body.pageSize
+          : 1000;
+      const { data: rows, error } = await supabase
+        .from("suggestions")
+        .select("url")
+        .order("shared_at", { ascending: true })
+        .range(page * pageSize, (page + 1) * pageSize - 1);
+      if (error) return safeError(error, 400, "Lecture des URLs échouée");
+      return await jsonWithFreshToken({
+        urls: (rows ?? []).map((r: any) => r.url),
+      });
     }
 
     // Route inconnue.
