@@ -9,7 +9,7 @@ class PlusUser {
   final String plan; // 'monthly' ou 'yearly'
   final DateTime startedAt;
   final bool active;
-  final String source; // 'google' (Google Play) ou 'admin' (manuel)
+  final String source; // 'google' / 'google_verified' (Play, vérifié serveur) ou 'admin' (manuel)
 
   const PlusUser({
     required this.id,
@@ -45,7 +45,11 @@ class PlusUser {
         'source': source,
       };
 
-  bool get isGoogle => source == 'google';
+  bool get isGoogle => source.startsWith('google');
+
+  /// `true` si l'abonnement a été vérifié côté serveur auprès de Google Play
+  /// (Edge Function `verify-purchase`, Phase 4.1).
+  bool get isVerified => source == 'google_verified';
 
   PlusUser copyWith({
     bool? active,

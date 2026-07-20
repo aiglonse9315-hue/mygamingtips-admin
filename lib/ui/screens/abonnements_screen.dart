@@ -181,7 +181,7 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
                       // Formule (badge).
                       _PlanBadge(plan: u.plan),
                       // Source (badge).
-                      _SourceBadge(isGoogle: u.isGoogle),
+                      _SourceBadge(isGoogle: u.isGoogle, isVerified: u.isVerified),
                       // Statut.
                       u.active
                           ? const StatusBadge(label: 'Actif', color: Colors.green)
@@ -341,36 +341,44 @@ class _PlanBadge extends StatelessWidget {
   }
 }
 
-/// Badge coloré pour la source (Google / Manuel).
+/// Badge coloré pour la source (Google vérifié / Google / Manuel).
 class _SourceBadge extends StatelessWidget {
-  const _SourceBadge({required this.isGoogle});
+  const _SourceBadge({required this.isGoogle, this.isVerified = false});
   final bool isGoogle;
+
+  /// `true` = abonnement vérifié côté serveur auprès de Google Play
+  /// (source `google_verified`, Phase 4.1) : badge distinct "Google ✓".
+  final bool isVerified;
 
   @override
   Widget build(BuildContext context) {
+    final Color color = isGoogle ? Colors.green : Colors.blue;
+    final String label =
+        isVerified ? 'Google ✓' : (isGoogle ? 'Google' : 'Manuel');
+    final IconData icon = isVerified
+        ? Icons.verified_rounded
+        : (isGoogle ? Icons.shopping_cart_rounded : Icons.person_rounded);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: (isGoogle ? Colors.green : Colors.blue).withValues(alpha: 0.16),
+        color: color.withValues(alpha: 0.16),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            isGoogle
-                ? Icons.shopping_cart_rounded
-                : Icons.person_rounded,
+            icon,
             size: 12,
-            color: isGoogle ? Colors.green : Colors.blue,
+            color: color,
           ),
           const SizedBox(width: 4),
           Text(
-            isGoogle ? 'Google' : 'Manuel',
+            label,
             style: TextStyle(
               fontSize: 10,
               fontWeight: FontWeight.w800,
-              color: isGoogle ? Colors.green : Colors.blue,
+              color: color,
             ),
           ),
         ],
