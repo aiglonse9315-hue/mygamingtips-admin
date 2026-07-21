@@ -58,7 +58,8 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
       list = list
           .where((u) =>
               u.displayName.toLowerCase().contains(q) ||
-              (u.email?.toLowerCase().contains(q) ?? false))
+              (u.email?.toLowerCase().contains(q) ?? false) ||
+              u.id.toLowerCase().contains(q))
           .toList();
     }
 
@@ -166,10 +167,26 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
             },
             rows: list
                 .map((u) => [
-                      // Utilisateur.
-                      Text(u.displayName,
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w700, fontSize: 13)),
+                      // Utilisateur (pseudo + UID tronqué — l'abonnement est
+                      // lié à l'UID Supabase, le pseudo peut changer).
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(u.displayName,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w700, fontSize: 13)),
+                          Text(
+                            u.id.length > 8
+                                ? '${u.id.substring(0, 8)}…'
+                                : u.id,
+                            style: const TextStyle(
+                                fontSize: 10,
+                                color: Colors.grey,
+                                fontFamily: 'monospace'),
+                          ),
+                        ],
+                      ),
                       // Email.
                       Text(u.email ?? '—',
                           style: TextStyle(

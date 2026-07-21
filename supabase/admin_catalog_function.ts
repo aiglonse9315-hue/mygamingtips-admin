@@ -9,7 +9,9 @@
 // Déploiement : supabase functions deploy admin-catalog
 // Secrets requis (fournis automatiquement par Supabase) :
 //   - SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-//   - JWT_SECRET (pour vérifier le jeton admin)
+//   - MGT_ADMIN_JWT_SECRET (secret dédié jetons admin — Phase 4.4)
+//   - JWT_SECRET (ancien secret : accepté en vérif pendant la transition,
+//     utilisé en signature seulement si le nouveau n'est pas défini)
 //
 // Endpoints (tous POST, body JSON, header Authorization: Bearer <jwt>) :
 //   POST /games            → upsert jeu (create ou update)
@@ -17,6 +19,7 @@
 //   POST /contents         → upsert contenu (create/update)
 //   POST /suggestions/accept → valider une suggestion (crée un contenu)
 //   POST /suggestions/reject → rejeter une suggestion
+//   POST /suggestions/delete → supprimer définitivement une suggestion pending
 //   POST /suggestions/ai-recommend → écrire la recommandation IA Sentinelle
 //   POST /profiles/ban     → bannir un utilisateur (is_banned = true)
 //   POST /profiles/unban   → lever un ban (is_banned = false)
@@ -35,7 +38,12 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { serve } from "https://deno.land/std/http/server.ts";
 
-const JWT_SECRET = Deno.env.get("JWT_SECRET");
+// Phase 4.4 — secret dédié aux jetons admin, transition douce :
+// la SIGNATURE préfère MGT_ADMIN_JWT_SECRET ; la VÉRIFICATION accepte les
+// deux secrets tant que l'ancien JWT_SECRET existe (jetons en vol ≤ 15 min).
+const JWT_SECRET_NEW = Deno.env.get("MGT_ADMIN_JWT_SECRET");
+const JWT_SECRET_LEGACY = Deno.env.get("JWT_SECRET");
+const SIGNING_SECRET = JWT_SECRET_NEW ?? JWT_SECRET_LEGACY;
 const ADMIN_ORIGIN = Deno.env.get("MGT_ADMIN_ORIGIN");
 
 // Fail-closed : sans origine configurée, la fonction refuse TOUT (503).
@@ -75,7 +83,7 @@ async function makeJwt(): Promise<string> {
   const data = `${header}.${payload}`;
   const key = await crypto.subtle.importKey(
     "raw",
-    enc.encode(JWT_SECRET),
+    enc.encode(SIGNING_SECRET),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"]
@@ -99,6 +107,24 @@ async function jsonWithFreshToken(obj: unknown) {
 // Le jeton admin est transmis via le header personnalisé `X-Admin-Token`
 // (et NON `Authorization`, réservé par la passerelle Supabase pour l'auth
 // Supabase Auth). On lit aussi `Authorization` en repli pour compatibilité.
+// Phase 4.4 : la vérification accepte le NOUVEAU secret dédié ET l'ancien
+// (transition) — les jetons en vol (≤ 15 min) restent valides.
+async function verifySignatureWith(
+  secret: string,
+  data: string,
+  sigBytes: Uint8Array
+): Promise<boolean> {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"]
+  );
+  return await crypto.subtle.verify("HMAC", key, sigBytes, enc.encode(data));
+}
+
 async function verifyAdminToken(req: Request): Promise<boolean> {
   const token =
     req.headers.get("X-Admin-Token") ??
@@ -108,23 +134,25 @@ async function verifyAdminToken(req: Request): Promise<boolean> {
   if (parts.length !== 3) return false;
 
   const [header, payload, signature] = parts;
-  const enc = new TextEncoder();
   const data = `${header}.${payload}`;
 
   try {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      enc.encode(JWT_SECRET),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["verify"]
-    );
     // Le signature en base64url.
     const sigBytes = Uint8Array.from(
       atob(signature.replace(/-/g, "+").replace(/_/g, "/")),
       (c) => c.charCodeAt(0)
     );
-    const valid = await crypto.subtle.verify("HMAC", key, sigBytes, enc.encode(data));
+    // Candidats : nouveau secret dédié d'abord, puis legacy (transition).
+    const candidates = [JWT_SECRET_NEW, JWT_SECRET_LEGACY].filter(
+      (s): s is string => typeof s === "string" && s.length > 0
+    );
+    let valid = false;
+    for (const secret of candidates) {
+      if (await verifySignatureWith(secret, data, sigBytes)) {
+        valid = true;
+        break;
+      }
+    }
     if (!valid) return false;
 
     // Vérifie l'expiration.
@@ -149,9 +177,12 @@ serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
-  // Garde : secret JWT requis.
-  if (!JWT_SECRET) {
-    return json({ error: "Service non configuré (JWT_SECRET manquant)." }, 503);
+  // Garde : au moins un secret JWT requis (nouveau dédié ou legacy).
+  if (!SIGNING_SECRET) {
+    return json(
+      { error: "Service non configuré (MGT_ADMIN_JWT_SECRET/JWT_SECRET manquant)." },
+      503
+    );
   }
 
   // Auth : vérifie le jeton admin (header X-Admin-Token ou Authorization).
@@ -421,6 +452,29 @@ serve(async (req) => {
       return await jsonWithFreshToken({ ok: true });
     }
 
+    if (route === "suggestions/delete") {
+      // Suppression DÉFINITIVE d'une suggestion, uniquement si encore
+      // « pending » (garde-fou : jamais de suppression d'une ligne modérée).
+      // Utilisée par Sentinelle pour les vidéos différées faute d'audience
+      // suffisante (règle 20/07/2026) : la ligne sort de la file pour
+      // débloquer la pagination des 500, et l'URL redevient candidate —
+      // Vision la re-scannera ultérieurement quand l'audience aura grandi.
+      const suggestionId = uuidOrUndefined(body.id);
+      if (!suggestionId) {
+        return json(
+          { error: "id manquant ou invalide (UUID attendu)." },
+          400
+        );
+      }
+      const { error } = await supabase
+        .from("suggestions")
+        .delete()
+        .eq("id", suggestionId)
+        .eq("status", "pending");
+      if (error) return safeError(error, 400);
+      return await jsonWithFreshToken({ ok: true });
+    }
+
     if (route === "games-to-create/delete") {
       // Retire une suggestion de la file « Jeux à créer » en la marquant
       // rejected (le flag needs_game_creation reste dans ai_recommendation
@@ -543,7 +597,7 @@ serve(async (req) => {
       // subscriptions.user_id → profiles.id peut ne pas être déclarée.
       const { data: subs, error } = await supabase
         .from("subscriptions")
-        .select("user_id, plan, is_active, started_at, expires_at, updated_at")
+        .select("user_id, plan, is_active, started_at, expires_at, updated_at, source")
         .order("updated_at", { ascending: false });
       if (error) return safeError(error, 400);
 
@@ -557,7 +611,7 @@ serve(async (req) => {
           .from("profiles")
           .select("id, display_name")
           .in("id", userIds);
-        for (const p of profiles ?? []) {
+      for (const p of profiles ?? []) {
           profilesMap[p.id] = p.display_name ?? "Inconnu";
         }
       }
