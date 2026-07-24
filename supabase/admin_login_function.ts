@@ -9,12 +9,12 @@
 //   - MGT_ADMIN_LOGIN        : login admin
 //   - MGT_ADMIN_PASSWORD_HASH: hash bcrypt du mot de passe
 //   - (SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY fournis auto)
-//   - JWT_SECRET             : pour signer le jeton (secret Supabase du projet)
+//   - MGT_ADMIN_JWT_SECRET   : SEUL secret de signature du jeton (Phase 4.4
+//     Phase B — transition terminée, l'ancien JWT_SECRET n'est plus lu)
 //
 // Bonnes pratiques intégrées :
 //   - Vérification bcrypt (jamais de comparaison de texte clair).
-//   - Rate-limiting basique par IP (map en mémoire ; en prod, préférer
-//     Upstash Redis ou la table admin_auth_logs + comptage).
+//   - Rate-limiting persistant par IP + par login (table admin_auth_logs).
 //   - Journalisation des tentatives (table admin_auth_logs via service_role).
 //   - JWT court (15 min) signé serveur.
 // ============================================================================
@@ -24,7 +24,10 @@ import { serve } from "https://deno.land/std/http/server.ts";
 
 const ADMIN_LOGIN = Deno.env.get("MGT_ADMIN_LOGIN");
 const ADMIN_PASSWORD_HASH = Deno.env.get("MGT_ADMIN_PASSWORD_HASH");
-const JWT_SECRET = Deno.env.get("JWT_SECRET");
+// Phase 4.4 (Phase B) — le secret dédié est DÉSORMAIS LE SEUL secret de
+// signature. Le legacy JWT_SECRET n'est plus lu : il sera supprimé des
+// secrets Supabase après déploiement (aucun autre consommateur).
+const SIGNING_SECRET = Deno.env.get("MGT_ADMIN_JWT_SECRET");
 
 // --- Rate limiting PERSISTANT (par IP) via la table admin_auth_logs ---
 // Contrairement à une Map en mémoire (perdue à chaque redémarrage d'instance),
@@ -140,7 +143,7 @@ async function makeJwt(): Promise<string> {
   const data = `${header}.${payload}`;
   const key = await crypto.subtle.importKey(
     "raw",
-    enc.encode(JWT_SECRET),
+    enc.encode(SIGNING_SECRET),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"]
@@ -194,7 +197,7 @@ serve(async (req) => {
 
   // Garde : si les secrets serveur ne sont pas configurés, on échoue tôt
   // avec un message explicite plutôt qu'une comparaison contre undefined.
-  if (!ADMIN_LOGIN || !ADMIN_PASSWORD_HASH || !JWT_SECRET) {
+  if (!ADMIN_LOGIN || !ADMIN_PASSWORD_HASH || !SIGNING_SECRET) {
     return json(
       { error: "Service admin non configuré (secrets manquants)." },
       503,

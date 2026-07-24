@@ -227,6 +227,12 @@ class SupabaseSync {
   Future<List<Suggestion>> fetchSentinelleSuggestions({int page = 0, int pageSize = 500}) =>
       _fetchSuggestionsByMode('analyzed', page: page, pageSize: pageSize);
 
+  /// Récupère les suggestions découvertes par le bot Scruteur (sites web de
+  /// guides) : source='scruteur', déjà jugées par l'IA (ai_recommendation
+  /// présent), en attente de validation. Apparaissent dans le menu "Scruteur".
+  Future<List<Suggestion>> fetchScruteurSuggestions({int page = 0, int pageSize = 500}) =>
+      _fetchSuggestionsByMode('scruteur', page: page, pageSize: pageSize);
+
   /// Récupère les suggestions marquées « Jeux à créer » : le flag
   /// `needs_game_creation` est vrai dans `ai_recommendation`, le statut est
   /// pending, et l'auteur n'est pas Vision.
@@ -405,6 +411,7 @@ class SupabaseSync {
     required String titleAdmin,
     bool isVideo = false,
     DateTime? publishedAt,
+    String? videoLanguage,
   }) async {
     await _post('suggestions/accept', {
       'id': suggestionId,
@@ -413,6 +420,10 @@ class SupabaseSync {
       'title_admin': titleAdmin,
       'is_video': isVideo,
       if (publishedAt != null) 'published_at': publishedAt.toIso8601String(),
+      // Langue du contenu : pour les liens du Scruteur (catégorie 'links'),
+      // transmet la langue détectée de la page web. L'EF v46 l'insère dans
+      // contents.video_language. Les vidéos YouTube ne l'envoient pas (null).
+      if (videoLanguage != null) 'video_language': videoLanguage,
     });
   }
 

@@ -1,5 +1,5 @@
 // ============================================================================
-// MyGamingTips — Edge Function Supabase "admin-catalog"
+// MyGamingTips — Edge Function Supabase "admin-catalog" (v46)
 // ============================================================================
 // Opérations d'écriture administrateur sur le catalogue (jeux, contenus,
 // suggestions, profils bannis, abonnements). Contourne la RLS via
@@ -9,9 +9,8 @@
 // Déploiement : supabase functions deploy admin-catalog
 // Secrets requis (fournis automatiquement par Supabase) :
 //   - SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-//   - MGT_ADMIN_JWT_SECRET (secret dédié jetons admin — Phase 4.4)
-//   - JWT_SECRET (ancien secret : accepté en vérif pendant la transition,
-//     utilisé en signature seulement si le nouveau n'est pas défini)
+//   - MGT_ADMIN_JWT_SECRET (SEUL secret jetons admin — Phase 4.4 Phase B :
+//     transition terminée, l'ancien JWT_SECRET n'est plus lu)
 //
 // Endpoints (tous POST, body JSON, header Authorization: Bearer <jwt>) :
 //   POST /games            → upsert jeu (create ou update)
@@ -25,6 +24,9 @@
 //   POST /profiles/unban   → lever un ban (is_banned = false)
 //   POST /subscriptions/upsert → créer/modifier un abonnement Plus manuel
 //   POST /suggestions/list → lecture suggestions par mode (service_role)
+//     modes : new, analyzing, analyzed, games-to-create, scruteur, pending-no-ai
+//   POST /suggestions/insert → insertion suggestion bot (Vision/Scruteur) :
+//     body.source ('vision'|'scruteur'), author_name, ai_recommendation optionnel
 //   POST /suggestions/urls → URLs de toutes les suggestions, paginé (anti-doublons Vision)
 //   POST /profiles/find-by-email → résolution email → UUID (service_role)
 //
@@ -38,12 +40,10 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { serve } from "https://deno.land/std/http/server.ts";
 
-// Phase 4.4 — secret dédié aux jetons admin, transition douce :
-// la SIGNATURE préfère MGT_ADMIN_JWT_SECRET ; la VÉRIFICATION accepte les
-// deux secrets tant que l'ancien JWT_SECRET existe (jetons en vol ≤ 15 min).
-const JWT_SECRET_NEW = Deno.env.get("MGT_ADMIN_JWT_SECRET");
-const JWT_SECRET_LEGACY = Deno.env.get("JWT_SECRET");
-const SIGNING_SECRET = JWT_SECRET_NEW ?? JWT_SECRET_LEGACY;
+// Phase 4.4 (Phase B) — MGT_ADMIN_JWT_SECRET est DÉSORMAIS LE SEUL secret :
+// signature ET vérification. Le legacy JWT_SECRET n'est plus lu ; il sera
+// supprimé des secrets Supabase après déploiement (aucun autre consommateur).
+const SIGNING_SECRET = Deno.env.get("MGT_ADMIN_JWT_SECRET");
 const ADMIN_ORIGIN = Deno.env.get("MGT_ADMIN_ORIGIN");
 
 // Fail-closed : sans origine configurée, la fonction refuse TOUT (503).
@@ -107,8 +107,8 @@ async function jsonWithFreshToken(obj: unknown) {
 // Le jeton admin est transmis via le header personnalisé `X-Admin-Token`
 // (et NON `Authorization`, réservé par la passerelle Supabase pour l'auth
 // Supabase Auth). On lit aussi `Authorization` en repli pour compatibilité.
-// Phase 4.4 : la vérification accepte le NOUVEAU secret dédié ET l'ancien
-// (transition) — les jetons en vol (≤ 15 min) restent valides.
+// Phase 4.4 (Phase B) : la vérification n'accepte QUE le secret dédié
+// MGT_ADMIN_JWT_SECRET — la transition est terminée.
 async function verifySignatureWith(
   secret: string,
   data: string,
@@ -142,18 +142,11 @@ async function verifyAdminToken(req: Request): Promise<boolean> {
       atob(signature.replace(/-/g, "+").replace(/_/g, "/")),
       (c) => c.charCodeAt(0)
     );
-    // Candidats : nouveau secret dédié d'abord, puis legacy (transition).
-    const candidates = [JWT_SECRET_NEW, JWT_SECRET_LEGACY].filter(
-      (s): s is string => typeof s === "string" && s.length > 0
-    );
-    let valid = false;
-    for (const secret of candidates) {
-      if (await verifySignatureWith(secret, data, sigBytes)) {
-        valid = true;
-        break;
-      }
+    // Phase B : un SEUL secret accepté (le dédié MGT_ADMIN_JWT_SECRET).
+    if (!SIGNING_SECRET) return false;
+    if (!(await verifySignatureWith(SIGNING_SECRET, data, sigBytes))) {
+      return false;
     }
-    if (!valid) return false;
 
     // Vérifie l'expiration.
     const claims = JSON.parse(atob(payload));
@@ -177,10 +170,10 @@ serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
-  // Garde : au moins un secret JWT requis (nouveau dédié ou legacy).
+  // Garde : le secret dédié est requis (Phase B — plus de repli legacy).
   if (!SIGNING_SECRET) {
     return json(
-      { error: "Service non configuré (MGT_ADMIN_JWT_SECRET/JWT_SECRET manquant)." },
+      { error: "Service non configuré (MGT_ADMIN_JWT_SECRET manquant)." },
       503
     );
   }
@@ -287,14 +280,21 @@ serve(async (req) => {
     }
 
     if (route === "suggestions/insert") {
-      // Insère une suggestion découverte par le bot Vision.
+      // Insère une suggestion découverte par un bot (Vision ou Scruteur).
+      // - source : origine ('vision' | 'scruteur', défaut 'vision' pour la
+      //   rétro-compatibilité avec le bot Vision qui ne l'envoie pas).
+      // - author_name : signature du bot (défaut 'Vision').
+      // - ai_recommendation : optionnel (le Scruteur fournit déjà son verdict
+      //   IA puisqu'il découvre ET juge en un seul passage).
       const { data, error } = await supabase
         .from("suggestions")
         .insert({
           url: body.url,
           shared_text: body.shared_text ?? null,
           status: "pending",
-          author_name: "Vision",
+          source: body.source ?? "vision",
+          author_name: body.author_name ?? "Vision",
+          ai_recommendation: body.ai_recommendation ?? null,
         })
         .select()
         .single();
@@ -429,8 +429,13 @@ serve(async (req) => {
         validated: true,
         is_video: body.is_video ?? false,
         author_id: suggestion.author_id,
+        // Langue du contenu : pour les liens du Scruteur (catégorie 'links'),
+        // transmise par l'admin (langue détectée de la page web). Les vidéos
+        // YouTube l'avaient déjà via la colonne video_language côté contents.
+        video_language: body.video_language ?? null,
         // Date de publication de la vidéo (récupérée par Sentinelle via YouTube API).
-        // Si non fournie (non-YouTube ou date indisponible), on utilise now().
+        // Pour les liens du Scruteur : date du site si trouvée. Si non fournie,
+        // on utilise now().
         published_at: body.published_at ?? new Date().toISOString(),
       });
       if (ce) return json({ error: ce.message }, 400);
@@ -666,6 +671,17 @@ serve(async (req) => {
           // File « Jeux à créer » (flag dans la recommandation IA).
           query = query
             .eq("ai_recommendation->needs_game_creation", true)
+            .eq("status", "pending");
+          break;
+        case "scruteur":
+          // Suggestions découvertes par le bot Scruteur (sites web de guides
+          // d'astuces/solutions) : déjà jugées par l'IA (ai_recommendation
+          // présent), en attente de validation manuelle par l'admin.
+          // Distinguées des suggestions utilisateurs ('user') et des vidéos
+          // Vision ('vision') via la colonne source (migration 0032).
+          query = query
+            .eq("source", "scruteur")
+            .not("ai_recommendation", "is", null)
             .eq("status", "pending");
           break;
         case "pending-no-ai":

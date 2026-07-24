@@ -181,7 +181,11 @@ class AiRecommendation {
           DateTime.tryParse(json['youtube_published_at'] as String? ?? ''),
       analyzedAt: DateTime.tryParse(json['analyzed_at'] as String? ?? ''),
       needsGameCreation: json['needs_game_creation'] as bool? ?? false,
-      youtubeLanguage: json['youtube_language'] as String?,
+      // Langue détectée : Sentinelle utilise 'youtube_language', le Scruteur
+      // utilise 'detected_language'. On lit les deux (youtube prioritaire)
+      // pour qu'un même champ serve au seuil de confiance et à video_language.
+      youtubeLanguage:
+          (json['youtube_language'] as String?) ?? (json['detected_language'] as String?),
     );
   }
 

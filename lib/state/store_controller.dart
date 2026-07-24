@@ -103,6 +103,7 @@ class StoreController extends ChangeNotifier {
   List<Suggestion> _suggestions = <Suggestion>[];
   List<Suggestion> _sentinelleAnalyzing = <Suggestion>[];
   List<Suggestion> _sentinelleSuggestions = <Suggestion>[];
+  List<Suggestion> _scruteurSuggestions = <Suggestion>[];
   List<Suggestion> _gamesToCreate = <Suggestion>[];
   List<BannedUser> _banned = <BannedUser>[];
   List<PlusUser> _plus = <PlusUser>[];
@@ -157,6 +158,32 @@ class StoreController extends ChangeNotifier {
     if (lang == null || lang.isEmpty) return 0.95; // inconnu = strict
     return nativeCodes.contains(lang) ? 0.90 : 0.95;
   }
+
+  // --- Scruteur (sites web de guides) ---
+  // Contrairement à Sentinelle, le seuil est UNIFORME 0.95 (toutes langues).
+  // Les suggestions source='scruteur' sont déjà jugées par l'IA au moment de
+  // l'insertion ; l'admin valide ici en 1 clic → contents catégorie 'links'.
+
+  /// Suggestions Scruteur brutes (source='scruteur', déjà jugées).
+  List<Suggestion> get scruteurSuggestions =>
+      List<Suggestion>.unmodifiable(_scruteurSuggestions);
+
+  /// Suggestions Scruteur "95-100% pertinent" (confiance ≥ 0.95 uniforme).
+  List<Suggestion> get scruteurTrusted => _scruteurSuggestions
+      .where((s) =>
+          s.aiRecommendation != null &&
+          s.aiRecommendation!.confidence >= kScruteurTrustThreshold)
+      .toList();
+
+  /// Suggestions Scruteur "À vérifier" (confiance < 0.95).
+  List<Suggestion> get scruteurToVerify => _scruteurSuggestions
+      .where((s) =>
+          s.aiRecommendation == null ||
+          s.aiRecommendation!.confidence < kScruteurTrustThreshold)
+      .toList();
+
+  /// Seuil de confiance UNIFORME pour le Scruteur (toutes langues).
+  static const double kScruteurTrustThreshold = 0.95;
 
   List<BannedUser> get banned => List<BannedUser>.unmodifiable(_banned);
   List<PlusUser> get plus => List<PlusUser>.unmodifiable(_plus);
@@ -659,7 +686,75 @@ class StoreController extends ChangeNotifier {
     }
   }
 
-  /// Rejette une suggestion Sentinelle (la retire du menu).
+  /// Valide une suggestion Scruteur en 1 clic : insère le site web comme
+  /// contenu catégorie 'links' (is_video=false) avec la langue détectée.
+  ///
+  /// Contrairement à [acceptOneClick] (Sentinelle) qui DEVINE le jeu depuis
+  /// le titre de la vidéo, le Scruteur demande explicitement le [gameId]
+  /// cible : un site de guides peut couvrir plusieurs jeux, et l'admin doit
+  /// choisir à quel jeu l'associer (l'UI propose un sélecteur). Le bot
+  /// Scruteur ne stocke pas de gameId dans la suggestion.
+  ///
+  /// [videoLanguage] : langue détectée de la page (depuis ai_recommendation).
+  ///   Transmise à l'EF pour remplir contents.video_language.
+  Future<void> acceptScruteurOneClick(
+    Suggestion suggestion, {
+    required String gameId,
+    String? videoLanguage,
+  }) async {
+    final ai = suggestion.aiRecommendation;
+    // La catégorie est TOUJOURS 'links' pour le Scruteur (sites web).
+    final category = ContentCategory.links;
+
+    // Retire la suggestion de la liste Scruteur (optimiste).
+    _scruteurSuggestions = _scruteurSuggestions
+        .where((s) => s.id != suggestion.id)
+        .toList();
+    notifyListeners();
+
+    if (sync == null || !_isUuid(suggestion.id)) return;
+    try {
+      await sync!.acceptSuggestion(
+        suggestionId: suggestion.id,
+        gameId: gameId,
+        category: category,
+        titleAdmin: _cleanTitle(suggestion),
+        isVideo: false,
+        publishedAt: ai?.youtubePublishedAt, // date du site si trouvée
+        videoLanguage: videoLanguage,
+      );
+      await syncFromSupabase();
+    } catch (e) {
+      _scruteurSuggestions = [..._scruteurSuggestions, suggestion];
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
+      lastActionError = 'Implémentation échouée (erreur serveur) : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Rejette une suggestion Scruteur (la retire du menu).
+  Future<void> rejectScruteur(Suggestion suggestion) async {
+    _scruteurSuggestions = _scruteurSuggestions
+        .where((s) => s.id != suggestion.id)
+        .toList();
+    notifyListeners();
+    if (sync == null || !_isUuid(suggestion.id)) return;
+    try {
+      await sync!.rejectSuggestion(suggestion.id);
+      await syncFromSupabase();
+    } catch (e) {
+      _scruteurSuggestions = [..._scruteurSuggestions, suggestion];
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
+      lastActionError = 'Rejet échoué (erreur serveur) : $e';
+      notifyListeners();
+    }
+  }
   Future<void> rejectSentinelle(Suggestion suggestion) async {
     // Retire la suggestion de la liste Sentinelle (optimiste).
     _sentinelleSuggestions = _sentinelleSuggestions
@@ -1173,6 +1268,7 @@ class StoreController extends ChangeNotifier {
     final allSuggestions = <Suggestion>[];
     final allAnalyzing = <Suggestion>[];
     final allSentinelle = <Suggestion>[];
+    final allScruteur = <Suggestion>[];
 
     for (var page = 0; ; page++) {
       final batch = await sync!.fetchSuggestions(page: page, pageSize: 500);
@@ -1189,6 +1285,12 @@ class StoreController extends ChangeNotifier {
       allSentinelle.addAll(batch);
       if (batch.length < 500) break;
     }
+    // Récupère les suggestions découvertes par le Scruteur (sites web de guides).
+    for (var page = 0; ; page++) {
+      final batch = await sync!.fetchScruteurSuggestions(page: page, pageSize: 500);
+      allScruteur.addAll(batch);
+      if (batch.length < 500) break;
+    }
 
     // Récupère les suggestions « Jeux à créer » (needs_game_creation = true).
     final allGamesToCreate = <Suggestion>[];
@@ -1201,6 +1303,7 @@ class StoreController extends ChangeNotifier {
     final suggestions = allSuggestions;
     final sentinelleAnalyzing = allAnalyzing;
     final sentinelleSuggestions = allSentinelle;
+    final scruteurSuggestions = allScruteur;
     final gamesToCreate = allGamesToCreate;
 
     // Récupère les abonnements Plus depuis Supabase (table subscriptions).
@@ -1232,6 +1335,8 @@ class StoreController extends ChangeNotifier {
     // Suggestions Sentinelle : en cours d'analyse + analysées.
     _sentinelleAnalyzing = sentinelleAnalyzing;
     _sentinelleSuggestions = sentinelleSuggestions;
+    // Suggestions Scruteur : sites web de guides déjà jugés par l'IA.
+    _scruteurSuggestions = scruteurSuggestions;
     _gamesToCreate = gamesToCreate;
 
     // Abonnés Plus : fusionne serveur + locaux (non UUID = démo).
