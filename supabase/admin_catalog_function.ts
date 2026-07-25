@@ -1,5 +1,5 @@
 // ============================================================================
-// MyGamingTips — Edge Function Supabase "admin-catalog" (v46)
+// MyGamingTips — Edge Function Supabase "admin-catalog" (v47)
 // ============================================================================
 // Opérations d'écriture administrateur sur le catalogue (jeux, contenus,
 // suggestions, profils bannis, abonnements). Contourne la RLS via
@@ -24,7 +24,7 @@
 //   POST /profiles/unban   → lever un ban (is_banned = false)
 //   POST /subscriptions/upsert → créer/modifier un abonnement Plus manuel
 //   POST /suggestions/list → lecture suggestions par mode (service_role)
-//     modes : new, analyzing, analyzed, games-to-create, scruteur, pending-no-ai
+//     modes : new, analyzing, analyzed, games-to-create, scruteur, user-links-pending, pending-no-ai
 //   POST /suggestions/insert → insertion suggestion bot (Vision/Scruteur) :
 //     body.source ('vision'|'scruteur'), author_name, ai_recommendation optionnel
 //   POST /suggestions/urls → URLs de toutes les suggestions, paginé (anti-doublons Vision)
@@ -683,6 +683,20 @@ serve(async (req) => {
             .eq("source", "scruteur")
             .not("ai_recommendation", "is", null)
             .eq("status", "pending");
+          break;
+        case "user-links-pending":
+          // Suggestions UTILISATEURS (source='user') de type LIENS WEB
+          // (non-YouTube), en attente et sans verdict IA. Sert au "1 click
+          // review" du Scruteur qui les passe au juge IA pour valider/tagger.
+          // On exclut les URLs YouTube (gérées par Sentinelle) et on ne prend
+          // QUE les sites web (guides, wikis, blogs gaming).
+          query = query
+            .eq("source", "user")
+            .eq("status", "pending")
+            .is("ai_recommendation", null)
+            .not("url", "ilike", "%youtube.com/%")
+            .not("url", "ilike", "%youtu.be/%");
+          ascending = true; // plus anciennes d'abord
           break;
         case "pending-no-ai":
           // File de travail des bots Sentinelle/Vision : en attente, sans
