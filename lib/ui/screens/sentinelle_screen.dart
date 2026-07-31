@@ -150,8 +150,11 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                   color: AppColors.neonCyan.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: const Icon(Icons.smart_toy_rounded,
-                    color: AppColors.neonCyan, size: 22),
+                child: const Icon(
+                  Icons.smart_toy_rounded,
+                  color: AppColors.neonCyan,
+                  size: 22,
+                ),
               ),
               const SizedBox(width: 12),
               const Text(
@@ -190,9 +193,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
           if (analyzing.isEmpty)
             const _EmptyHint(text: 'Aucune analyse en cours.')
           else
-            RepaintBoundary(
-              child: _AnalyzingTable(suggestions: analyzing),
-            ),
+            RepaintBoundary(child: _AnalyzingTable(suggestions: analyzing)),
 
           const SizedBox(height: 32),
 
@@ -215,7 +216,9 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                     borderRadius: BorderRadius.circular(4),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 4),
+                        horizontal: 6,
+                        vertical: 4,
+                      ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -257,8 +260,10 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                           onConfirm: () => _validateSelected(trusted),
                         ),
                       ),
-                      icon: const Icon(Icons.check_circle_outline_rounded,
-                          size: 16),
+                      icon: const Icon(
+                        Icons.check_circle_outline_rounded,
+                        size: 16,
+                      ),
                       label: Text('Valider sélection (${_selected.length})'),
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.neonCyan,
@@ -271,7 +276,8 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                   onPressed: () => showDialog<void>(
                     context: context,
                     builder: (_) => ConfirmDialog(
-                      title: 'Valider toutes les suggestions (${trusted.length}) ?',
+                      title:
+                          'Valider toutes les suggestions (${trusted.length}) ?',
                       message:
                           'Les ${trusted.length} suggestions "99% sûr" seront '
                           'implémentées automatiquement avec le jeu et la '
@@ -292,7 +298,9 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
           ),
           const SizedBox(height: 12),
           if (trusted.isEmpty)
-            const _EmptyHint(text: 'Aucune suggestion à haute confiance pour le moment.')
+            const _EmptyHint(
+              text: 'Aucune suggestion à haute confiance pour le moment.',
+            )
           else
             RepaintBoundary(
               child: _TrustedTable(
@@ -324,7 +332,9 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                     borderRadius: BorderRadius.circular(4),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 4),
+                        horizontal: 6,
+                        vertical: 4,
+                      ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -363,13 +373,13 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                               'Les ${_toVerifySelected.length} suggestion(s) sélectionnée(s) seront rejetées.',
                           confirmLabel: 'Rejeter la sélection',
                           destructive: true,
-                          onConfirm: () =>
-                              _rejectAllToVerify(toVerify),
+                          onConfirm: () => _rejectAllToVerify(toVerify),
                         ),
                       ),
                       icon: const Icon(Icons.cancel_outlined, size: 16),
                       label: Text(
-                          'Rejeter sélection (${_toVerifySelected.length})'),
+                        'Rejeter sélection (${_toVerifySelected.length})',
+                      ),
                       style: FilledButton.styleFrom(
                         backgroundColor: Colors.orange,
                         foregroundColor: Colors.black,
@@ -433,7 +443,9 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                     borderRadius: BorderRadius.circular(4),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 4),
+                        horizontal: 6,
+                        vertical: 4,
+                      ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -483,10 +495,11 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                           },
                         ),
                       ),
-                      icon: const Icon(Icons.check_circle_outline_rounded,
-                          size: 16),
-                      label: Text(
-                          'Valider sélection (${_gtcSelected.length})'),
+                      icon: const Icon(
+                        Icons.check_circle_outline_rounded,
+                        size: 16,
+                      ),
+                      label: Text('Valider sélection (${_gtcSelected.length})'),
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.neonCyan,
                         foregroundColor: Colors.black,
@@ -501,8 +514,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                       onPressed: () => showDialog<void>(
                         context: context,
                         builder: (_) => ConfirmDialog(
-                          title:
-                              'Supprimer ${_gtcSelected.length} entrée(s) ?',
+                          title: 'Supprimer ${_gtcSelected.length} entrée(s) ?',
                           message:
                               'Les suggestions sélectionnées seront rejetées '
                               'et retirées de la file « Jeux à créer ».',
@@ -519,8 +531,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                           },
                         ),
                       ),
-                      icon:
-                          const Icon(Icons.delete_outline_rounded, size: 16),
+                      icon: const Icon(Icons.delete_outline_rounded, size: 16),
                       label: const Text('Supprimer sélection'),
                       style: FilledButton.styleFrom(
                         backgroundColor: AppColors.categoryVideo,
@@ -614,22 +625,29 @@ class _AnalyzingTable extends StatelessWidget {
             ? DateTime.now().difference(since)
             : Duration.zero;
         return [
-          Text(_cleanTitle(s),
-              style:
-                  const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+          Text(
+            _cleanTitle(s),
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+          ),
           Container(
             constraints: const BoxConstraints(maxWidth: 200),
-            child: Text(s.url,
-                style: TextStyle(
-                    fontSize: 11,
-                    color: Theme.of(context).textTheme.bodySmall?.color),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis),
-          ),
-          Text(s.author.displayName,
+            child: Text(
+              s.url,
               style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).textTheme.bodySmall?.color)),
+                fontSize: 11,
+                color: Theme.of(context).textTheme.bodySmall?.color,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Text(
+            s.author.displayName,
+            style: TextStyle(
+              fontSize: 12,
+              color: Theme.of(context).textTheme.bodySmall?.color,
+            ),
+          ),
           Row(
             children: [
               const SizedBox(
@@ -638,17 +656,23 @@ class _AnalyzingTable extends StatelessWidget {
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
               const SizedBox(width: 6),
-              Text('En cours…',
-                  style: TextStyle(
-                      fontSize: 12,
-                      color: AppColors.neonCyan,
-                      fontWeight: FontWeight.w700)),
+              Text(
+                'En cours…',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: AppColors.neonCyan,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
             ],
           ),
-          Text(_formatElapsed(elapsed),
-              style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).textTheme.bodySmall?.color)),
+          Text(
+            _formatElapsed(elapsed),
+            style: TextStyle(
+              fontSize: 12,
+              color: Theme.of(context).textTheme.bodySmall?.color,
+            ),
+          ),
         ];
       }).toList(),
     );
@@ -678,6 +702,15 @@ class _TrustedTableState extends State<_TrustedTable> {
   int? _sortColumnIndex;
   bool _sortAscending = true;
 
+  // ── Pagination (réplique du système de _ToVerifyTable) ──
+  /// Nombre maximum de suggestions affichées par page. Au-delà, l'admin doit
+  /// naviguer via les contrôles de pagination (ci-dessus + ci-dessous).
+  static const int _pageSize = 100;
+
+  /// Page courante (0-indexée). Remise à 0 lors d'un changement de tri pour
+  /// éviter de se retrouver sur une page devenue vide.
+  int _currentPage = 0;
+
   /// Tri la liste selon la colonne active. Retourne une nouvelle liste triée
   /// sans muter l'originale (le controller reste la source de vérité).
   List<Suggestion> get _sorted {
@@ -699,12 +732,36 @@ class _TrustedTableState extends State<_TrustedTable> {
       }
       return _sortAscending ? cmp : -cmp;
     }
+
     list.sort(compare);
     return list;
   }
 
+  /// Nombre total de pages (au moins 1, même si la liste est vide).
+  int get _totalPages => (_sorted.length / _pageSize).ceil().clamp(1, 999999);
+
+  /// Sous-liste correspondant à la page courante (100 lignes max).
+  /// On découpe sur la liste *triée* pour garder la cohérence du tri.
+  List<Suggestion> get _paged {
+    final sorted = _sorted;
+    final start = _currentPage * _pageSize;
+    final end = (_currentPage + 1) * _pageSize;
+    return sorted.sublist(
+      start.clamp(0, sorted.length),
+      end.clamp(0, sorted.length),
+    );
+  }
+
+  /// Navigue vers une page donnée en bornant sur les bornes valides.
+  void _goToPage(int page) {
+    setState(() => _currentPage = page.clamp(0, _totalPages - 1));
+  }
+
   void _onSort(int columnIndex) {
     setState(() {
+      // Reset pagination : un changement de tri réordonne toute la liste,
+      // donc la page courante n'a plus de sens. On revient à la première.
+      _currentPage = 0;
       if (_sortColumnIndex == columnIndex) {
         _sortAscending = !_sortAscending;
       } else {
@@ -714,124 +771,211 @@ class _TrustedTableState extends State<_TrustedTable> {
     });
   }
 
+  /// Construit la barre de pagination (même look que _ToVerifyTable).
+  /// Affichée AU-DESSUS et EN-DESSOUS de la table pour une navigation
+  /// bidirectionnelle.
+  Widget _buildPagination(BuildContext context) {
+    if (_totalPages <= 1) return const SizedBox.shrink();
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        // Bouton précédent.
+        IconButton(
+          icon: const Icon(Icons.chevron_left_rounded),
+          onPressed: _currentPage > 0
+              ? () => _goToPage(_currentPage - 1)
+              : null,
+          tooltip: 'Page précédente',
+        ),
+        // Indicateur de page.
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Text(
+            'Page ${_currentPage + 1} / $_totalPages',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: Theme.of(context).textTheme.bodyLarge?.color,
+            ),
+          ),
+        ),
+        // Bouton suivant.
+        IconButton(
+          icon: const Icon(Icons.chevron_right_rounded),
+          onPressed: _currentPage < _totalPages - 1
+              ? () => _goToPage(_currentPage + 1)
+              : null,
+          tooltip: 'Page suivante',
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
-    final suggestions = _sorted;
-    return AdminDataTable(
-      columns: const ['☐', 'Titre', 'Titre pour insertion', 'Jeu IA', 'Catégorie', 'Confiance', 'Vues', 'Actions'],
-      sortColumnIndex: _sortColumnIndex,
-      sortAscending: _sortAscending,
-      onSort: _onSort,
-      // Colonnes non triables : la checkbox, le titre d'insertion, les actions.
-      nonSortableColumns: const ['☐', 'Titre', 'Titre pour insertion', 'Jeu IA', 'Catégorie', 'Actions'],
-      rows: suggestions.map((s) {
-        final ai = s.aiRecommendation!;
-        final isSelected = widget.selectedIds.contains(s.id);
-        return [
-          // Checkbox de sélection (cliquable).
-          InkWell(
-            onTap: () => widget.onToggle(s.id),
-            child: Padding(
-              padding: const EdgeInsets.all(4),
-              child: Icon(
-                isSelected
-                    ? Icons.check_box_rounded
-                    : Icons.check_box_outline_blank_rounded,
-                size: 18,
-                color: isSelected ? AppColors.neonGreen : null,
-              ),
-            ),
-          ),
-          Text(_cleanTitle(s),
-              style:
-                  const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
-          // Titre réel de la vidéo YouTube (pour insertion 1 clic).
-          Tooltip(
-            message: ai.youtubeTitle ?? _cleanTitle(s),
-            showDuration: const Duration(seconds: 8),
-            margin: const EdgeInsets.symmetric(horizontal: 16),
-            padding: const EdgeInsets.all(10),
-            textStyle: const TextStyle(fontSize: 12, color: Colors.white),
-            decoration: BoxDecoration(
-              color: Colors.grey[900],
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Container(
-              constraints: const BoxConstraints(maxWidth: 200),
-              child: Text(
-                ai.youtubeTitle ?? _cleanTitle(s),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 12,
-                    fontStyle: FontStyle.italic,
-                    color: ai.youtubeTitle != null
-                        ? AppColors.neonCyan
-                        : Theme.of(context).textTheme.bodySmall?.color),
-              ),
-            ),
-          ),
-          Text(ai.suggestedGame ?? '—',
-              style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).textTheme.bodySmall?.color)),
-          StatusBadge(
-              label: ai.suggestedCategory ?? '—',
-              color: AppColors.neonCyan),
-          Row(
-            children: [
-              const Icon(Icons.check_circle_rounded,
-                  color: AppColors.neonGreen, size: 16),
-              const SizedBox(width: 4),
-              Text('${(ai.confidence * 100).round()}%',
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w800,
-                      fontSize: 13,
-                      color: AppColors.neonGreen)),
-            ],
-          ),
-          Text(_formatViews(ai.youtubeViews),
-              style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).textTheme.bodySmall?.color)),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              FilledButton.icon(
-                onPressed: () => store.acceptOneClick(s),
-                icon: const Icon(Icons.bolt_rounded, size: 16),
-                label: const Text('1 clic'),
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.neonGreen,
-                  foregroundColor: Colors.black,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                ),
-              ),
-              IconButton(
-                tooltip: 'Vérifier le lien',
-                icon: const Icon(Icons.open_in_new_rounded, size: 18),
-                onPressed: () => _openUrl(s.url),
-              ),
-              IconButton(
-                tooltip: 'Rejeter',
-                icon: const Icon(Icons.close_rounded, size: 20),
-                color: AppColors.categoryVideo,
-                onPressed: () => showDialog<void>(
-                  context: context,
-                  builder: (_) => ConfirmDialog(
-                    title: 'Rejeter cette suggestion ?',
-                    message: '« ${_cleanTitle(s)} » sera marquée comme rejetée.',
-                    confirmLabel: 'Rejeter',
-                    destructive: true,
-                    onConfirm: () => store.rejectSentinelle(s),
+    // On ne construit que les lignes de la page courante (100 max) pour éviter
+    // de matérialiser toute la liste et ralentir l'interface admin.
+    final pageItems = _paged;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── Pagination (haut) ──
+        _buildPagination(context),
+        // ── Tableau (page courante) ──
+        AdminDataTable(
+          columns: const [
+            '☐',
+            'Titre',
+            'Titre pour insertion',
+            'Jeu IA',
+            'Catégorie',
+            'Confiance',
+            'Vues',
+            'Actions',
+          ],
+          sortColumnIndex: _sortColumnIndex,
+          sortAscending: _sortAscending,
+          onSort: _onSort,
+          // Colonnes non triables : la checkbox, le titre d'insertion, les actions.
+          nonSortableColumns: const [
+            '☐',
+            'Titre',
+            'Titre pour insertion',
+            'Jeu IA',
+            'Catégorie',
+            'Actions',
+          ],
+          rows: pageItems.map((s) {
+            final ai = s.aiRecommendation!;
+            final isSelected = widget.selectedIds.contains(s.id);
+            return [
+              // Checkbox de sélection (cliquable).
+              InkWell(
+                onTap: () => widget.onToggle(s.id),
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(
+                    isSelected
+                        ? Icons.check_box_rounded
+                        : Icons.check_box_outline_blank_rounded,
+                    size: 18,
+                    color: isSelected ? AppColors.neonGreen : null,
                   ),
                 ),
               ),
-            ],
-          ),
-        ];
-      }).toList(),
+              Text(
+                _cleanTitle(s),
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+              // Titre réel de la vidéo YouTube (pour insertion 1 clic).
+              Tooltip(
+                message: ai.youtubeTitle ?? _cleanTitle(s),
+                showDuration: const Duration(seconds: 8),
+                margin: const EdgeInsets.symmetric(horizontal: 16),
+                padding: const EdgeInsets.all(10),
+                textStyle: const TextStyle(fontSize: 12, color: Colors.white),
+                decoration: BoxDecoration(
+                  color: Colors.grey[900],
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Container(
+                  constraints: const BoxConstraints(maxWidth: 200),
+                  child: Text(
+                    ai.youtubeTitle ?? _cleanTitle(s),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontStyle: FontStyle.italic,
+                      color: ai.youtubeTitle != null
+                          ? AppColors.neonCyan
+                          : Theme.of(context).textTheme.bodySmall?.color,
+                    ),
+                  ),
+                ),
+              ),
+              Text(
+                ai.suggestedGame ?? '—',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).textTheme.bodySmall?.color,
+                ),
+              ),
+              StatusBadge(
+                label: ai.suggestedCategory ?? '—',
+                color: AppColors.neonCyan,
+              ),
+              Row(
+                children: [
+                  const Icon(
+                    Icons.check_circle_rounded,
+                    color: AppColors.neonGreen,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${(ai.confidence * 100).round()}%',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 13,
+                      color: AppColors.neonGreen,
+                    ),
+                  ),
+                ],
+              ),
+              Text(
+                _formatViews(ai.youtubeViews),
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).textTheme.bodySmall?.color,
+                ),
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FilledButton.icon(
+                    onPressed: () => store.acceptOneClick(s),
+                    icon: const Icon(Icons.bolt_rounded, size: 16),
+                    label: const Text('1 clic'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.neonGreen,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Vérifier le lien',
+                    icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                    onPressed: () => _openUrl(s.url),
+                  ),
+                  IconButton(
+                    tooltip: 'Rejeter',
+                    icon: const Icon(Icons.close_rounded, size: 20),
+                    color: AppColors.categoryVideo,
+                    onPressed: () => showDialog<void>(
+                      context: context,
+                      builder: (_) => ConfirmDialog(
+                        title: 'Rejeter cette suggestion ?',
+                        message:
+                            '« ${_cleanTitle(s)} » sera marquée comme rejetée.',
+                        confirmLabel: 'Rejeter',
+                        destructive: true,
+                        onConfirm: () => store.rejectSentinelle(s),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ];
+          }).toList(),
+        ),
+        // ── Pagination (bas) ──
+        _buildPagination(context),
+      ],
     );
   }
 }
@@ -872,7 +1016,9 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
     final start = _currentPage * _pageSize;
     final end = (_currentPage + 1) * _pageSize;
     return _filtered.sublist(
-        start.clamp(0, _filtered.length), end.clamp(0, _filtered.length));
+      start.clamp(0, _filtered.length),
+      end.clamp(0, _filtered.length),
+    );
   }
 
   void _goToPage(int page) {
@@ -881,15 +1027,19 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
 
   void _toggleVerdictFilter() {
     setState(() {
-      _verdictFilter =
-          _verdictFilter == AiVerdict.caution ? null : AiVerdict.caution;
+      _verdictFilter = _verdictFilter == AiVerdict.caution
+          ? null
+          : AiVerdict.caution;
       _currentPage = 0;
     });
   }
 
   /// Construit une ligne du tableau.
   List<Widget> _buildRow(
-      BuildContext context, StoreController store, Suggestion s) {
+    BuildContext context,
+    StoreController store,
+    Suggestion s,
+  ) {
     final ai = s.aiRecommendation;
     final isReject = ai?.verdict == AiVerdict.reject;
     final isSelected = widget.selectedIds?.contains(s.id) ?? false;
@@ -909,8 +1059,10 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
             ),
           ),
         ),
-      Text(_cleanTitle(s),
-          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+      Text(
+        _cleanTitle(s),
+        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+      ),
       Tooltip(
         message: ai?.youtubeTitle ?? _cleanTitle(s),
         showDuration: const Duration(seconds: 8),
@@ -928,11 +1080,12 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-                fontSize: 12,
-                fontStyle: FontStyle.italic,
-                color: ai?.youtubeTitle != null
-                    ? AppColors.neonCyan
-                    : Theme.of(context).textTheme.bodySmall?.color),
+              fontSize: 12,
+              fontStyle: FontStyle.italic,
+              color: ai?.youtubeTitle != null
+                  ? AppColors.neonCyan
+                  : Theme.of(context).textTheme.bodySmall?.color,
+            ),
           ),
         ),
       ),
@@ -940,9 +1093,7 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
           ? const Text('—')
           : StatusBadge(
               label: ai.verdict.label,
-              color: isReject
-                  ? AppColors.categoryVideo
-                  : AppColors.plusGold,
+              color: isReject ? AppColors.categoryVideo : AppColors.plusGold,
             ),
       Tooltip(
         message: ai?.reason ?? 'Pas d\'analyse.',
@@ -959,20 +1110,22 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
           child: Text(
             ai?.reason ?? 'Pas d\'analyse.',
             style: TextStyle(
-                fontSize: 11,
-                color: Theme.of(context).textTheme.bodySmall?.color),
+              fontSize: 11,
+              color: Theme.of(context).textTheme.bodySmall?.color,
+            ),
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
         ),
       ),
-      Text(ai != null ? '${(ai.confidence * 100).round()}%' : '—',
-          style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-              color: isReject
-                  ? AppColors.categoryVideo
-                  : AppColors.plusGold)),
+      Text(
+        ai != null ? '${(ai.confidence * 100).round()}%' : '—',
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          color: isReject ? AppColors.categoryVideo : AppColors.plusGold,
+        ),
+      ),
       Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1056,11 +1209,24 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
         // ── Tableau (page courante) ──
         AdminDataTable(
           columns: hasCheckbox
-              ? const ['☐', 'Titre', 'Titre pour insertion', 'Verdict IA', 'Raison', 'Confiance', 'Actions']
-              : const ['Titre', 'Titre pour insertion', 'Verdict IA', 'Raison', 'Confiance', 'Actions'],
-          rows: pageItems
-              .map((s) => _buildRow(context, store, s))
-              .toList(),
+              ? const [
+                  '☐',
+                  'Titre',
+                  'Titre pour insertion',
+                  'Verdict IA',
+                  'Raison',
+                  'Confiance',
+                  'Actions',
+                ]
+              : const [
+                  'Titre',
+                  'Titre pour insertion',
+                  'Verdict IA',
+                  'Raison',
+                  'Confiance',
+                  'Actions',
+                ],
+          rows: pageItems.map((s) => _buildRow(context, store, s)).toList(),
         ),
         // ── Pagination ──
         if (_totalPages > 1) ...[
@@ -1127,9 +1293,10 @@ class _SectionHeader extends StatelessWidget {
       children: [
         Icon(icon, color: color, size: 20),
         const SizedBox(width: 8),
-        Text(title,
-            style:
-                const TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
+        Text(
+          title,
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+        ),
         const SizedBox(width: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -1140,7 +1307,10 @@ class _SectionHeader extends StatelessWidget {
           child: Text(
             '$count',
             style: TextStyle(
-                fontSize: 11, fontWeight: FontWeight.w800, color: color),
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              color: color,
+            ),
           ),
         ),
       ],
@@ -1162,10 +1332,13 @@ class _EmptyHint extends StatelessWidget {
         border: Border.all(color: Theme.of(context).dividerColor),
       ),
       child: Center(
-        child: Text(text,
-            style: TextStyle(
-                fontSize: 13,
-                color: Theme.of(context).textTheme.bodySmall?.color)),
+        child: Text(
+          text,
+          style: TextStyle(
+            fontSize: 13,
+            color: Theme.of(context).textTheme.bodySmall?.color,
+          ),
+        ),
       ),
     );
   }
@@ -1253,8 +1426,9 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
     final start = _currentPage * _pageSize;
     final end = (_currentPage + 1) * _pageSize;
     return widget.suggestions.sublist(
-        start.clamp(0, widget.suggestions.length),
-        end.clamp(0, widget.suggestions.length));
+      start.clamp(0, widget.suggestions.length),
+      end.clamp(0, widget.suggestions.length),
+    );
   }
 
   void _goToPage(int page) {
@@ -1284,7 +1458,7 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
             'Jeu suggéré (modifiable)',
             'Catégorie',
             'Vues',
-            'Actions'
+            'Actions',
           ],
           rows: pageItems.map((s) {
             final ai = s.aiRecommendation;
@@ -1316,10 +1490,11 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                        fontSize: 12,
-                        color: ai?.youtubeTitle != null
-                            ? AppColors.neonCyan
-                            : null),
+                      fontSize: 12,
+                      color: ai?.youtubeTitle != null
+                          ? AppColors.neonCyan
+                          : null,
+                    ),
                   ),
                 ),
               ),
@@ -1332,7 +1507,9 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
                     isDense: true,
                     border: OutlineInputBorder(),
                     contentPadding: EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 6),
+                      horizontal: 8,
+                      vertical: 6,
+                    ),
                     hintText: 'Nom du jeu',
                   ),
                   style: const TextStyle(fontSize: 12),
@@ -1347,16 +1524,17 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
               Text(
                 _formatViews(ai?.youtubeViews),
                 style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).textTheme.bodySmall?.color),
+                  fontSize: 12,
+                  color: Theme.of(context).textTheme.bodySmall?.color,
+                ),
               ),
               // Actions : Créer + Ajouter, Voir le lien, Supprimer.
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   FilledButton.icon(
-                    onPressed: () => store.acceptGameToCreate(
-                        s, controller.text),
+                    onPressed: () =>
+                        store.acceptGameToCreate(s, controller.text),
                     icon: const Icon(Icons.add_circle_rounded, size: 16),
                     label: const Text('Créer'),
                     style: FilledButton.styleFrom(
