@@ -459,22 +459,34 @@ class SupabaseSync {
 
   /// Récupère tous les abonnements depuis Supabase (via Edge Function).
   ///
+  /// Pagination : récupère par pages de 1000 jusqu'à 100 000 abonnés.
+  ///
   /// Retourne une liste de maps avec : user_id, plan, is_active, started_at,
   /// expires_at, displayName (du profil joint).
   Future<List<Map<String, dynamic>>> fetchSubscriptions() async {
-    final data = await _post('subscriptions/list', {});
-    final subs = data['subscriptions'] as List? ?? [];
-    return subs.map((s) {
-      final m = s as Map<String, dynamic>;
-      return <String, dynamic>{
-        'id': m['user_id'] as String,
-        'plan': (m['plan'] as String?) ?? 'monthly',
-        'active': (m['is_active'] as bool?) ?? false,
-        'startedAt': m['started_at'] as String?,
-        'expiresAt': m['expires_at'] as String?,
-        'displayName': m['display_name'] as String? ?? 'Inconnu',
-        'source': (m['source'] as String?) ?? 'admin',
-      };
-    }).toList();
+    const int maxSubs = 100000;
+    const int pageSize = 1000;
+    final allSubs = <Map<String, dynamic>>[];
+    for (var page = 0; page * pageSize < maxSubs; page++) {
+      final data = await _post('subscriptions/list', {
+        'page': page,
+        'pageSize': pageSize,
+      });
+      final subs = data['subscriptions'] as List? ?? [];
+      for (final s in subs) {
+        final m = s as Map<String, dynamic>;
+        allSubs.add(<String, dynamic>{
+          'id': m['user_id'] as String,
+          'plan': (m['plan'] as String?) ?? 'monthly',
+          'active': (m['is_active'] as bool?) ?? false,
+          'startedAt': m['started_at'] as String?,
+          'expiresAt': m['expires_at'] as String?,
+          'displayName': m['display_name'] as String? ?? 'Inconnu',
+          'source': (m['source'] as String?) ?? 'admin',
+        });
+      }
+      if (subs.length < pageSize) break; // Fin des données.
+    }
+    return allSubs;
   }
 }
