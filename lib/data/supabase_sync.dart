@@ -381,6 +381,57 @@ class SupabaseSync {
     await _post('games/delete', {'id': id});
   }
 
+  // ── Traductions de titres de jeux (table game_translations) ──
+
+  /// Récupère toutes les traductions de titres de jeux via la route
+  /// `games/translations-list` (service_role).
+  ///
+  /// Retourne un map `{game_id: {lang: title}}`. Sert au dialog d'édition
+  /// des traductions : un seul appel récupère tout, puis le caller filtre
+  /// par gameId.
+  Future<Map<String, Map<String, String>>> fetchAllTranslations() async {
+    final Map<String, dynamic> data =
+        await _post('games/translations-list', <String, dynamic>{});
+    final List<dynamic> rows = data['translations'] as List? ?? [];
+    final Map<String, Map<String, String>> byGame =
+        <String, Map<String, String>>{};
+    for (final row in rows) {
+      if (row is! Map) continue;
+      final gameId = row['game_id'];
+      final lang = row['lang'];
+      final title = row['title'];
+      if (gameId is! String || lang is! String || title is! String) continue;
+      final gameMap = byGame.putIfAbsent(gameId, () => <String, String>{});
+      gameMap[lang.toUpperCase()] = title;
+    }
+    return byGame;
+  }
+
+  /// Sauvegarde (upsert batch) les traductions du titre d'un jeu via la route
+  /// `games/translate` (service_role).
+  ///
+  /// [gameId] doit être un UUID valide. [translations] est un map
+  /// `{LANG: title}` — les entrées vides sont ignorées côté caller (filtre
+  /// avant l'appel) pour ne pas insérer de titres vides.
+  ///
+  /// Retourne `true` en cas de succès, `false` sinon.
+  Future<bool> updateGameTranslations(
+    String gameId,
+    Map<String, String> translations,
+  ) async {
+    try {
+      await _post('games/translate', {
+        'game_id': gameId,
+        'translations': translations,
+      });
+      return true;
+    } on AdminAuthException {
+      rethrow;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<Content> upsertContent(Content content) async {
     final data = await _post('contents', {
       'id': content.id,

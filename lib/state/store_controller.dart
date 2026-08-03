@@ -323,6 +323,63 @@ class StoreController extends ChangeNotifier {
     updateGame(game.copyWith(active: !game.active));
   }
 
+  // ── Traductions de titres de jeux (table game_translations) ──
+
+  /// Charge toutes les traductions depuis le serveur et retourne le sous-map
+  /// pour [gameId] (`{lang: title}`). Retourne un map vide si aucune
+  /// traduction n'existe pour ce jeu, ou en cas d'erreur serveur (non
+  /// bloquante : l'UI affiche le nom du jeu par défaut).
+  ///
+  /// Utilisé par le dialog d'édition des traductions pour pré-remplir les
+  /// champs au démarrage.
+  Future<Map<String, String>> loadTranslationsForGame(String gameId) async {
+    if (sync == null) return <String, String>{};
+    try {
+      final all = await sync!.fetchAllTranslations();
+      return all[gameId] ?? <String, String>{};
+    } on AdminAuthException {
+      // 401 = session expirée → on propage pour forcer le logout.
+      rethrow;
+    } catch (e) {
+      debugPrint('loadTranslationsForGame échoué: $e');
+      return <String, String>{};
+    }
+  }
+
+  /// Sauvegarde les traductions du titre d'un jeu. [translations] contient
+  /// uniquement les langues non vides (filtrées par le caller).
+  ///
+  /// Pas de mise à jour du `Game` en mémoire : les traductions ne sont pas
+  /// affichées dans la liste principale des jeux. En cas d'échec serveur,
+  /// `lastActionError` est positionnée (le dialog affiche l'erreur).
+  Future<bool> updateGameTranslations(
+    Game game,
+    Map<String, String> translations,
+  ) async {
+    if (sync == null) {
+      lastActionError = 'Mode aperçu : traductions non persistées.';
+      notifyListeners();
+      return false;
+    }
+    try {
+      final ok = await sync!.updateGameTranslations(game.id, translations);
+      if (!ok) {
+        lastActionError =
+            'Traductions non enregistrées (erreur serveur).';
+        notifyListeners();
+      }
+      return ok;
+    } on AdminAuthException {
+      // 401 = token expiré → logout forcé par admin_shell.
+      onAuthError?.call();
+      return false;
+    } catch (e) {
+      lastActionError = 'Traductions non enregistrées (erreur serveur) : $e';
+      notifyListeners();
+      return false;
+    }
+  }
+
   /// Supprime un jeu. Attend la confirmation serveur, puis resync.
   Future<void> deleteGame(String id) async {
     final List<Game> backupGames = List<Game>.from(_games);

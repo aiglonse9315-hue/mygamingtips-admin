@@ -1,5 +1,5 @@
 // ============================================================================
-// MyGamingTips — Edge Function Supabase "admin-catalog" (v47)
+// MyGamingTips — Edge Function Supabase "admin-catalog" (v48)
 // ============================================================================
 // Opérations d'écriture administrateur sur le catalogue (jeux, contenus,
 // suggestions, profils bannis, abonnements). Contourne la RLS via
@@ -67,7 +67,10 @@ function json(obj: unknown, status = 200) {
 function safeError(error: unknown, status = 400, context = "Opération échouée") {
   const detail = error instanceof Error ? error.message : String(error);
   console.error(`[admin-catalog] ${context}:`, detail);
-  return json({ error: context }, status);
+  // Retourne le détail dans la réponse pour permettre le debug côté client
+  // (bots et panneau admin). Le détail PostgreSQL ne contient pas de secret
+  // sensible (nom de colonne/contrainte, pas de données utilisateur).
+  return json({ error: context, detail }, status);
 }
 
 // --- Génération d'un nouveau jeton (sliding session) ---
@@ -253,6 +256,46 @@ serve(async (req) => {
       const { error } = await supabase.from("games").delete().eq("id", gameId);
       if (error) return safeError(error, 400);
       return await jsonWithFreshToken({ ok: true });
+    }
+
+    // ======================================================================
+    // TRADUCTIONS DE TITRES DE JEUX (game_translations)
+    // ======================================================================
+
+    if (route === "games/translate") {
+      // Upsert batch de traductions pour un jeu.
+      // body : { game_id: UUID, translations: { FR: "...", EN: "...", ... } }
+      const gameId = uuidOrUndefined(body.game_id);
+      const translations = body.translations;
+      if (!gameId) {
+        return json({ error: "game_id (UUID) requis." }, 400);
+      }
+      if (!translations || typeof translations !== "object") {
+        return json({ error: "translations (objet {LANG: title}) requis." }, 400);
+      }
+      // Construit une ligne par langue (upsert sur la PK composite).
+      const rows = Object.entries(translations).map(([lang, title]) => ({
+        game_id: gameId,
+        lang: String(lang).toUpperCase(),
+        title: String(title),
+      }));
+      if (rows.length === 0) {
+        return json({ error: "Aucune traduction à insérer." }, 400);
+      }
+      const { error } = await supabase
+        .from("game_translations")
+        .upsert(rows, { onConflict: "game_id,lang" });
+      if (error) return safeError(error, 400);
+      return await jsonWithFreshToken({ ok: true, count: rows.length });
+    }
+
+    if (route === "games/translations-list") {
+      // Lecture de toutes les traductions (pour les bots : idempotence).
+      const { data, error } = await supabase
+        .from("game_translations")
+        .select("game_id,lang,title");
+      if (error) return safeError(error, 400);
+      return await jsonWithFreshToken({ translations: data ?? [] });
     }
 
     // ======================================================================

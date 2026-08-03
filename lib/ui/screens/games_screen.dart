@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/i18n/app_languages.dart';
 import '../../core/theme/colors.dart';
 import '../../domain/models/game.dart';
 import '../../state/store_controller.dart';
@@ -219,6 +220,11 @@ class _GamesScreenState extends State<GamesScreen> {
                             onPressed: () => _showGameDialog(context, g),
                           ),
                           IconButton(
+                            tooltip: 'Traductions',
+                            icon: const Icon(Icons.translate_rounded, size: 20),
+                            onPressed: () => _showTranslationsDialog(context, g),
+                          ),
+                          IconButton(
                             tooltip: 'Supprimer',
                             icon: const Icon(Icons.delete_outline_rounded,
                                 size: 20),
@@ -239,6 +245,13 @@ class _GamesScreenState extends State<GamesScreen> {
     showDialog<void>(
       context: context,
       builder: (_) => GameEditDialog(game: existing),
+    );
+  }
+
+  void _showTranslationsDialog(BuildContext context, Game game) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => GameTranslationsDialog(game: game),
     );
   }
 
@@ -321,9 +334,39 @@ class _GameEditDialogState extends State<GameEditDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(
-              controller: _name,
-              decoration: const InputDecoration(labelText: 'Nom du jeu *'),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _name,
+                    decoration:
+                        const InputDecoration(labelText: 'Nom du jeu *'),
+                  ),
+                ),
+                // Bouton "+" : ouvre le dialog des traductions (12 langues).
+                // Visible seulement en mode édition (un jeu existant a un ID).
+                if (edit) ...[
+                  const SizedBox(width: 8),
+                  IconButton(
+                    tooltip: 'Traductions (12 langues)',
+                    icon: const Icon(Icons.translate_rounded, size: 22),
+                    onPressed: () {
+                      // Construit un Game à jour avec le nom actuellement saisi
+                      // (pour que le dialog affiche le bon nom par défaut).
+                      final currentGame = widget.game!.copyWith(
+                        name: _name.text.trim().isEmpty
+                            ? widget.game!.name
+                            : _name.text.trim(),
+                      );
+                      showDialog(
+                        context: context,
+                        builder: (_) =>
+                            GameTranslationsDialog(game: currentGame),
+                      );
+                    },
+                  ),
+                ],
+              ],
             ),
             const SizedBox(height: 12),
             TextField(
@@ -357,6 +400,179 @@ class _GameEditDialogState extends State<GameEditDialog> {
         FilledButton(
           onPressed: _save,
           child: Text(edit ? 'Enregistrer' : 'Ajouter'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Dialog d'édition des traductions du titre d'un jeu (12 langues).
+///
+/// Charge les traductions existantes au démarrage (via la route
+/// `games/translations-list`), pré-remplit les champs (ou le nom du jeu par
+/// défaut si aucune traduction n'existe pour une langue), puis sauvegarde via
+/// `games/translate` au clic sur "Sauvegarder".
+///
+/// Le dialog est scrollable (12 langues = grand). Les champs vides ne sont
+/// pas envoyés au serveur (filtre côté caller).
+class GameTranslationsDialog extends StatefulWidget {
+  const GameTranslationsDialog({super.key, required this.game});
+  final Game game;
+
+  @override
+  State<GameTranslationsDialog> createState() => _GameTranslationsDialogState();
+}
+
+class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
+  /// Un TextEditingController par langue (code majuscule).
+  late final Map<String, TextEditingController> _controllers;
+
+  /// État de chargement des traductions existantes.
+  bool _loading = true;
+
+  /// Message de statut après sauvegarde (succès ou erreur).
+  String? _statusMessage;
+  bool _statusError = false;
+
+  /// Indique qu'une sauvegarde est en cours (désactive le bouton).
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Initialise tous les contrôleurs vides (seront remplis après le fetch).
+    _controllers = {
+      for (final lang in kSupportedLanguages)
+        lang.code: TextEditingController(),
+    };
+    _loadTranslations();
+  }
+
+  @override
+  void dispose() {
+    for (final c in _controllers.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _loadTranslations() async {
+    final StoreController store = context.read<StoreController>();
+    try {
+      final existing = await store.loadTranslationsForGame(widget.game.id);
+      if (!mounted) return;
+      // Pré-remplit chaque champ : traduction existante si présente, sinon le
+      // nom du jeu par défaut (l'admin peut ainsi traduire rapidement sans
+      // repartir de zéro, ou vider le champ s'il ne veut pas de traduction).
+      for (final lang in kSupportedLanguages) {
+        final value = existing[lang.code] ?? widget.game.name;
+        _controllers[lang.code]!.text = value;
+      }
+      setState(() => _loading = false);
+    } catch (e) {
+      if (!mounted) return;
+      // En cas d'échec (non auth), on pré-remplit quand même avec le nom du
+      // jeu pour ne pas bloquer l'édition.
+      for (final lang in kSupportedLanguages) {
+        _controllers[lang.code]!.text = widget.game.name;
+      }
+      setState(() {
+        _loading = false;
+        _statusMessage = 'Traductions existantes indisponibles : $e';
+        _statusError = true;
+      });
+    }
+  }
+
+  Future<void> _save() async {
+    // Filtre les valeurs non vides (on ne persiste pas les titres vides).
+    final Map<String, String> translations = {};
+    for (final entry in _controllers.entries) {
+      final value = entry.value.text.trim();
+      if (value.isNotEmpty) {
+        translations[entry.key] = value;
+      }
+    }
+    setState(() {
+      _saving = true;
+      _statusMessage = null;
+    });
+    final StoreController store = context.read<StoreController>();
+    final ok =
+        await store.updateGameTranslations(widget.game, translations);
+    if (!mounted) return;
+    setState(() {
+      _saving = false;
+      _statusMessage = ok
+          ? 'Traductions enregistrées (${translations.length}).'
+          : (store.lastActionError ?? 'Erreur lors de l\'enregistrement.');
+      _statusError = !ok;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Traductions — ${widget.game.name}'),
+      content: SizedBox(
+        width: 480,
+        // Hauteur bornée pour forcer le scroll interne (12 langues = grand).
+        height: MediaQuery.of(context).size.height * 0.7,
+        child: _loading
+            ? const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 12),
+                    Text('Chargement des traductions…'),
+                  ],
+                ),
+              )
+            : SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final lang in kSupportedLanguages) ...[
+                      TextField(
+                        controller: _controllers[lang.code],
+                        decoration: InputDecoration(
+                          labelText: '${lang.flag} ${lang.code} — ${lang.label}',
+                          isDense: true,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    if (_statusMessage != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        _statusMessage!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: _statusError
+                              ? AppColors.categoryVideo
+                              : AppColors.neonGreen,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context),
+          child: const Text('Annuler'),
+        ),
+        FilledButton(
+          onPressed: _loading || _saving ? null : _save,
+          child: _saving
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Sauvegarder'),
         ),
       ],
     );
