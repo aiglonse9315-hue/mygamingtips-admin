@@ -437,6 +437,9 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
   /// Indique qu'une sauvegarde est en cours (désactive le bouton).
   bool _saving = false;
 
+  /// Vrai si l'utilisateur a modifié au moins un champ (anti-fermeture accidentelle).
+  bool _dirty = false;
+
   @override
   void initState() {
     super.initState();
@@ -508,73 +511,144 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
           : (store.lastActionError ?? 'Erreur lors de l\'enregistrement.');
       _statusError = !ok;
     });
+    // Ferme le dialog automatiquement après une sauvegarde réussie.
+    if (ok && mounted) {
+      Navigator.pop(context);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Traductions — ${widget.game.name}'),
-      content: SizedBox(
-        width: 480,
-        // Hauteur bornée pour forcer le scroll interne (12 langues = grand).
-        height: MediaQuery.of(context).size.height * 0.7,
-        child: _loading
-            ? const Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircularProgressIndicator(),
-                    SizedBox(height: 12),
-                    Text('Chargement des traductions…'),
-                  ],
-                ),
-              )
-            : SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    for (final lang in kSupportedLanguages) ...[
-                      TextField(
-                        controller: _controllers[lang.code],
-                        decoration: InputDecoration(
-                          labelText: '${lang.flag} ${lang.code} — ${lang.label}',
-                          isDense: true,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-                    if (_statusMessage != null) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        _statusMessage!,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: _statusError
-                              ? AppColors.categoryVideo
-                              : AppColors.neonGreen,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: _saving ? null : () => Navigator.pop(context),
-          child: const Text('Annuler'),
+    return PopScope(
+      // Empêche la fermeture accidentelle (Échap / clic hors dialog) si
+      // l'utilisateur a modifié des champs sans sauvegarder.
+      canPop: !_dirty || _saving,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _dirty && !_saving) {
+          // Affiche une confirmation avant de fermer.
+          _confirmDiscardChanges();
+        }
+      },
+      child: AlertDialog(
+        title: Row(
+          children: [
+            Text('Traductions — ${widget.game.name}'),
+            const Spacer(),
+            // Bouton de fermeture explicite (X) — sauvegarde puis ferme.
+            IconButton(
+              tooltip: 'Sauvegarder et fermer',
+              icon: const Icon(Icons.check_circle_outline, size: 24),
+              onPressed: _loading || _saving ? null : _save,
+            ),
+          ],
         ),
-        FilledButton(
-          onPressed: _loading || _saving ? null : _save,
-          child: _saving
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+        content: SizedBox(
+          width: 480,
+          // Hauteur bornée pour forcer le scroll interne (12 langues = grand).
+          height: MediaQuery.of(context).size.height * 0.7,
+          child: _loading
+              ? const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 12),
+                      Text('Chargement des traductions…'),
+                    ],
+                  ),
                 )
-              : const Text('Sauvegarder'),
+              : SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (final lang in kSupportedLanguages) ...[
+                        TextField(
+                          controller: _controllers[lang.code],
+                          decoration: InputDecoration(
+                            labelText:
+                                '${lang.flag} ${lang.code} — ${lang.label}',
+                            isDense: true,
+                          ),
+                          onChanged: (_) {
+                            if (!_dirty) setState(() => _dirty = true);
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      if (_statusMessage != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          _statusMessage!,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: _statusError
+                                ? AppColors.categoryVideo
+                                : AppColors.neonGreen,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
         ),
-      ],
+        actions: [
+          TextButton(
+            onPressed: _saving
+                ? null
+                : () {
+                    // Annuler : si modifs non sauvegardées, confirme.
+                    if (_dirty) {
+                      _confirmDiscardChanges();
+                    } else {
+                      Navigator.pop(context);
+                    }
+                  },
+            child: const Text('Annuler'),
+          ),
+          FilledButton.icon(
+            onPressed: _loading || _saving ? null : _save,
+            icon: _saving
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save_rounded, size: 18),
+            label: const Text('Sauvegarder'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Demande confirmation avant de fermer le dialog avec des changements
+  /// non sauvegardés. Évite de perdre les modifications accidentellement
+  /// (Échap, clic "Annuler", clic hors dialog).
+  void _confirmDiscardChanges() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Modifications non sauvegardées'),
+        content: const Text(
+            'Vous avez modifié des traductions sans sauvegarder.\n'
+            'Voulez-vous vraiment fermer ?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Rester'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx); // Ferme la confirmation.
+              Navigator.pop(context); // Ferme le dialog de traductions.
+            },
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.categoryVideo,
+            ),
+            child: const Text('Fermer sans sauvegarder'),
+          ),
+        ],
+      ),
     );
   }
 }
