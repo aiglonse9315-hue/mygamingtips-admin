@@ -420,18 +420,18 @@ class SupabaseSync {
     Map<String, String> translations,
   ) async {
     try {
-      debugPrint('[Sync] updateGameTranslations: gameId=$gameId, '
+      print('[Sync] updateGameTranslations: gameId=$gameId, '
           '${translations.length} langues');
       final data = await _post('games/translate', {
         'game_id': gameId,
         'translations': translations,
       });
-      debugPrint('[Sync] updateGameTranslations succès: ${data['ok']}');
+      print('[Sync] updateGameTranslations succès: ${data['ok']}');
       return true;
     } on AdminAuthException {
       rethrow;
     } catch (e) {
-      debugPrint('[Sync] updateGameTranslations ERREUR: $e');
+      print('[Sync] updateGameTranslations ERREUR: $e');
       return false;
     }
   }
