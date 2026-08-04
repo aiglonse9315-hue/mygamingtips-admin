@@ -407,6 +407,35 @@ class SupabaseSync {
     return byGame;
   }
 
+  /// Récupère les traductions d'UN seul jeu via PostgREST anon.
+  ///
+  /// Contrairement à [fetchAllTranslations] (qui charge tout et peut être
+  /// limité par la pagination), cette méthode ne récupère que les 12 lignes
+  /// max du jeu concerné — aucun cutoff possible.
+  Future<Map<String, String>> fetchTranslationsForGame(String gameId) async {
+    final res = await http.get(
+      Uri.parse(
+        '$supabaseUrl/rest/v1/game_translations?select=lang,title&game_id=eq.$gameId',
+      ),
+      headers: {
+        'apikey': anonKey,
+        'Authorization': 'Bearer $anonKey',
+      },
+    );
+    if (res.statusCode != 200) return {};
+    final List<dynamic> rows = jsonDecode(res.body) as List? ?? [];
+    final Map<String, String> result = {};
+    for (final row in rows) {
+      if (row is! Map) continue;
+      final lang = row['lang'];
+      final title = row['title'];
+      if (lang is String && title is String) {
+        result[lang.toUpperCase()] = title;
+      }
+    }
+    return result;
+  }
+
   /// Sauvegarde (upsert batch) les traductions du titre d'un jeu via la route
   /// `games/translate` (service_role).
   ///

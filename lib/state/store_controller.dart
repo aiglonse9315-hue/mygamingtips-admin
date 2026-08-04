@@ -332,13 +332,15 @@ class StoreController extends ChangeNotifier {
   ///
   /// Utilisé par le dialog d'édition des traductions pour pré-remplir les
   /// champs au démarrage.
+  ///
+  /// Lit directement les traductions du jeu via PostgREST anon (12 lignes max)
+  /// plutôt que de charger toutes les traductions via l'Edge Function (qui
+  /// peut être limitée par la pagination à 1000 lignes).
   Future<Map<String, String>> loadTranslationsForGame(String gameId) async {
     if (sync == null) return <String, String>{};
     try {
-      final all = await sync!.fetchAllTranslations();
-      return all[gameId] ?? <String, String>{};
+      return await sync!.fetchTranslationsForGame(gameId);
     } on AdminAuthException {
-      // 401 = session expirée → on propage pour forcer le logout.
       rethrow;
     } catch (e) {
       debugPrint('loadTranslationsForGame échoué: $e');

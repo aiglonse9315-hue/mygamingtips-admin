@@ -290,12 +290,24 @@ serve(async (req) => {
     }
 
     if (route === "games/translations-list") {
-      // Lecture de toutes les traductions (pour les bots : idempotence).
-      const { data, error } = await supabase
-        .from("game_translations")
-        .select("game_id,lang,title");
-      if (error) return safeError(error, 400);
-      return await jsonWithFreshToken({ translations: data ?? [] });
+      // Lecture de toutes les traductions (pour les bots et le panneau admin).
+      // **Pagination obligatoire** : Supabase limite par défaut à 1000 lignes.
+      // Avec 103 jeux × 12 langues = 1236 lignes, on dépasserait la limite.
+      const all: { game_id: string; lang: string; title: string }[] = [];
+      const pageSize = 1000;
+      for (let page = 0;; page++) {
+        const from = page * pageSize;
+        const to = from + pageSize - 1;
+        const { data, error } = await supabase
+          .from("game_translations")
+          .select("game_id,lang,title")
+          .range(from, to)
+          .order("game_id", { ascending: true });
+        if (error) return safeError(error, 400);
+        if (data && data.length > 0) all.push(...data);
+        if (!data || data.length < pageSize) break; // Fin des données.
+      }
+      return await jsonWithFreshToken({ translations: all });
     }
 
     // ======================================================================
