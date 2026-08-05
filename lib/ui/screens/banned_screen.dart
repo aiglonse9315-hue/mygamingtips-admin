@@ -170,7 +170,7 @@ class _BannedScreenState extends State<BannedScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '$list.length contributeur(s) avec ≥ ${_minRejectionRate.toStringAsFixed(0)}% de rejets. '
+                      '${list.length} contributeur(s) avec ≥ ${_minRejectionRate.toStringAsFixed(0)}% de rejets. '
                       'Bannissez les comptes problématiques en masse.',
                       style: const TextStyle(color: Colors.grey, fontSize: 13),
                     ),
