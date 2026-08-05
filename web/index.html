@@ -34,16 +34,19 @@
   <!-- ============================================================ -->
 
   <!-- Content-Security-Policy : self + Supabase uniquement. -->
+  <!-- Flutter Web compile en WASM et utilise eval() : 'unsafe-eval' + -->
+  <!-- 'wasm-unsafe-eval' sont requis pour que le moteur Dart tourne. -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self';
-                 script-src 'self' 'unsafe-inline';
+                 script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval';
                  style-src 'self' 'unsafe-inline';
                  img-src 'self' data: https:;
-                 font-src 'self';
+                 font-src 'self' data:;
                  connect-src 'self' https://odqbazwyjdpppbameype.supabase.co;
                  object-src 'none';
                  base-uri 'self';
-                 frame-ancestors 'none';">
+                 frame-ancestors 'none';
+                 worker-src 'self' blob:;">
 
   <!-- Empêche le rendu dans une iframe (clickjacking). -->
   <meta http-equiv="X-Frame-Options" content="DENY">
