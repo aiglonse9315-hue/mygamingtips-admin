@@ -72,8 +72,21 @@ class AdminDataTable extends StatelessWidget {
                         !(nonSortableColumns?.contains(c) ?? false);
                     final bool isActive = sortColumnIndex == idx;
 
+                    // Flex adaptatif : colonnes étroites (checkbox, actions,
+                    // nombres courts) prennent moins d'espace que le texte.
+                    final int flex;
+                    if (c.isEmpty || c == 'Actions') {
+                      flex = 0; // Checkbox et boutons : largeur minimale.
+                    } else if (c == 'Premium' || c == 'Checked' ||
+                               c == 'Langue' || c == 'Total' ||
+                               c == 'Rejets' || c == '% Rejets') {
+                      flex = 0; // Colonnes courtes : largeur du contenu.
+                    } else {
+                      flex = 1; // Texte long (Utilisateur, Titre, etc.).
+                    }
+
                     return Expanded(
-                      flex: c == 'Actions' ? 0 : 1,
+                      flex: flex,
                       child: isSortable
                           ? _SortableHeader(
                               label: c,
