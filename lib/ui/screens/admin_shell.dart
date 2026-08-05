@@ -7,6 +7,7 @@ import '../widgets/admin_sidebar.dart';
 import '../widgets/admin_topbar.dart';
 import '../widgets/confirm_dialog.dart';
 import 'abonnements_screen.dart';
+import 'banned_screen.dart';
 import 'contents_screen.dart';
 import 'contributors_screen.dart';
 import 'dashboard_screen.dart';
@@ -40,6 +41,7 @@ class _AdminShellState extends State<AdminShell> {
     NavItem('Scruteur', Icons.travel_explore_rounded, '/scruteur'),
     NavItem('Abonnements', Icons.card_membership_rounded, '/abonnements'),
     NavItem('Contributeurs', Icons.groups_rounded, '/contributors'),
+    NavItem('Comptes à bannir', Icons.block_rounded, '/banned'),
   ];
 
   @override
@@ -131,6 +133,8 @@ class _AdminShellState extends State<AdminShell> {
         return const AbonnementsScreen();
       case '/contributors':
         return const ContributorsScreen();
+      case '/banned':
+        return const BannedScreen();
       default:
         return DashboardScreen(onOpenSuggestions: () => _go('/suggestions'));
     }
@@ -143,7 +147,9 @@ class _AdminShellState extends State<AdminShell> {
   /// Garantit que les données locales sont synchronisées avec le serveur AVANT
   /// que l'admin ne voie le dashboard (évite les données obsolètes du cache).
   Future<void> _doPostLoginRefresh(
-      StoreController store, AuthController auth) async {
+    StoreController store,
+    AuthController auth,
+  ) async {
     // Pousse le token pour autoriser les écritures.
     store.updateAdminToken(auth.token);
     // Refresh complet (avec timeout interne de 15s).
@@ -164,12 +170,14 @@ class _AdminShellState extends State<AdminShell> {
         store.updateAdminToken(null);
       }
       _loadingAfterLogin = false;
-      return LoginScreen(onSuccess: () {
-        // Après un login réussi : force un refresh complet avant d'afficher
-        // le dashboard. On affiche un écran de chargement pendant ce temps.
-        setState(() => _loadingAfterLogin = true);
-        _doPostLoginRefresh(store, auth);
-      });
+      return LoginScreen(
+        onSuccess: () {
+          // Après un login réussi : force un refresh complet avant d'afficher
+          // le dashboard. On affiche un écran de chargement pendant ce temps.
+          setState(() => _loadingAfterLogin = true);
+          _doPostLoginRefresh(store, auth);
+        },
+      );
     }
 
     // Écran de chargement pendant le refresh post-login.
@@ -189,11 +197,7 @@ class _AdminShellState extends State<AdminShell> {
     return Scaffold(
       body: Row(
         children: [
-          AdminSidebar(
-            items: _items,
-            current: _route,
-            onSelected: _go,
-          ),
+          AdminSidebar(items: _items, current: _route, onSelected: _go),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -201,8 +205,7 @@ class _AdminShellState extends State<AdminShell> {
                 AdminTopbar(
                   title: _title,
                   showReset: store.sync == null,
-                  onRefresh:
-                      store.sync != null ? () => store.refresh() : null,
+                  onRefresh: store.sync != null ? () => store.refresh() : null,
                   isSyncing: store.isSyncing,
                   syncError: store.syncError,
                   onDismissError: () => store.clearSyncError(),

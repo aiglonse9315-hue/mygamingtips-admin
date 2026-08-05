@@ -56,9 +56,9 @@ class SupabaseSync {
   String adminToken;
 
   Map<String, String> get _anonHeaders => {
-        'apikey': anonKey,
-        'Authorization': 'Bearer $anonKey',
-      };
+    'apikey': anonKey,
+    'Authorization': 'Bearer $anonKey',
+  };
 
   /// Headers pour les écritures via l'Edge Function admin-catalog.
   /// Stratégie pour franchir la passerelle Supabase SANS conflit de header :
@@ -69,11 +69,11 @@ class SupabaseSync {
   ///     personnalisé (le header `Authorization` est réservé par la passerelle
   ///     pour l'auth Supabase Auth, on ne doit pas y mettre notre JWT admin).
   Map<String, String> get _adminHeaders => {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $anonKey',
-        'apikey': anonKey,
-        'X-Admin-Token': adminToken,
-      };
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer $anonKey',
+    'apikey': anonKey,
+    'X-Admin-Token': adminToken,
+  };
 
   /// Met à jour le jeton admin (appelé après un login réussi).
   void setAdminToken(String token) => adminToken = token;
@@ -147,7 +147,10 @@ class SupabaseSync {
   ///
   /// [page] : index de la page (0-based).
   /// [pageSize] : nombre de contenus par page (défaut 1000 pour la rétrocompatibilité).
-  Future<List<Content>> fetchContents({int page = 0, int pageSize = 1000}) async {
+  Future<List<Content>> fetchContents({
+    int page = 0,
+    int pageSize = 1000,
+  }) async {
     final Uri uri = Uri.parse(
       '$supabaseUrl/rest/v1/contents?select=*&order=published_at.desc'
       '&limit=$pageSize&offset=${page * pageSize}',
@@ -211,33 +214,47 @@ class SupabaseSync {
   /// Récupère les suggestions VRAIMENT nouvelles : jamais prises en charge
   /// par Sentinelle (`sentinelle_started_at IS NULL` ET pas encore
   /// d'analyse IA). Ces suggestions apparaissent dans le menu "Suggestions".
-  Future<List<Suggestion>> fetchSuggestions({int page = 0, int pageSize = 500}) =>
-      _fetchSuggestionsByMode('new', page: page, pageSize: pageSize);
+  Future<List<Suggestion>> fetchSuggestions({
+    int page = 0,
+    int pageSize = 500,
+  }) => _fetchSuggestionsByMode('new', page: page, pageSize: pageSize);
 
   /// Récupère les suggestions EN COURS d'analyse par Sentinelle
   /// (`sentinelle_started_at NOT NULL` MAIS `ai_recommendation IS NULL`).
   /// Ces suggestions apparaissent dans le menu "Sentinelle" → section
   /// "Analyse en cours" (Sentinelle travaille dessus).
-  Future<List<Suggestion>> fetchSentinelleAnalyzing({int page = 0, int pageSize = 500}) =>
-      _fetchSuggestionsByMode('analyzing', page: page, pageSize: pageSize);
+  Future<List<Suggestion>> fetchSentinelleAnalyzing({
+    int page = 0,
+    int pageSize = 500,
+  }) => _fetchSuggestionsByMode('analyzing', page: page, pageSize: pageSize);
 
   /// Récupère les suggestions DÉJÀ analysées par Sentinelle (avec
   /// `ai_recommendation` non null). Ces suggestions apparaissent dans le menu
   /// "Sentinelle" où l'admin peut les implémenter en 1 clic ou les vérifier.
-  Future<List<Suggestion>> fetchSentinelleSuggestions({int page = 0, int pageSize = 500}) =>
-      _fetchSuggestionsByMode('analyzed', page: page, pageSize: pageSize);
+  Future<List<Suggestion>> fetchSentinelleSuggestions({
+    int page = 0,
+    int pageSize = 500,
+  }) => _fetchSuggestionsByMode('analyzed', page: page, pageSize: pageSize);
 
   /// Récupère les suggestions découvertes par le bot Scruteur (sites web de
   /// guides) : source='scruteur', déjà jugées par l'IA (ai_recommendation
   /// présent), en attente de validation. Apparaissent dans le menu "Scruteur".
-  Future<List<Suggestion>> fetchScruteurSuggestions({int page = 0, int pageSize = 500}) =>
-      _fetchSuggestionsByMode('scruteur', page: page, pageSize: pageSize);
+  Future<List<Suggestion>> fetchScruteurSuggestions({
+    int page = 0,
+    int pageSize = 500,
+  }) => _fetchSuggestionsByMode('scruteur', page: page, pageSize: pageSize);
 
   /// Récupère les suggestions marquées « Jeux à créer » : le flag
   /// `needs_game_creation` est vrai dans `ai_recommendation`, le statut est
   /// pending, et l'auteur n'est pas Vision.
-  Future<List<Suggestion>> fetchGamesToCreate({int page = 0, int pageSize = 500}) =>
-      _fetchSuggestionsByMode('games-to-create', page: page, pageSize: pageSize);
+  Future<List<Suggestion>> fetchGamesToCreate({
+    int page = 0,
+    int pageSize = 500,
+  }) => _fetchSuggestionsByMode(
+    'games-to-create',
+    page: page,
+    pageSize: pageSize,
+  );
 
   /// Supprime une entrée « Jeux à créer » (marque la suggestion rejected).
   Future<void> deleteGameToCreateEntry(String suggestionId) async {
@@ -253,8 +270,9 @@ class SupabaseSync {
   ///
   /// Utilise la vue `contributor_stats` qui inclut désormais `display_name`
   /// directement (pour Vision et les contributeurs sans profil lié).
-  Future<List<Map<String, dynamic>>> fetchTopContributors(
-      {int limit = 20}) async {
+  Future<List<Map<String, dynamic>>> fetchTopContributors({
+    int limit = 20,
+  }) async {
     final Uri uri = Uri.parse(
       '$supabaseUrl/rest/v1/contributor_stats'
       '?select=accepted_count,total_accepted_count,display_name,author_id'
@@ -264,7 +282,8 @@ class SupabaseSync {
     final http.Response res = await http.get(uri, headers: _anonHeaders);
     if (res.statusCode != 200) {
       throw Exception(
-          'fetchTopContributors échec ${res.statusCode}: ${res.body}');
+        'fetchTopContributors échec ${res.statusCode}: ${res.body}',
+      );
     }
     final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
     return rows.map((r) {
@@ -290,8 +309,9 @@ class SupabaseSync {
     try {
       // Route service_role (Phase 2) : fonctionne quel que soit l'état des
       // grants sur le RPC SQL `find_profile_by_email` (révoqué en Phase 3).
-      final Map<String, dynamic> data =
-          await _post('profiles/find-by-email', {'email': email});
+      final Map<String, dynamic> data = await _post('profiles/find-by-email', {
+        'email': email,
+      });
       final id = data['id'];
       return id is String && id.isNotEmpty ? id : null;
     } on AdminAuthException {
@@ -390,8 +410,10 @@ class SupabaseSync {
   /// des traductions : un seul appel récupère tout, puis le caller filtre
   /// par gameId.
   Future<Map<String, Map<String, String>>> fetchAllTranslations() async {
-    final Map<String, dynamic> data =
-        await _post('games/translations-list', <String, dynamic>{});
+    final Map<String, dynamic> data = await _post(
+      'games/translations-list',
+      <String, dynamic>{},
+    );
     final List<dynamic> rows = data['translations'] as List? ?? [];
     final Map<String, Map<String, String>> byGame =
         <String, Map<String, String>>{};
@@ -417,10 +439,7 @@ class SupabaseSync {
       Uri.parse(
         '$supabaseUrl/rest/v1/game_translations?select=lang,title&game_id=eq.$gameId',
       ),
-      headers: {
-        'apikey': anonKey,
-        'Authorization': 'Bearer $anonKey',
-      },
+      headers: {'apikey': anonKey, 'Authorization': 'Bearer $anonKey'},
     );
     if (res.statusCode != 200) return {};
     final List<dynamic> rows = jsonDecode(res.body) as List? ?? [];
@@ -449,8 +468,10 @@ class SupabaseSync {
     Map<String, String> translations,
   ) async {
     try {
-      print('[Sync] updateGameTranslations: gameId=$gameId, '
-          '${translations.length} langues');
+      print(
+        '[Sync] updateGameTranslations: gameId=$gameId, '
+        '${translations.length} langues',
+      );
       final data = await _post('games/translate', {
         'game_id': gameId,
         'translations': translations,
@@ -572,5 +593,48 @@ class SupabaseSync {
       if (subs.length < pageSize) break; // Fin des données.
     }
     return allSubs;
+  }
+
+  /// Récupère la liste des utilisateurs bannis depuis Supabase (via Edge
+  /// Function `profiles/banned-list`).
+  ///
+  /// Retourne une liste de maps avec : id, displayName, reason.
+  /// Sert à synchroniser le cache local `_banned` avec l'état réel du serveur
+  /// (le bannissement peut être effectué depuis plusieurs menus).
+  Future<List<Map<String, dynamic>>> fetchBannedUsers() async {
+    final data = await _post('profiles/banned-list', <String, dynamic>{});
+    final banned = data['banned'] as List? ?? [];
+    return banned.map((b) {
+      final m = b as Map<String, dynamic>;
+      return <String, dynamic>{
+        'id': m['id'],
+        'displayName': m['display_name'] ?? 'Inconnu',
+        'reason': m['ban_reason'] ?? 'Modération',
+      };
+    }).toList();
+  }
+
+  /// Récupère la liste des mauvais contributeurs depuis Supabase (via Edge
+  /// Function `bad-contributors/list`).
+  ///
+  /// Retourne une liste de maps avec : author_id, display_name,
+  /// rejected_count, accepted_count, total_count, rejection_rate, is_premium.
+  /// Sert au menu « Comptes à bannir » : détecte les contributeurs dont le
+  /// taux de rejet est élevé.
+  Future<List<Map<String, dynamic>>> fetchBadContributors() async {
+    final data = await _post('bad-contributors/list', <String, dynamic>{});
+    final c = data['contributors'] as List? ?? [];
+    return c.map((m) {
+      final row = m as Map<String, dynamic>;
+      return <String, dynamic>{
+        'author_id': row['author_id'],
+        'display_name': row['display_name'] ?? 'Inconnu',
+        'rejected_count': row['rejected_count'] ?? 0,
+        'accepted_count': row['accepted_count'] ?? 0,
+        'total_count': row['total_count'] ?? 0,
+        'rejection_rate': (row['rejection_rate'] as num?)?.toDouble() ?? 0.0,
+        'is_premium': row['is_premium'] ?? false,
+      };
+    }).toList();
   }
 }

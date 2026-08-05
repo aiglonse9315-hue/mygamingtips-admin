@@ -79,8 +79,7 @@ class DashboardScreen extends StatelessWidget {
                   value: '${store.activePlusCount}',
                   icon: Icons.bolt_rounded,
                   color: AppColors.plus,
-                  subtitle:
-                      '${store.plus.length} au total',
+                  subtitle: '${store.plus.length} au total',
                 ),
               ),
             ],
@@ -95,8 +94,7 @@ class DashboardScreen extends StatelessWidget {
                 children: [
                   const Text(
                     'Répartition des contenus',
-                    style: TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w800),
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 16),
                   ...ContentCategory.values.map((c) {
@@ -114,10 +112,13 @@ class DashboardScreen extends StatelessWidget {
                           const SizedBox(width: 8),
                           SizedBox(
                             width: 80,
-                            child: Text(c.label,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 13)),
+                            child: Text(
+                              c.label,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13,
+                              ),
+                            ),
                           ),
                           const SizedBox(width: 8),
                           Flexible(
@@ -127,18 +128,22 @@ class DashboardScreen extends StatelessWidget {
                               child: LinearProgressIndicator(
                                 value: ratio,
                                 minHeight: 10,
-                                backgroundColor: c.color
-                                    .withValues(alpha: 0.15),
+                                backgroundColor: c.color.withValues(
+                                  alpha: 0.15,
+                                ),
                                 color: c.color,
                               ),
                             ),
                           ),
                           const SizedBox(width: 12),
                           Expanded(
-                            child: Text('$count',
-                                textAlign: TextAlign.right,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w800)),
+                            child: Text(
+                              '$count',
+                              textAlign: TextAlign.right,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
                           ),
                         ],
                       ),
@@ -158,8 +163,7 @@ class DashboardScreen extends StatelessWidget {
             children: [
               const Text(
                 'Dernières suggestions',
-                style: TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.w800),
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
               ),
               TextButton.icon(
                 onPressed: onOpenSuggestions,
@@ -177,33 +181,37 @@ class DashboardScreen extends StatelessWidget {
                   )
                 : Column(
                     children: recent
-                        .map((s) => ListTile(
-                              leading: Icon(
-                                s.status == SuggestionStatus.pending
-                                    ? Icons.hourglass_top_rounded
-                                    : (s.status == SuggestionStatus.accepted
+                        .map(
+                          (s) => ListTile(
+                            leading: Icon(
+                              s.status == SuggestionStatus.pending
+                                  ? Icons.hourglass_top_rounded
+                                  : (s.status == SuggestionStatus.accepted
                                         ? Icons.check_circle_rounded
                                         : Icons.cancel_rounded),
-                                size: 20,
-                                color: s.status == SuggestionStatus.pending
-                                    ? AppColors.plusGold
-                                    : (s.status == SuggestionStatus.accepted
+                              size: 20,
+                              color: s.status == SuggestionStatus.pending
+                                  ? AppColors.plusGold
+                                  : (s.status == SuggestionStatus.accepted
                                         ? AppColors.neonGreen
                                         : AppColors.categoryVideo),
-                              ),
-                              title: Text(s.url,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 13)),
-                              subtitle: Text(
-                                _formatDate(s.sharedAt),
-                                style: const TextStyle(fontSize: 11),
-                              ),
-                              trailing: Text(
-                                s.status.label,
-                                style: const TextStyle(fontSize: 11),
-                              ),
-                            ))
+                            ),
+                            title: Text(
+                              s.url,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                            subtitle: Text(
+                              _formatDate(s.sharedAt),
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            trailing: Text(
+                              s.status.label,
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                          ),
+                        )
                         .toList(),
                   ),
           ),
@@ -214,8 +222,7 @@ class DashboardScreen extends StatelessWidget {
             children: [
               const Text(
                 'Comptes bannis',
-                style: TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.w800),
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
               ),
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -224,12 +231,14 @@ class DashboardScreen extends StatelessWidget {
                     style: FilledButton.styleFrom(
                       backgroundColor: AppColors.categoryVideo,
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                     ),
-                    onPressed: () =>
-                        showDialog<void>(
-                            context: context,
-                            builder: (_) => const _AddBannedUserDialog()),
+                    onPressed: () => showDialog<void>(
+                      context: context,
+                      builder: (_) => const _AddBannedUserDialog(),
+                    ),
                     icon: const Icon(Icons.block_rounded, size: 18),
                     label: const Text('Bannir'),
                   ),
@@ -252,27 +261,37 @@ class DashboardScreen extends StatelessWidget {
                   )
                 : Column(
                     children: store.banned
-                        .map((b) => ListTile(
-                              leading: const CircleAvatar(
-                                backgroundColor: AppColors.categoryVideo,
-                                child: Icon(Icons.block_rounded,
-                                    color: Colors.white, size: 18),
+                        .map(
+                          (b) => ListTile(
+                            leading: const CircleAvatar(
+                              backgroundColor: AppColors.categoryVideo,
+                              child: Icon(
+                                Icons.block_rounded,
+                                color: Colors.white,
+                                size: 18,
                               ),
-                              title: Text(b.displayName,
-                                  style: const TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w700)),
-                              subtitle: Text(
-                                '${b.id} • ${b.reason ?? "Sans motif"}',
-                                style: const TextStyle(fontSize: 11),
+                            ),
+                            title: Text(
+                              b.displayName,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
                               ),
-                              trailing: TextButton.icon(
-                                onPressed: () => store.unban(b.id),
-                                icon: const Icon(Icons.lock_open_rounded,
-                                    size: 18),
-                                label: const Text('Débannir'),
+                            ),
+                            subtitle: Text(
+                              '${b.id} • ${b.reason ?? "Sans motif"}',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            trailing: TextButton.icon(
+                              onPressed: () => store.unban(b.id),
+                              icon: const Icon(
+                                Icons.lock_open_rounded,
+                                size: 18,
                               ),
-                            ))
+                              label: const Text('Débannir'),
+                            ),
+                          ),
+                        )
                         .toList(),
                   ),
           ),
@@ -312,11 +331,16 @@ class _PlusAccordionState extends State<_PlusAccordion> {
                 color: AppColors.plus.withValues(alpha: 0.16),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: const Icon(Icons.bolt_rounded,
-                  color: AppColors.plus, size: 20),
+              child: const Icon(
+                Icons.bolt_rounded,
+                color: AppColors.plus,
+                size: 20,
+              ),
             ),
-            title: const Text('Abonnés Plus',
-                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
+            title: const Text(
+              'Abonnés Plus',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
+            ),
             subtitle: Text(
               '${store.activePlusCount} actif(s) • ${plus.length} au total',
               style: const TextStyle(fontSize: 12),
@@ -328,7 +352,9 @@ class _PlusAccordionState extends State<_PlusAccordion> {
                   style: FilledButton.styleFrom(
                     backgroundColor: AppColors.plus,
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
                   ),
                   onPressed: () => _showAddDialog(context),
                   icon: const Icon(Icons.person_add_rounded, size: 18),
@@ -354,9 +380,13 @@ class _PlusAccordionState extends State<_PlusAccordion> {
               child: plus.isEmpty
                   ? const Padding(
                       padding: EdgeInsets.symmetric(
-                          vertical: 16, horizontal: 16),
-                      child: Text('Aucun abonné Plus.',
-                          style: TextStyle(fontSize: 13)),
+                        vertical: 16,
+                        horizontal: 16,
+                      ),
+                      child: Text(
+                        'Aucun abonné Plus.',
+                        style: TextStyle(fontSize: 13),
+                      ),
                     )
                   : Column(
                       children: plus.map((n) => _plusTile(context, n)).toList(),
@@ -374,56 +404,81 @@ class _PlusAccordionState extends State<_PlusAccordion> {
       dense: true,
       leading: CircleAvatar(
         radius: 16,
-        backgroundColor:
-            AppColors.plus.withValues(alpha: n.active ? 0.2 : 0.06),
-        child: Icon(Icons.bolt_rounded,
-            size: 16, color: n.active ? AppColors.plus : Colors.grey),
+        backgroundColor: AppColors.plus.withValues(
+          alpha: n.active ? 0.2 : 0.06,
+        ),
+        child: Icon(
+          Icons.bolt_rounded,
+          size: 16,
+          color: n.active ? AppColors.plus : Colors.grey,
+        ),
       ),
       title: Row(
         children: [
           Flexible(
-            child: Text(n.displayName,
-                style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: n.active ? null : Colors.grey)),
+            child: Text(
+              n.displayName,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: n.active ? null : Colors.grey,
+              ),
+            ),
           ),
+          // Badge BANNI si l'abonné Plus est également banni
+          // (statut synchronisé depuis le serveur via fetchBannedUsers).
+          if (store.isAuthorBanned(n.id)) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: const Text(
+                'BANNI',
+                style: TextStyle(
+                  fontSize: 9,
+                  fontWeight: FontWeight.w800,
+                  color: Colors.red,
+                ),
+              ),
+            ),
+          ],
           const SizedBox(width: 6),
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
             decoration: BoxDecoration(
-              color: (n.plan == 'yearly'
-                      ? AppColors.plusGold
-                      : AppColors.plus)
+              color: (n.plan == 'yearly' ? AppColors.plusGold : AppColors.plus)
                   .withValues(alpha: 0.16),
               borderRadius: BorderRadius.circular(6),
             ),
             child: Text(
               n.plan == 'yearly' ? 'Annuel' : 'Mensuel',
               style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w800,
-                  color: n.plan == 'yearly'
-                      ? AppColors.plusGold
-                      : AppColors.plus),
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                color: n.plan == 'yearly' ? AppColors.plusGold : AppColors.plus,
+              ),
             ),
           ),
           const SizedBox(width: 6),
           // Badge source : Google Play (lecture seule) ou Manuel (admin).
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
             decoration: BoxDecoration(
-              color: (n.isGoogle ? Colors.green : Colors.blue)
-                  .withValues(alpha: 0.16),
+              color: (n.isGoogle ? Colors.green : Colors.blue).withValues(
+                alpha: 0.16,
+              ),
               borderRadius: BorderRadius.circular(6),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  n.isGoogle ? Icons.shopping_cart_rounded : Icons.person_rounded,
+                  n.isGoogle
+                      ? Icons.shopping_cart_rounded
+                      : Icons.person_rounded,
                   size: 10,
                   color: n.isGoogle ? Colors.green : Colors.blue,
                 ),
@@ -431,9 +486,10 @@ class _PlusAccordionState extends State<_PlusAccordion> {
                 Text(
                   n.isGoogle ? 'Google' : 'Manuel',
                   style: TextStyle(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w800,
-                      color: n.isGoogle ? Colors.green : Colors.blue),
+                    fontSize: 9,
+                    fontWeight: FontWeight.w800,
+                    color: n.isGoogle ? Colors.green : Colors.blue,
+                  ),
                 ),
               ],
             ),
@@ -457,8 +513,11 @@ class _PlusAccordionState extends State<_PlusAccordion> {
               tooltip: n.isGoogle
                   ? 'Suspendre (Google Play — vérifier d\'abord l\'abonnement Play)'
                   : 'Suspendre',
-              icon: const Icon(Icons.pause_circle_outline_rounded,
-                  size: 20, color: AppColors.plusGold),
+              icon: const Icon(
+                Icons.pause_circle_outline_rounded,
+                size: 20,
+                color: AppColors.plusGold,
+              ),
               onPressed: () => store.togglePlusUser(n),
             ),
           // Les abonnés Google sont en lecture seule : on ne change pas
@@ -576,9 +635,9 @@ class _AddPlusUserDialogState extends State<AddPlusUserDialog> {
     } catch (e) {
       if (mounted) {
         setState(() => _loading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erreur : $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Erreur : $e')));
       }
     }
   }
@@ -618,9 +677,13 @@ class _AddPlusUserDialogState extends State<AddPlusUserDialog> {
               ),
               items: const [
                 DropdownMenuItem(
-                    value: 'monthly', child: Text('Mensuel (0,99 €/mois)')),
+                  value: 'monthly',
+                  child: Text('Mensuel (0,99 €/mois)'),
+                ),
                 DropdownMenuItem(
-                    value: 'yearly', child: Text('Annuel (9 €/an)')),
+                  value: 'yearly',
+                  child: Text('Annuel (9 €/an)'),
+                ),
               ],
               onChanged: (v) => setState(() => _plan = v ?? 'monthly'),
             ),
@@ -675,10 +738,10 @@ class _AddBannedUserDialogState extends State<_AddBannedUserDialog> {
     // Affiche un indicateur pendant la résolution email → UUID.
     setState(() => _saving = true);
     await context.read<StoreController>().banManually(
-          displayName: _name.text,
-          email: _email.text,
-          reason: _reason.text,
-        );
+      displayName: _name.text,
+      email: _email.text,
+      reason: _reason.text,
+    );
     if (mounted) Navigator.pop(context);
   }
 
@@ -731,12 +794,16 @@ class _AddBannedUserDialogState extends State<_AddBannedUserDialog> {
                 color: AppColors.categoryVideo.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                    color: AppColors.categoryVideo.withValues(alpha: 0.3)),
+                  color: AppColors.categoryVideo.withValues(alpha: 0.3),
+                ),
               ),
               child: const Row(
                 children: [
-                  Icon(Icons.warning_amber_rounded,
-                      size: 16, color: AppColors.categoryVideo),
+                  Icon(
+                    Icons.warning_amber_rounded,
+                    size: 16,
+                    color: AppColors.categoryVideo,
+                  ),
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(

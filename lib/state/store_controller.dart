@@ -108,6 +108,10 @@ class StoreController extends ChangeNotifier {
   List<BannedUser> _banned = <BannedUser>[];
   List<PlusUser> _plus = <PlusUser>[];
 
+  /// Mauvais contributeurs (taux de rejet élevé) — menu « Comptes à bannir ».
+  /// Données fraîches issues de `bad-contributors/list` (sync serveur).
+  List<Map<String, dynamic>> _badContributors = <Map<String, dynamic>>[];
+
   List<Game> get games => List<Game>.unmodifiable(_games);
   List<Content> get contents => List<Content>.unmodifiable(_contents);
   List<Suggestion> get suggestions =>
@@ -134,20 +138,24 @@ class StoreController extends ChangeNotifier {
   ///   nouvelles langues).
   /// - Langue inconnue/absente → fallback conservateur 0.95.
   List<Suggestion> get sentinelleTrusted => _sentinelleSuggestions
-      .where((s) =>
-          s.aiRecommendation != null &&
-          s.aiRecommendation!.verdict == AiVerdict.recommended &&
-          s.aiRecommendation!.confidence >=
-              _trustThresholdFor(s.aiRecommendation!.youtubeLanguage))
+      .where(
+        (s) =>
+            s.aiRecommendation != null &&
+            s.aiRecommendation!.verdict == AiVerdict.recommended &&
+            s.aiRecommendation!.confidence >=
+                _trustThresholdFor(s.aiRecommendation!.youtubeLanguage),
+      )
       .toList();
 
   /// Suggestions Sentinelle "à vérifier" (tout ce qui n'est pas trusted).
   List<Suggestion> get sentinelleToVerify => _sentinelleSuggestions
-      .where((s) =>
-          s.aiRecommendation == null ||
-          s.aiRecommendation!.verdict != AiVerdict.recommended ||
-          s.aiRecommendation!.confidence <
-              _trustThresholdFor(s.aiRecommendation?.youtubeLanguage))
+      .where(
+        (s) =>
+            s.aiRecommendation == null ||
+            s.aiRecommendation!.verdict != AiVerdict.recommended ||
+            s.aiRecommendation!.confidence <
+                _trustThresholdFor(s.aiRecommendation?.youtubeLanguage),
+      )
       .toList();
 
   /// Seuil de confiance requis pour qu'une suggestion soit "trusted".
@@ -170,16 +178,20 @@ class StoreController extends ChangeNotifier {
 
   /// Suggestions Scruteur "95-100% pertinent" (confiance ≥ 0.95 uniforme).
   List<Suggestion> get scruteurTrusted => _scruteurSuggestions
-      .where((s) =>
-          s.aiRecommendation != null &&
-          s.aiRecommendation!.confidence >= kScruteurTrustThreshold)
+      .where(
+        (s) =>
+            s.aiRecommendation != null &&
+            s.aiRecommendation!.confidence >= kScruteurTrustThreshold,
+      )
       .toList();
 
   /// Suggestions Scruteur "À vérifier" (confiance < 0.95).
   List<Suggestion> get scruteurToVerify => _scruteurSuggestions
-      .where((s) =>
-          s.aiRecommendation == null ||
-          s.aiRecommendation!.confidence < kScruteurTrustThreshold)
+      .where(
+        (s) =>
+            s.aiRecommendation == null ||
+            s.aiRecommendation!.confidence < kScruteurTrustThreshold,
+      )
       .toList();
 
   /// Seuil de confiance UNIFORME pour le Scruteur (toutes langues).
@@ -187,12 +199,15 @@ class StoreController extends ChangeNotifier {
 
   List<BannedUser> get banned => List<BannedUser>.unmodifiable(_banned);
   List<PlusUser> get plus => List<PlusUser>.unmodifiable(_plus);
-  int get activePlusCount =>
-      _plus.where((n) => n.active).length;
+  int get activePlusCount => _plus.where((n) => n.active).length;
+
+  /// Mauvais contributeurs (taux de rejet élevé) pour le menu
+  /// « Comptes à bannir ». Liste non modifiable (lecture seule côté UI).
+  List<Map<String, dynamic>> get badContributors =>
+      List<Map<String, dynamic>>.unmodifiable(_badContributors);
 
   /// L'auteur d'une suggestion est-il actuellement banni ?
-  bool isAuthorBanned(String authorId) =>
-      _banned.any((b) => b.id == authorId);
+  bool isAuthorBanned(String authorId) => _banned.any((b) => b.id == authorId);
 
   /// Un utilisateur est-il déjà abonné Plus (actif) ?
   bool isPlusUser(String userId) =>
@@ -366,8 +381,7 @@ class StoreController extends ChangeNotifier {
     try {
       final ok = await sync!.updateGameTranslations(game.id, translations);
       if (!ok) {
-        lastActionError =
-            'Traductions non enregistrées (erreur serveur).';
+        lastActionError = 'Traductions non enregistrées (erreur serveur).';
         notifyListeners();
       }
       return ok;
@@ -414,8 +428,9 @@ class StoreController extends ChangeNotifier {
   // ---------- Contenus ----------
   List<Content> contentsOf(String gameId, ContentCategory category) =>
       _contents
-          .where((c) =>
-              c.gameId == gameId && c.category == category && c.validated)
+          .where(
+            (c) => c.gameId == gameId && c.category == category && c.validated,
+          )
           .toList()
         ..sort((a, b) => b.publishedAt.compareTo(a.publishedAt));
 
@@ -433,8 +448,9 @@ class StoreController extends ChangeNotifier {
       gameId: gameId,
       category: category,
       url: url.trim(),
-      titleAdmin:
-          titleAdmin?.trim().isEmpty == true ? null : titleAdmin?.trim(),
+      titleAdmin: titleAdmin?.trim().isEmpty == true
+          ? null
+          : titleAdmin?.trim(),
       imageUrl: imageUrl?.trim().isEmpty == true ? null : imageUrl?.trim(),
       publishedAt: DateTime.now(),
       validated: true,
@@ -446,8 +462,9 @@ class StoreController extends ChangeNotifier {
     if (sync == null) return;
     try {
       final created = await sync!.upsertContent(content);
-      _contents =
-          _contents.map((c) => c.id == content.id ? created : c).toList();
+      _contents = _contents
+          .map((c) => c.id == content.id ? created : c)
+          .toList();
       _store.saveContents(_contents);
       notifyListeners();
     } catch (e) {
@@ -469,8 +486,11 @@ class StoreController extends ChangeNotifier {
       orElse: () => content,
     );
     _contents = _contents
-        .map((c) =>
-            c.id == content.id ? c.copyWith(titleAdmin: () => titleAdmin.trim()) : c)
+        .map(
+          (c) => c.id == content.id
+              ? c.copyWith(titleAdmin: () => titleAdmin.trim())
+              : c,
+        )
         .toList();
     _store.saveContents(_contents);
     notifyListeners();
@@ -480,7 +500,9 @@ class StoreController extends ChangeNotifier {
       await sync!.upsertContent(updated);
     } catch (e) {
       // Rollback.
-      _contents = _contents.map((c) => c.id == content.id ? previous : c).toList();
+      _contents = _contents
+          .map((c) => c.id == content.id ? previous : c)
+          .toList();
       _store.saveContents(_contents);
       lastActionError = 'Titre non modifié (erreur serveur) : $e';
       notifyListeners();
@@ -488,7 +510,8 @@ class StoreController extends ChangeNotifier {
   }
 
   /// Met à jour un contenu (titre + URL). Attend la confirmation serveur.
-  Future<void> updateContent(Content content, {
+  Future<void> updateContent(
+    Content content, {
     required String titleAdmin,
     required String url,
     ContentCategory? category,
@@ -501,16 +524,18 @@ class StoreController extends ChangeNotifier {
       orElse: () => content,
     );
     _contents = _contents
-        .map((c) => c.id == content.id
-            ? c.copyWith(
-                titleAdmin: () => titleAdmin.trim(),
-                url: () => url.trim(),
-                category: category,
-                publishedAt: publishedAt,
-                gameId: gameId,
-                videoLanguage: videoLanguage,
-              )
-            : c)
+        .map(
+          (c) => c.id == content.id
+              ? c.copyWith(
+                  titleAdmin: () => titleAdmin.trim(),
+                  url: () => url.trim(),
+                  category: category,
+                  publishedAt: publishedAt,
+                  gameId: gameId,
+                  videoLanguage: videoLanguage,
+                )
+              : c,
+        )
         .toList();
     _store.saveContents(_contents);
     notifyListeners();
@@ -520,7 +545,9 @@ class StoreController extends ChangeNotifier {
       await sync!.upsertContent(updated);
     } catch (e) {
       // Rollback.
-      _contents = _contents.map((c) => c.id == content.id ? previous : c).toList();
+      _contents = _contents
+          .map((c) => c.id == content.id ? previous : c)
+          .toList();
       _store.saveContents(_contents);
       if (_isAuthError(e)) {
         onAuthError?.call();
@@ -556,8 +583,9 @@ class StoreController extends ChangeNotifier {
 
   // ---------- Suggestions ----------
   /// Suggestions triées par date de partage (du plus récent au plus ancien).
-  List<Suggestion> get suggestionsByDate => List<Suggestion>.from(_suggestions)
-    ..sort((a, b) => b.sharedAt.compareTo(a.sharedAt));
+  List<Suggestion> get suggestionsByDate =>
+      List<Suggestion>.from(_suggestions)
+        ..sort((a, b) => b.sharedAt.compareTo(a.sharedAt));
 
   int get pendingSuggestionsCount =>
       _suggestions.where((s) => s.status == SuggestionStatus.pending).length;
@@ -577,9 +605,11 @@ class StoreController extends ChangeNotifier {
   }) async {
     // Marque la suggestion comme acceptée localement (optimiste).
     _suggestions = _suggestions
-        .map((s) => s.id == suggestion.id
-            ? s.copyWith(status: SuggestionStatus.accepted)
-            : s)
+        .map(
+          (s) => s.id == suggestion.id
+              ? s.copyWith(status: SuggestionStatus.accepted)
+              : s,
+        )
         .toList();
     _store.saveSuggestions(_suggestions);
     notifyListeners();
@@ -600,9 +630,11 @@ class StoreController extends ChangeNotifier {
     } catch (e) {
       // Rollback : la suggestion redevient pending.
       _suggestions = _suggestions
-          .map((s) => s.id == suggestion.id
-              ? s.copyWith(status: SuggestionStatus.pending)
-              : s)
+          .map(
+            (s) => s.id == suggestion.id
+                ? s.copyWith(status: SuggestionStatus.pending)
+                : s,
+          )
           .toList();
       _store.saveSuggestions(_suggestions);
       if (_isAuthError(e)) {
@@ -617,9 +649,11 @@ class StoreController extends ChangeNotifier {
   Future<void> rejectSuggestion(Suggestion suggestion) async {
     final SuggestionStatus previousStatus = suggestion.status;
     _suggestions = _suggestions
-        .map((s) => s.id == suggestion.id
-            ? s.copyWith(status: SuggestionStatus.rejected)
-            : s)
+        .map(
+          (s) => s.id == suggestion.id
+              ? s.copyWith(status: SuggestionStatus.rejected)
+              : s,
+        )
         .toList();
     _store.saveSuggestions(_suggestions);
     notifyListeners();
@@ -631,9 +665,10 @@ class StoreController extends ChangeNotifier {
     } catch (e) {
       // Rollback.
       _suggestions = _suggestions
-          .map((s) => s.id == suggestion.id
-              ? s.copyWith(status: previousStatus)
-              : s)
+          .map(
+            (s) =>
+                s.id == suggestion.id ? s.copyWith(status: previousStatus) : s,
+          )
           .toList();
       _store.saveSuggestions(_suggestions);
       if (_isAuthError(e)) {
@@ -675,14 +710,13 @@ class StoreController extends ChangeNotifier {
       final lower = suggestedName.toLowerCase();
       try {
         // Recherche exacte (insensible à la casse).
-        targetGame = _games.firstWhere(
-          (g) => g.name.toLowerCase() == lower,
-        );
+        targetGame = _games.firstWhere((g) => g.name.toLowerCase() == lower);
       } catch (_) {
         try {
           // Recherche partielle (contient).
           targetGame = _games.firstWhere(
-            (g) => g.name.toLowerCase().contains(lower) ||
+            (g) =>
+                g.name.toLowerCase().contains(lower) ||
                 lower.contains(g.name.toLowerCase()),
           );
         } catch (_) {
@@ -814,6 +848,7 @@ class StoreController extends ChangeNotifier {
       notifyListeners();
     }
   }
+
   Future<void> rejectSentinelle(Suggestion suggestion) async {
     // Retire la suggestion de la liste Sentinelle (optimiste).
     _sentinelleSuggestions = _sentinelleSuggestions
@@ -842,7 +877,9 @@ class StoreController extends ChangeNotifier {
   /// « Jeux à créer ». Le [gameName] est le nom saisi par l'admin (pré-rempli
   /// avec le suggestedGame de l'IA).
   Future<void> acceptGameToCreate(
-      Suggestion suggestion, String gameName) async {
+    Suggestion suggestion,
+    String gameName,
+  ) async {
     final trimmed = gameName.trim();
     if (trimmed.isEmpty) {
       lastActionError = 'Le nom du jeu est requis.';
@@ -851,7 +888,9 @@ class StoreController extends ChangeNotifier {
     }
 
     // Retrait optimiste de la liste « Jeux à créer ».
-    _gamesToCreate = _gamesToCreate.where((s) => s.id != suggestion.id).toList();
+    _gamesToCreate = _gamesToCreate
+        .where((s) => s.id != suggestion.id)
+        .toList();
     notifyListeners();
 
     if (sync == null || !_isUuid(suggestion.id)) return;
@@ -863,7 +902,8 @@ class StoreController extends ChangeNotifier {
     Game? targetGame;
     try {
       targetGame = _games.firstWhere(
-          (g) => g.name.toLowerCase() == trimmed.toLowerCase());
+        (g) => g.name.toLowerCase() == trimmed.toLowerCase(),
+      );
     } catch (_) {
       lastActionError = 'Création du jeu échouée.';
       _gamesToCreate = [..._gamesToCreate, suggestion];
@@ -881,7 +921,7 @@ class StoreController extends ChangeNotifier {
         titleAdmin: _titleForInsertion(suggestion),
         isVideo:
             _categoryFromAi(ai?.suggestedCategory, suggestion.url) ==
-                ContentCategory.video,
+            ContentCategory.video,
         publishedAt: _dateForInsertion(suggestion),
       );
       await syncFromSupabase();
@@ -898,8 +938,9 @@ class StoreController extends ChangeNotifier {
 
   /// Supprime une entrée « Jeux à créer » (marque rejected).
   Future<void> rejectGameToCreate(Suggestion suggestion) async {
-    _gamesToCreate =
-        _gamesToCreate.where((s) => s.id != suggestion.id).toList();
+    _gamesToCreate = _gamesToCreate
+        .where((s) => s.id != suggestion.id)
+        .toList();
     notifyListeners();
     if (sync == null || !_isUuid(suggestion.id)) return;
     try {
@@ -1003,7 +1044,10 @@ class StoreController extends ChangeNotifier {
   /// Bannit le compte auteur d'une suggestion (modération disciplinaire).
   Future<void> banAuthor(Suggestion suggestion, {String? reason}) async {
     if (isAuthorBanned(suggestion.author.id)) return;
-    _banned = [..._banned, BannedUser.fromAuthor(suggestion.author, reason: reason)];
+    _banned = [
+      ..._banned,
+      BannedUser.fromAuthor(suggestion.author, reason: reason),
+    ];
     _store.saveBanned(_banned);
     notifyListeners();
     if (sync == null) return;
@@ -1028,7 +1072,7 @@ class StoreController extends ChangeNotifier {
         displayName: displayName ?? authorId,
         bannedAt: DateTime.now(),
         reason: 'Banni manuellement',
-      )
+      ),
     ];
     _store.saveBanned(_banned);
     notifyListeners();
@@ -1054,6 +1098,46 @@ class StoreController extends ChangeNotifier {
       // Rollback : on ne peut pas reconstruire l'entrée exacte, donc on resync.
       lastActionError = 'Levée de ban échouée : $e';
       notifyListeners();
+    }
+  }
+
+  /// Bannit un lot d'utilisateurs (menu « Comptes à bannir »).
+  ///
+  /// Boucle sur [userIds] en appelant `banAuthorId` pour chaque identifiant.
+  /// Les utilisateurs déjà bannis sont ignorés (garde fourni par banAuthorId).
+  /// [reason] est appliqué à tous (information locale uniquement — la raison
+  /// envoyée au serveur reste « Banni manuellement » pour cohérence avec
+  /// banAuthorId).
+  ///
+  /// Retourne le nombre d'utilisateurs réellement bannis (excluant ceux qui
+  /// l'étaient déjà). En cas d'erreur serveur sur un utilisateur, on continue
+  /// le lot (meilleur effort) et on consolide l'erreur dans lastActionError.
+  Future<int> banBatch(List<String> userIds, {String? reason}) async {
+    if (userIds.isEmpty) return 0;
+    int count = 0;
+    for (final id in userIds) {
+      if (isAuthorBanned(id)) continue; // déjà banni → on saute
+      await banAuthorId(id);
+      if (!isAuthorBanned(id)) {
+        // banAuthorId a rollback (erreur serveur) → on signale et on continue.
+        continue;
+      }
+      count++;
+    }
+    return count;
+  }
+
+  /// Synchronise les mauvais contributeurs depuis le serveur
+  /// (`bad-contributors/list`). Met à jour `_badContributors` et notifie.
+  ///
+  /// Non critique : en cas d'échec, on garde le cache précédent.
+  Future<void> syncBadContributors() async {
+    if (sync == null) return;
+    try {
+      _badContributors = await sync!.fetchBadContributors();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('fetchBadContributors échec: $e');
     }
   }
 
@@ -1095,7 +1179,7 @@ class StoreController extends ChangeNotifier {
         email: email?.trim().isEmpty == true ? null : email?.trim(),
         bannedAt: DateTime.now(),
         reason: cleanReason,
-      )
+      ),
     ];
     _store.saveBanned(_banned);
     notifyListeners();
@@ -1183,11 +1267,7 @@ class StoreController extends ChangeNotifier {
     // Désactive côté serveur AVANT de supprimer localement.
     final user = _plus.where((n) => n.id == id).firstOrNull;
     if (user != null && sync != null) {
-      sync!.upsertSubscription(
-        userId: id,
-        plan: user.plan,
-        isActive: false,
-      );
+      sync!.upsertSubscription(userId: id, plan: user.plan, isActive: false);
     }
     _plus = _plus.where((n) => n.id != id).toList();
     _store.savePlus(_plus);
@@ -1212,8 +1292,10 @@ class StoreController extends ChangeNotifier {
     _store.saveGames(games);
     final contents = _store.loadContents().where((c) => _isUuid(c.id)).toList();
     _store.saveContents(contents);
-    final suggestions =
-        _store.loadSuggestions().where((s) => _isUuid(s.id)).toList();
+    final suggestions = _store
+        .loadSuggestions()
+        .where((s) => _isUuid(s.id))
+        .toList();
     _store.saveSuggestions(suggestions);
   }
 
@@ -1313,8 +1395,10 @@ class StoreController extends ChangeNotifier {
     const int contentsPageSize = 1000;
     final allContents = <Content>[];
     for (var page = 0; page * contentsPageSize < maxContents; page++) {
-      final batch =
-          await sync!.fetchContents(page: page, pageSize: contentsPageSize);
+      final batch = await sync!.fetchContents(
+        page: page,
+        pageSize: contentsPageSize,
+      );
       allContents.addAll(batch);
       if (batch.length < contentsPageSize) break; // Fin des données.
     }
@@ -1332,18 +1416,27 @@ class StoreController extends ChangeNotifier {
       if (batch.length < 500) break;
     }
     for (var page = 0; ; page++) {
-      final batch = await sync!.fetchSentinelleAnalyzing(page: page, pageSize: 500);
+      final batch = await sync!.fetchSentinelleAnalyzing(
+        page: page,
+        pageSize: 500,
+      );
       allAnalyzing.addAll(batch);
       if (batch.length < 500) break;
     }
     for (var page = 0; ; page++) {
-      final batch = await sync!.fetchSentinelleSuggestions(page: page, pageSize: 500);
+      final batch = await sync!.fetchSentinelleSuggestions(
+        page: page,
+        pageSize: 500,
+      );
       allSentinelle.addAll(batch);
       if (batch.length < 500) break;
     }
     // Récupère les suggestions découvertes par le Scruteur (sites web de guides).
     for (var page = 0; ; page++) {
-      final batch = await sync!.fetchScruteurSuggestions(page: page, pageSize: 500);
+      final batch = await sync!.fetchScruteurSuggestions(
+        page: page,
+        pageSize: 500,
+      );
       allScruteur.addAll(batch);
       if (batch.length < 500) break;
     }
@@ -1371,16 +1464,34 @@ class StoreController extends ChangeNotifier {
       debugPrint('fetchSubscriptions échec: $e');
     }
 
+    // Récupère la liste des utilisateurs bannis depuis Supabase pour
+    // synchroniser le statut de bannissement entre tous les menus
+    // (le ban peut être effectué depuis plusieurs endroits : Dashboard,
+    // Abonnements, Comptes à bannir). Sans cette sync, un utilisateur banni
+    // depuis un autre menu n'apparaîtrait pas comme banni ici.
+    List<BannedUser> serverBanned = <BannedUser>[];
+    try {
+      final bannedData = await sync!.fetchBannedUsers();
+      serverBanned = bannedData
+          .map(
+            (b) => BannedUser(
+              id: b['id'] as String,
+              displayName: b['displayName'] as String? ?? 'Inconnu',
+              bannedAt: DateTime.now(),
+              reason: b['reason'] as String?,
+            ),
+          )
+          .toList();
+    } catch (e) {
+      debugPrint('fetchBanned échec: $e');
+    }
+
     // --- Fusion : conserve les entrées locales non encore synchronisées
     //     (ID temporaire) et ajoute les données serveur. ---
-    final pendingGames = _games
-        .where((g) => !_isUuid(g.id))
-        .toList();
+    final pendingGames = _games.where((g) => !_isUuid(g.id)).toList();
     _games = [...games, ...pendingGames]..sort(_byName);
 
-    final pendingContents = _contents
-        .where((c) => !_isUuid(c.id))
-        .toList();
+    final pendingContents = _contents.where((c) => !_isUuid(c.id)).toList();
     _contents = [...contents, ...pendingContents];
 
     final pendingSuggestions = _suggestions
@@ -1400,30 +1511,53 @@ class StoreController extends ChangeNotifier {
     // et on conserve les abonnés locaux (démo) non synchronisables.
     final localOnlyPlus = _plus.where((p) => !_isUuid(p.id)).toList();
     _plus = [
-      ...serverPlus.map((m) => PlusUser(
-            id: m['id'] as String,
-            displayName: m['displayName'] as String? ?? 'Inconnu',
-            plan: m['plan'] as String? ?? 'monthly',
-            startedAt: DateTime.tryParse(m['startedAt'] as String? ?? '') ??
-                DateTime.now(),
-            active: m['active'] as bool? ?? false,
-            source: m['source'] as String? ?? 'admin',
-          )),
+      ...serverPlus.map(
+        (m) => PlusUser(
+          id: m['id'] as String,
+          displayName: m['displayName'] as String? ?? 'Inconnu',
+          plan: m['plan'] as String? ?? 'monthly',
+          startedAt:
+              DateTime.tryParse(m['startedAt'] as String? ?? '') ??
+              DateTime.now(),
+          active: m['active'] as bool? ?? false,
+          source: m['source'] as String? ?? 'admin',
+        ),
+      ),
       ...localOnlyPlus,
     ];
     _store.savePlus(_plus);
+
+    // Bannis : fusion serveur + locaux (non UUID = démo / manuels non
+    // synchronisables). On remplace les bannis serveur (UUID) par la version
+    // serveur (source de vérité), et on conserve les bannis locaux non UUID.
+    final localOnlyBanned = _banned.where((b) => !_isUuid(b.id)).toList();
+    _banned = [...localOnlyBanned, ...serverBanned];
+    _store.saveBanned(_banned);
 
     // Met à jour le cache local pour les lectures hors-ligne.
     _store.saveGames(_games);
     _store.saveContents(_contents);
     _store.saveSuggestions(_suggestions);
+
+    // Récupère les mauvais contributeurs (menu « Comptes à bannir »).
+    // Non critique : en cas d'échec, on garde le cache précédent.
+    try {
+      _badContributors = await sync!.fetchBadContributors();
+    } catch (e) {
+      debugPrint('fetchBadContributors échec: $e');
+    }
+
     // Sync réussie : on efface l'erreur de sync (pas l'erreur d'action).
     syncError = null;
   }
 
   /// Vrai UUID Supabase ? (36 caractères, format xxxxxxxx-xxxx-...).
   static bool _isUuid(String id) =>
-      id.length == 36 && RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false).hasMatch(id);
+      id.length == 36 &&
+      RegExp(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+        caseSensitive: false,
+      ).hasMatch(id);
 
   /// Met à jour le jeton admin pour les écritures Supabase (appelé après
   /// login/logout).

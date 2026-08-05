@@ -56,10 +56,12 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
     if (_search.isNotEmpty) {
       final q = _search.toLowerCase();
       list = list
-          .where((u) =>
-              u.displayName.toLowerCase().contains(q) ||
-              (u.email?.toLowerCase().contains(q) ?? false) ||
-              u.id.toLowerCase().contains(q))
+          .where(
+            (u) =>
+                u.displayName.toLowerCase().contains(q) ||
+                (u.email?.toLowerCase().contains(q) ?? false) ||
+                u.id.toLowerCase().contains(q),
+          )
           .toList();
     }
 
@@ -106,7 +108,8 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
               hintText: 'Rechercher un abonné…',
               prefixIcon: const Icon(Icons.search_rounded),
               border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10)),
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
           ),
           const SizedBox(height: 16),
@@ -120,8 +123,8 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
                 value: _sourceFilter == null
                     ? 'Tous'
                     : _sourceFilter == 'google'
-                        ? 'Google'
-                        : 'Manuel',
+                    ? 'Google'
+                    : 'Manuel',
                 items: const ['Google', 'Manuel'],
                 values: const ['google', 'admin'],
                 selectedValue: _sourceFilter,
@@ -132,8 +135,8 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
                 value: _statusFilter == null
                     ? 'Tous'
                     : _statusFilter == 'active'
-                        ? 'Actif'
-                        : 'Expiré',
+                    ? 'Actif'
+                    : 'Expiré',
                 items: const ['Actif', 'Expiré'],
                 values: const ['active', 'expired'],
                 selectedValue: _statusFilter,
@@ -150,7 +153,7 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
               'Source',
               'Statut',
               'Début',
-              'Actions'
+              'Actions',
             ],
             sortColumnIndex: _sortColumnIndex,
             sortAscending: _sortAscending,
@@ -166,126 +169,192 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
               });
             },
             rows: list
-                .map((u) => [
-                      // Utilisateur (pseudo + UID tronqué — l'abonnement est
-                      // lié à l'UID Supabase, le pseudo peut changer).
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(u.displayName,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w700, fontSize: 13)),
-                          Text(
-                            u.id.length > 8
-                                ? '${u.id.substring(0, 8)}…'
-                                : u.id,
-                            style: const TextStyle(
-                                fontSize: 10,
-                                color: Colors.grey,
-                                fontFamily: 'monospace'),
+                .map(
+                  (u) => [
+                    // Utilisateur (pseudo + UID tronqué — l'abonnement est
+                    // lié à l'UID Supabase, le pseudo peut changer).
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                u.displayName,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                            // Badge BANNI si l'utilisateur est banni
+                            // (statut synchronisé depuis le serveur).
+                            if (store.isAuthorBanned(u.id)) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 1,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.red.withValues(alpha: 0.16),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Text(
+                                  'BANNI',
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.red,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        Text(
+                          u.id.length > 8 ? '${u.id.substring(0, 8)}…' : u.id,
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Colors.grey,
+                            fontFamily: 'monospace',
                           ),
-                        ],
+                        ),
+                      ],
+                    ),
+                    // Email.
+                    Text(
+                      u.email ?? '—',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).textTheme.bodySmall?.color,
                       ),
-                      // Email.
-                      Text(u.email ?? '—',
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.color)),
-                      // Formule (badge).
-                      _PlanBadge(plan: u.plan),
-                      // Source (badge).
-                      _SourceBadge(isGoogle: u.isGoogle, isVerified: u.isVerified),
-                      // Statut.
-                      u.active
-                          ? const StatusBadge(label: 'Actif', color: Colors.green)
-                          : const StatusBadge(
-                              label: 'Expiré', color: Colors.grey),
-                      // Début.
-                      Text(_formatDate(u.startedAt),
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.color)),
-                      // Actions.
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // Suspendre / Réactiver.
-                          IconButton(
-                            tooltip: u.active ? 'Suspendre' : 'Réactiver',
-                            icon: Icon(
-                              u.active
-                                  ? Icons.pause_circle_outline_rounded
-                                  : Icons.play_circle_outline_rounded,
+                    ),
+                    // Formule (badge).
+                    _PlanBadge(plan: u.plan),
+                    // Source (badge).
+                    _SourceBadge(
+                      isGoogle: u.isGoogle,
+                      isVerified: u.isVerified,
+                    ),
+                    // Statut.
+                    u.active
+                        ? const StatusBadge(label: 'Actif', color: Colors.green)
+                        : const StatusBadge(
+                            label: 'Expiré',
+                            color: Colors.grey,
+                          ),
+                    // Début.
+                    Text(
+                      _formatDate(u.startedAt),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).textTheme.bodySmall?.color,
+                      ),
+                    ),
+                    // Actions.
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Suspendre / Réactiver.
+                        IconButton(
+                          tooltip: u.active ? 'Suspendre' : 'Réactiver',
+                          icon: Icon(
+                            u.active
+                                ? Icons.pause_circle_outline_rounded
+                                : Icons.play_circle_outline_rounded,
+                            size: 20,
+                            color: u.active ? AppColors.plusGold : Colors.green,
+                          ),
+                          onPressed: () => store.togglePlusUser(u),
+                        ),
+                        // Changer formule (sauf Google).
+                        if (!u.isGoogle)
+                          PopupMenuButton<String>(
+                            tooltip: 'Changer la formule',
+                            icon: const Icon(
+                              Icons.swap_horiz_rounded,
                               size: 20,
-                              color: u.active
-                                  ? AppColors.plusGold
-                                  : Colors.green,
                             ),
-                            onPressed: () => store.togglePlusUser(u),
-                          ),
-                          // Changer formule (sauf Google).
-                          if (!u.isGoogle)
-                            PopupMenuButton<String>(
-                              tooltip: 'Changer la formule',
-                              icon: const Icon(Icons.swap_horiz_rounded,
-                                  size: 20),
-                              onSelected: (plan) => store.setPlusPlan(u, plan),
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(
-                                    value: 'monthly', child: Text('Mensuel')),
-                                PopupMenuItem(
-                                    value: 'yearly', child: Text('Annuel')),
-                              ],
-                            ),
-                          // Bannir.
-                          IconButton(
-                            tooltip: 'Bannir',
-                            icon: const Icon(Icons.block_rounded,
-                                size: 20, color: Colors.red),
-                            onPressed: () => showDialog<void>(
-                              context: context,
-                              builder: (_) => ConfirmDialog(
-                                title: 'Bannir ${u.displayName} ?',
-                                message:
-                                    'Cet utilisateur ne pourra plus soumettre '
-                                    'de suggestions dans l\'application.',
-                                confirmLabel: 'Bannir',
-                                destructive: true,
-                                onConfirm: () {
-                                  store.banAuthorId(u.id,
-                                      displayName: u.displayName);
-                                },
+                            onSelected: (plan) => store.setPlusPlan(u, plan),
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(
+                                value: 'monthly',
+                                child: Text('Mensuel'),
                               ),
-                            ),
-                          ),
-                          // Supprimer.
-                          IconButton(
-                            tooltip: 'Supprimer',
-                            icon: const Icon(Icons.delete_outline_rounded,
-                                size: 20, color: AppColors.categoryVideo),
-                            onPressed: () => showDialog<void>(
-                              context: context,
-                              builder: (_) => ConfirmDialog(
-                                title: 'Supprimer ${u.displayName} ?',
-                                message:
-                                    'L\'abonnement sera retiré de la liste '
-                                    'et désactivé côté serveur.',
-                                confirmLabel: 'Supprimer',
-                                destructive: true,
-                                onConfirm: () => store.deletePlusUser(u.id),
+                              PopupMenuItem(
+                                value: 'yearly',
+                                child: Text('Annuel'),
                               ),
+                            ],
+                          ),
+                        // Bannir / Débannir selon le statut.
+                        IconButton(
+                          tooltip: store.isAuthorBanned(u.id)
+                              ? 'Débannir'
+                              : 'Bannir',
+                          icon: store.isAuthorBanned(u.id)
+                              ? const Icon(
+                                  Icons.lock_open_rounded,
+                                  size: 20,
+                                  color: Colors.green,
+                                )
+                              : const Icon(
+                                  Icons.block_rounded,
+                                  size: 20,
+                                  color: Colors.red,
+                                ),
+                          onPressed: () {
+                            if (store.isAuthorBanned(u.id)) {
+                              store.unban(u.id);
+                            } else {
+                              showDialog<void>(
+                                context: context,
+                                builder: (_) => ConfirmDialog(
+                                  title: 'Bannir ${u.displayName} ?',
+                                  message:
+                                      'Cet utilisateur ne pourra plus soumettre '
+                                      'de suggestions dans l\'application.',
+                                  confirmLabel: 'Bannir',
+                                  destructive: true,
+                                  onConfirm: () {
+                                    store.banAuthorId(
+                                      u.id,
+                                      displayName: u.displayName,
+                                    );
+                                  },
+                                ),
+                              );
+                            }
+                          },
+                        ),
+                        // Supprimer.
+                        IconButton(
+                          tooltip: 'Supprimer',
+                          icon: const Icon(
+                            Icons.delete_outline_rounded,
+                            size: 20,
+                            color: AppColors.categoryVideo,
+                          ),
+                          onPressed: () => showDialog<void>(
+                            context: context,
+                            builder: (_) => ConfirmDialog(
+                              title: 'Supprimer ${u.displayName} ?',
+                              message:
+                                  'L\'abonnement sera retiré de la liste '
+                                  'et désactivé côté serveur.',
+                              confirmLabel: 'Supprimer',
+                              destructive: true,
+                              onConfirm: () => store.deletePlusUser(u.id),
                             ),
                           ),
-                        ],
-                      ),
-                    ])
+                        ),
+                      ],
+                    ),
+                  ],
+                )
                 .toList(),
           ),
         ],
@@ -302,9 +371,9 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
       int cmp;
       switch (_sortColumnIndex) {
         case 0: // Utilisateur
-          cmp = a.displayName
-              .toLowerCase()
-              .compareTo(b.displayName.toLowerCase());
+          cmp = a.displayName.toLowerCase().compareTo(
+            b.displayName.toLowerCase(),
+          );
           break;
         case 2: // Formule
           cmp = a.plan.compareTo(b.plan);
@@ -342,8 +411,9 @@ class _PlanBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: (isYearly ? AppColors.plusGold : AppColors.plus)
-            .withValues(alpha: 0.16),
+        color: (isYearly ? AppColors.plusGold : AppColors.plus).withValues(
+          alpha: 0.16,
+        ),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
@@ -370,8 +440,9 @@ class _SourceBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color color = isGoogle ? Colors.green : Colors.blue;
-    final String label =
-        isVerified ? 'Google ✓' : (isGoogle ? 'Google' : 'Manuel');
+    final String label = isVerified
+        ? 'Google ✓'
+        : (isGoogle ? 'Google' : 'Manuel');
     final IconData icon = isVerified
         ? Icons.verified_rounded
         : (isGoogle ? Icons.shopping_cart_rounded : Icons.person_rounded);
@@ -384,11 +455,7 @@ class _SourceBadge extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            icon,
-            size: 12,
-            color: color,
-          ),
+          Icon(icon, size: 12, color: color),
           const SizedBox(width: 4),
           Text(
             label,
@@ -436,18 +503,25 @@ class _FilterChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text('$label : ',
-              style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).textTheme.bodySmall?.color,
-                  fontWeight: FontWeight.w700)),
+          Text(
+            '$label : ',
+            style: TextStyle(
+              fontSize: 12,
+              color: Theme.of(context).textTheme.bodySmall?.color,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           PopupMenuButton<String>(
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(value,
-                    style: const TextStyle(
-                        fontSize: 12, fontWeight: FontWeight.w700)),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
                 const Icon(Icons.arrow_drop_down_rounded, size: 18),
               ],
             ),
@@ -456,11 +530,13 @@ class _FilterChip extends StatelessWidget {
             },
             itemBuilder: (_) => [
               const PopupMenuItem<String>(
-                  value: _allValue, child: Text('Tous')),
+                value: _allValue,
+                child: Text('Tous'),
+              ),
               ...List.generate(
-                  items.length,
-                  (i) =>
-                      PopupMenuItem(value: values[i], child: Text(items[i]))),
+                items.length,
+                (i) => PopupMenuItem(value: values[i], child: Text(items[i])),
+              ),
             ],
           ),
         ],

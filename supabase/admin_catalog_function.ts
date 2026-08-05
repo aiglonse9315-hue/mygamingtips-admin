@@ -1,5 +1,5 @@
 // ============================================================================
-// MyGamingTips — Edge Function Supabase "admin-catalog" (v48)
+// MyGamingTips — Edge Function Supabase "admin-catalog" (v50)
 // ============================================================================
 // Opérations d'écriture administrateur sur le catalogue (jeux, contenus,
 // suggestions, profils bannis, abonnements). Contourne la RLS via
@@ -629,6 +629,45 @@ serve(async (req) => {
       return await jsonWithFreshToken({ ok: true });
     }
 
+    if (route === "profiles/banned-list") {
+      // Retourne tous les profils bannis (synchro admin).
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, display_name, is_banned, ban_reason")
+        .eq("is_banned", true);
+      if (error) return safeError(error, 400);
+      return await jsonWithFreshToken({ banned: data ?? [] });
+    }
+
+    if (route === "bad-contributors/list") {
+      // Retourne les mauvais contributeurs (vue bad_contributors, migration 0046)
+      // avec jointure sur subscriptions pour le badge Premium.
+      const { data: contributors, error } = await supabase
+        .from("bad_contributors")
+        .select("*");
+      if (error) return safeError(error, 400);
+
+      // Récupère les abonnements actifs pour le badge Premium.
+      const authorIds = (contributors ?? []).map((c: any) => c.author_id);
+      let plusMap: Record<string, boolean> = {};
+      if (authorIds.length > 0) {
+        const { data: subs } = await supabase
+          .from("subscriptions")
+          .select("user_id, is_active")
+          .in("user_id", authorIds)
+          .eq("is_active", true);
+        for (const s of subs ?? []) {
+          plusMap[s.user_id] = true;
+        }
+      }
+
+      const result = (contributors ?? []).map((c: any) => ({
+        ...c,
+        is_premium: plusMap[c.author_id] ?? false,
+      }));
+      return await jsonWithFreshToken({ contributors: result });
+    }
+
     // ======================================================================
     // ABONNEMENTS — gestion manuelle (pour le test fermé, avant Play Billing)
     // ======================================================================
@@ -661,26 +700,35 @@ serve(async (req) => {
         .order("updated_at", { ascending: false });
       if (error) return safeError(error, 400);
 
-      // Récupère les display_name des profils correspondants.
+      // Récupère les display_name + is_banned des profils correspondants.
       const userIds = (subs ?? [])
         .map((s: any) => s.user_id)
         .filter((id: any) => id != null);
-      let profilesMap: Record<string, string> = {};
+      let profilesMap: Record<string, { name: string; banned: boolean; reason: string | null }> = {};
       if (userIds.length > 0) {
         const { data: profiles } = await supabase
           .from("profiles")
-          .select("id, display_name")
+          .select("id, display_name, is_banned, ban_reason")
           .in("id", userIds);
-      for (const p of profiles ?? []) {
-          profilesMap[p.id] = p.display_name ?? "Inconnu";
+        for (const p of profiles ?? []) {
+          profilesMap[p.id] = {
+            name: p.display_name ?? "Inconnu",
+            banned: p.is_banned ?? false,
+            reason: p.ban_reason,
+          };
         }
       }
 
-      // Fusionne les abonnements avec les display_name.
-      const result = (subs ?? []).map((s: any) => ({
-        ...s,
-        display_name: profilesMap[s.user_id] ?? "Inconnu",
-      }));
+      // Fusionne les abonnements avec les display_name + is_banned.
+      const result = (subs ?? []).map((s: any) => {
+        const p = profilesMap[s.user_id] ?? { name: "Inconnu", banned: false, reason: null };
+        return {
+          ...s,
+          display_name: p.name,
+          is_banned: p.banned,
+          ban_reason: p.reason,
+        };
+      });
       return json({ subscriptions: result });
     }
 
