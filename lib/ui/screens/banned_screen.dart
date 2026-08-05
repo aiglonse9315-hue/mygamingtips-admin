@@ -23,7 +23,6 @@ import 'package:provider/provider.dart';
 
 import '../../core/theme/colors.dart';
 import '../../state/store_controller.dart';
-import '../widgets/admin_data_table.dart';
 import '../widgets/confirm_dialog.dart';
 
 /// Menu « Comptes à bannir » : détection des mauvais contributeurs.
@@ -312,31 +311,7 @@ class _BannedScreenState extends State<BannedScreen> {
                         '${_minRejectionRate.toStringAsFixed(0)}% de rejets.',
             )
           else
-            AdminDataTable(
-              columns: const [
-                '',
-                'Utilisateur',
-                'Total',
-                'Rejets',
-                '% Rejets',
-                'Premium',
-                'Actions',
-              ],
-              sortColumnIndex: _sortColumnIndex,
-              sortAscending: _sortAscending,
-              nonSortableColumns: const ['', 'Actions'],
-              onSort: (colIdx) {
-                setState(() {
-                  if (_sortColumnIndex == colIdx) {
-                    _sortAscending = !_sortAscending;
-                  } else {
-                    _sortColumnIndex = colIdx;
-                    _sortAscending = true;
-                  }
-                });
-              },
-              rows: pageRows.map((c) => _buildRow(store, c)).toList(),
-            ),
+            _buildContributorsTable(store, pageRows),
 
           // Indicateur de traitement pendant le bannissement en masse.
           if (_banning) ...[
@@ -380,8 +355,129 @@ class _BannedScreenState extends State<BannedScreen> {
     );
   }
 
+  /// Construit le tableau des contributeurs avec un layout robuste.
+  Widget _buildContributorsTable(
+      StoreController store, List<Map<String, dynamic>> pageRows) {
+    final border = Theme.of(context).dividerColor;
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).canvasColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: border),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          // ── En-tête ──
+          Container(
+            color: Theme.of(context).brightness == Brightness.dark
+                ? Colors.white.withValues(alpha: 0.03)
+                : Colors.black.withValues(alpha: 0.02),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            child: Row(
+              children: [
+                // Checkbox "tout sélectionner"
+                SizedBox(
+                  width: 40,
+                  child: Checkbox(
+                    value: pageRows.isNotEmpty &&
+                        pageRows.every((r) => _selected.contains(r['author_id'])),
+                    onChanged: (_) => _toggleSelectAll(pageRows),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+                // Utilisateur
+                const Expanded(
+                  flex: 3,
+                  child: Text('Utilisateur',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800)),
+                ),
+                // Total
+                SizedBox(
+                  width: 60,
+                  child: _headerLabel('Total', 0),
+                ),
+                // Rejets
+                SizedBox(
+                  width: 60,
+                  child: _headerLabel('Rejets', 1),
+                ),
+                // % Rejets
+                SizedBox(
+                  width: 80,
+                  child: _headerLabel('% Rejets', 2),
+                ),
+                // Premium
+                const SizedBox(
+                  width: 70,
+                  child: Text('Premium',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+                      textAlign: TextAlign.center),
+                ),
+                // Actions
+                const SizedBox(
+                  width: 50,
+                  child: Text('Actions',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+                      textAlign: TextAlign.center),
+                ),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: border),
+          // ── Lignes ──
+          ...pageRows.asMap().entries.map((entry) {
+            final i = entry.key;
+            final c = entry.value;
+            final isLast = i == pageRows.length - 1;
+            return _buildContributorRow(store, c, isLast, border);
+          }),
+        ],
+      ),
+    );
+  }
+
+  /// En-tête cliquable pour le tri.
+  Widget _headerLabel(String label, int sortIdx) {
+    final isActive = _sortColumnIndex == sortIdx;
+    final color = isActive
+        ? Theme.of(context).colorScheme.primary
+        : (Theme.of(context).textTheme.bodySmall?.color ?? Colors.grey);
+    return InkWell(
+      onTap: () => setState(() {
+        if (_sortColumnIndex == sortIdx) {
+          _sortAscending = !_sortAscending;
+        } else {
+          _sortColumnIndex = sortIdx;
+          _sortAscending = true;
+        }
+      }),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(label,
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: color)),
+          Icon(
+            isActive
+                ? (_sortAscending
+                    ? Icons.arrow_upward_rounded
+                    : Icons.arrow_downward_rounded)
+                : Icons.unfold_more_rounded,
+            size: 12,
+            color: color,
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Construit une ligne du tableau pour un contributeur.
-  List<Widget> _buildRow(StoreController store, Map<String, dynamic> c) {
+  Widget _buildContributorRow(
+    StoreController store,
+    Map<String, dynamic> c,
+    bool isLast,
+    Color border,
+  ) {
     final authorId = c['author_id'] as String? ?? '';
     final displayName = c['display_name'] as String? ?? 'Inconnu';
     final total = c['total_count'] as int? ?? 0;
@@ -390,125 +486,136 @@ class _BannedScreenState extends State<BannedScreen> {
     final isPremium = c['is_premium'] as bool? ?? false;
     final isBanned = store.isAuthorBanned(authorId);
 
-    return <Widget>[
-      // Checkbox de sélection.
-      Checkbox(
-        value: _selected.contains(authorId),
-        onChanged: (_) => _toggleSelect(authorId),
-        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        border: isLast
+            ? null
+            : Border(bottom: BorderSide(color: border, width: 1)),
       ),
-      // Utilisateur (nom + ID tronqué).
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
+      child: Row(
         children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Flexible(
-                child: Text(
-                  displayName,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 13,
-                  ),
-                ),
-              ),
-              if (isBanned) ...[
-                const SizedBox(width: 6),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 1,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.red.withValues(alpha: 0.16),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: const Text(
-                    'BANNI',
-                    style: TextStyle(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.red,
+          // Checkbox
+          SizedBox(
+            width: 40,
+            child: Checkbox(
+              value: _selected.contains(authorId),
+              onChanged: (_) => _toggleSelect(authorId),
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ),
+          // Utilisateur
+          Expanded(
+            flex: 3,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        displayName,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w700, fontSize: 13),
+                      ),
                     ),
-                  ),
+                    if (isBanned) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: Colors.red.withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text('BANNI',
+                            style: TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.w800,
+                                color: Colors.red)),
+                      ),
+                    ],
+                  ],
+                ),
+                Text(
+                  authorId.length > 8
+                      ? '${authorId.substring(0, 8)}…'
+                      : authorId,
+                  style: const TextStyle(
+                      fontSize: 10, color: Colors.grey, fontFamily: 'monospace'),
                 ),
               ],
-            ],
+            ),
           ),
-          Text(
-            authorId.length > 8 ? '${authorId.substring(0, 8)}…' : authorId,
-            style: const TextStyle(
-              fontSize: 10,
-              color: Colors.grey,
-              fontFamily: 'monospace',
+          // Total
+          SizedBox(
+            width: 60,
+            child: Text('$total',
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).textTheme.bodySmall?.color),
+                textAlign: TextAlign.center),
+          ),
+          // Rejets
+          SizedBox(
+            width: 60,
+            child: Text('$rejected',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: rate >= 50 ? Colors.red : null),
+                textAlign: TextAlign.center),
+          ),
+          // % Rejets
+          SizedBox(
+            width: 80,
+            child: Text('${rate.toStringAsFixed(1)}%',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: rate >= 50
+                        ? Colors.red
+                        : (rate >= 25
+                            ? AppColors.categoryVideo
+                            : AppColors.plusGold)),
+                textAlign: TextAlign.center),
+          ),
+          // Premium
+          SizedBox(
+            width: 70,
+            child: isPremium
+                ? const _PremiumBadge()
+                : const Text('—', textAlign: TextAlign.center),
+          ),
+          // Actions
+          SizedBox(
+            width: 50,
+            child: IconButton(
+              tooltip: isBanned ? 'Débannir' : 'Bannir',
+              icon: isBanned
+                  ? const Icon(Icons.lock_open_rounded, size: 18, color: Colors.green)
+                  : const Icon(Icons.block_rounded, size: 18, color: Colors.red),
+              onPressed: isBanned
+                  ? () => store.unban(authorId)
+                  : () => showDialog<void>(
+                      context: context,
+                      builder: (_) => ConfirmDialog(
+                        title: 'Bannir $displayName ?',
+                        message:
+                            'Cet utilisateur ne pourra plus soumettre de suggestions.',
+                        confirmLabel: 'Bannir',
+                        destructive: true,
+                        onConfirm: () =>
+                            store.banAuthorId(authorId, displayName: displayName),
+                      ),
+                    ),
             ),
           ),
         ],
       ),
-      // Total.
-      Text(
-        '$total',
-        style: TextStyle(
-          fontSize: 12,
-          color: Theme.of(context).textTheme.bodySmall?.color,
-        ),
-      ),
-      // Rejets.
-      Text(
-        '$rejected',
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w700,
-          color: rate >= 50 ? Colors.red : null,
-        ),
-      ),
-      // % Rejets (couleur sémantique selon le taux).
-      Text(
-        '${rate.toStringAsFixed(1)}%',
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w800,
-          color: rate >= 50
-              ? Colors.red
-              : (rate >= 25 ? AppColors.categoryVideo : AppColors.plusGold),
-        ),
-      ),
-      // Badge Premium.
-      isPremium ? const _PremiumBadge() : const Text('—'),
-      // Actions : bannir / débannir.
-      Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            tooltip: isBanned ? 'Débannir' : 'Bannir',
-            icon: isBanned
-                ? const Icon(
-                    Icons.lock_open_rounded,
-                    size: 20,
-                    color: Colors.green,
-                  )
-                : const Icon(Icons.block_rounded, size: 20, color: Colors.red),
-            onPressed: isBanned
-                ? () => store.unban(authorId)
-                : () => showDialog<void>(
-                    context: context,
-                    builder: (_) => ConfirmDialog(
-                      title: 'Bannir $displayName ?',
-                      message:
-                          'Cet utilisateur ne pourra plus soumettre de '
-                          'suggestions dans l\'application.',
-                      confirmLabel: 'Bannir',
-                      destructive: true,
-                      onConfirm: () =>
-                          store.banAuthorId(authorId, displayName: displayName),
-                    ),
-                  ),
-          ),
-        ],
-      ),
-    ];
+    );
   }
 
   /// Bannit une liste d'utilisateurs (sélection arbitraire).
