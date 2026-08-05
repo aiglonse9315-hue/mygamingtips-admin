@@ -67,10 +67,10 @@ function json(obj: unknown, status = 200) {
 function safeError(error: unknown, status = 400, context = "Opération échouée") {
   const detail = error instanceof Error ? error.message : String(error);
   console.error(`[admin-catalog] ${context}:`, detail);
-  // Retourne le détail dans la réponse pour permettre le debug côté client
-  // (bots et panneau admin). Le détail PostgreSQL ne contient pas de secret
-  // sensible (nom de colonne/contrainte, pas de données utilisateur).
-  return json({ error: context, detail }, status);
+  // Le détail PostgreSQL (noms de colonnes/constraints) est loggé côté serveur
+  // pour le debug, mais NON retourné au client. En cas de fuite de JWT admin,
+  // l'attaquant ne récupère pas d'infos sur le schéma de la base.
+  return json({ error: context }, status);
 }
 
 // --- Génération d'un nouveau jeton (sliding session) ---

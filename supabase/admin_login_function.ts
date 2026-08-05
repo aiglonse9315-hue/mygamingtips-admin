@@ -252,12 +252,11 @@ serve(async (req) => {
   // Log minimal volontaire : ne JAMAIS logger le login attendu, le résultat
   // de la comparaison ni le préfixe du hash — quiconque lit les logs
   // apprendrait l'identifiant admin.
-  console.log("Tentative login:", { reçu: username, hashConfigured });
+  console.log("Tentative login:", { hashConfigured });
 
   let passwordOk = false;
   if (usernameMatches && hashConfigured && ADMIN_PASSWORD_HASH) {
     passwordOk = await verifyBcrypt(password, ADMIN_PASSWORD_HASH);
-    console.log("Résultat bcrypt:", passwordOk);
   }
   const ok = usernameMatches && passwordOk;
 
