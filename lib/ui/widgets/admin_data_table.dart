@@ -87,7 +87,11 @@ class AdminDataTable extends StatelessWidget {
 
                     return Expanded(
                       flex: flex,
-                      child: isSortable
+                      child: Align(
+                        alignment: flex == 0
+                            ? Alignment.center
+                            : Alignment.centerLeft,
+                        child: isSortable
                           ? _SortableHeader(
                               label: c,
                               active: isActive,
@@ -104,6 +108,7 @@ class AdminDataTable extends StatelessWidget {
                                 color: mutedColor,
                               ),
                             ),
+                      ),
                     );
                   })
                   .toList(),
@@ -130,10 +135,23 @@ class AdminDataTable extends StatelessWidget {
                 ),
                 child: Row(
                   children: rows[i]
-                      .map((cell) => Expanded(
-                            flex: _flexFor(columns, cell),
+                      .asMap()
+                      .entries
+                      .map((entry) {
+                        final int idx = entry.key;
+                        final Widget cell = entry.value;
+                        final String colName = idx < columns.length ? columns[idx] : '';
+                        final int flex = _flexForColumn(colName);
+                        return Expanded(
+                          flex: flex,
+                          child: Align(
+                            alignment: flex == 0
+                                ? Alignment.center
+                                : Alignment.centerLeft,
                             child: cell,
-                          ))
+                          ),
+                        );
+                      })
                       .toList(),
                 ),
               ),
@@ -144,9 +162,12 @@ class AdminDataTable extends StatelessWidget {
     );
   }
 
-  // Les colonnes d'actions (boutons) prennent une largeur fixe.
-  int _flexFor(List<String> columns, Widget cell) {
-    // Heuristique : les cellules contenant des boutons restent compactes.
+  /// Flex adaptatif selon le nom de la colonne (même logique que les en-têtes).
+  int _flexForColumn(String colName) {
+    if (colName.isEmpty || colName == 'Actions') return 0;
+    if (colName == 'Premium' || colName == 'Checked' ||
+        colName == 'Langue' || colName == 'Total' ||
+        colName == 'Rejets' || colName == '% Rejets') return 0;
     return 1;
   }
 }
