@@ -33,16 +33,18 @@
   <!-- Referrer-Policy : ne leak pas l'URL admin dans les referers. -->
   <!-- ============================================================ -->
 
-  <!-- Content-Security-Policy : self + Supabase uniquement. -->
-  <!-- Flutter Web compile en WASM et utilise eval() : 'unsafe-eval' + -->
-  <!-- 'wasm-unsafe-eval' sont requis pour que le moteur Dart tourne. -->
+  <!-- Content-Security-Policy : self + Supabase + Flutter CDN. -->
+  <!-- Flutter Web a besoin de :                                   -->
+  <!--   - gstatic.com : CanvasKit (moteur de rendu WASM) + fonts  -->
+  <!--   - unsafe-eval + wasm-unsafe-eval : moteur Dart            -->
+  <!--   - worker blob: : workers Flutter                          -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self';
-                 script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval';
+                 script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://www.gstatic.com;
                  style-src 'self' 'unsafe-inline';
                  img-src 'self' data: https:;
-                 font-src 'self' data:;
-                 connect-src 'self' https://odqbazwyjdpppbameype.supabase.co;
+                 font-src 'self' data: https://fonts.gstatic.com;
+                 connect-src 'self' https://odqbazwyjdpppbameype.supabase.co https://www.gstatic.com;
                  object-src 'none';
                  base-uri 'self';
                  frame-ancestors 'none';
