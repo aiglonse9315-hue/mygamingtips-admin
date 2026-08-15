@@ -688,7 +688,15 @@ class StoreController extends ChangeNotifier {
   /// n'existe pas dans le catalogue, il est créé automatiquement** puis le
   /// contenu y est rattaché. La suggestion est ensuite retirée de la liste
   /// Sentinelle.
-  Future<void> acceptOneClick(Suggestion suggestion) async {
+  ///
+  /// [gameOverride] : nom du jeu choisi par l'admin dans la colonne « Jeu IA »
+  /// (section 99% sûr). S'il est fourni et non vide, il remplace le jeu proposé
+  /// par l'IA : le jeu est recherché dans le catalogue (et créé s'il n'existe
+  /// pas), puis la suggestion lui est rattachée.
+  Future<void> acceptOneClick(
+    Suggestion suggestion, {
+    String? gameOverride,
+  }) async {
     final ai = suggestion.aiRecommendation;
     if (ai == null) {
       lastActionError = 'Pas d\'analyse IA pour cette suggestion.';
@@ -700,10 +708,15 @@ class StoreController extends ChangeNotifier {
     final category = _categoryFromAi(ai.suggestedCategory, suggestion.url);
 
     // Détermine le jeu cible :
+    // 0. Si l'admin a choisi un jeu dans la colonne « Jeu IA », c'est lui qui
+    //    prime (sinon on utilise le jeu proposé par l'IA).
     // 1. Cherche un jeu existant dont le nom correspond exactement.
     // 2. Sinon, cherche un jeu dont le nom contient la suggestion (ex: "fortnite" dans "Fortnite Battle Royale").
     // 3. Sinon, CRÉE le jeu automatiquement depuis la suggestion IA.
-    final suggestedName = ai.suggestedGame;
+    final override = gameOverride?.trim();
+    final suggestedName = (override != null && override.isNotEmpty)
+        ? override
+        : ai.suggestedGame;
     Game? targetGame;
 
     if (suggestedName != null && suggestedName.trim().isNotEmpty) {

@@ -34,6 +34,19 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   /// IDs des suggestions sélectionnées (section Jeux à créer).
   final Set<String> _gtcSelected = <String>{};
 
+  /// Jeux modifiés par l'admin dans la colonne « Jeu IA » (section 99% sûr).
+  /// Key = ID de suggestion, value = nom du jeu choisi dans le dropdown.
+  /// Absent de la map = l'admin n'a pas changé le jeu proposé par l'IA
+  /// (comportement historique conservé).
+  final Map<String, String> _editedGames = <String, String>{};
+
+  /// Enregistre le jeu choisi par l'admin pour une suggestion « 99% sûr ».
+  void _setEditedGame(String suggestionId, String game) {
+    setState(() {
+      _editedGames[suggestionId] = game;
+    });
+  }
+
   void _toggleGtcSelect(String id) {
     setState(() {
       if (_gtcSelected.contains(id)) {
@@ -110,20 +123,30 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   }
 
   /// Valide toutes les suggestions "99% sûr" en une fois.
+  ///
+  /// Chaque suggestion est rattachée au jeu sélectionné dans la colonne
+  /// « Jeu IA » (jeu édité par l'admin s'il y en a un, sinon celui de l'IA).
   Future<void> _validateAll(List<Suggestion> trusted) async {
     final store = context.read<StoreController>();
     for (final s in trusted) {
-      await store.acceptOneClick(s);
+      await store.acceptOneClick(s, gameOverride: _editedGames[s.id]);
     }
-    setState(() => _selected.clear());
+    setState(() {
+      _selected.clear();
+      _editedGames.clear();
+    });
   }
 
   /// Valide uniquement les suggestions sélectionnées.
+  ///
+  /// Comme [_validateAll], chaque suggestion utilise le jeu choisi par l'admin
+  /// dans la colonne « Jeu IA » s'il a été modifié.
   Future<void> _validateSelected(List<Suggestion> trusted) async {
     final store = context.read<StoreController>();
     final selected = trusted.where((s) => _selected.contains(s.id)).toList();
     for (final s in selected) {
-      await store.acceptOneClick(s);
+      await store.acceptOneClick(s, gameOverride: _editedGames[s.id]);
+      _editedGames.remove(s.id);
     }
     setState(() => _selected.clear());
   }
@@ -254,8 +277,10 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                           title: 'Valider ${_selected.length} suggestion(s) ?',
                           message:
                               'Les ${_selected.length} suggestion(s) sélectionnée(s) '
-                              'seront implémentées automatiquement avec le jeu et '
-                              'la catégorie suggérés par l\'IA.',
+                              'seront implémentées automatiquement avec le jeu '
+                              'choisi dans la colonne « Jeu IA » (ou celui '
+                              'suggéré par l\'IA) et la catégorie suggérée '
+                              'par l\'IA.',
                           confirmLabel: 'Valider la sélection',
                           onConfirm: () => _validateSelected(trusted),
                         ),
@@ -280,8 +305,9 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                           'Valider toutes les suggestions (${trusted.length}) ?',
                       message:
                           'Les ${trusted.length} suggestions "99% sûr" seront '
-                          'implémentées automatiquement avec le jeu et la '
-                          'catégorie suggérés par l\'IA.',
+                          'implémentées automatiquement avec le jeu choisi '
+                          'dans la colonne « Jeu IA » (ou celui suggéré par '
+                          'l\'IA) et la catégorie suggérée par l\'IA.',
                       confirmLabel: 'Tout valider',
                       onConfirm: () => _validateAll(trusted),
                     ),
@@ -308,6 +334,8 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                 selectedIds: _selected,
                 onToggle: _toggleSelect,
                 onSelectAll: () => _selectAll(trusted),
+                editedGames: _editedGames,
+                onGameChanged: _setEditedGame,
               ),
             ),
 
@@ -685,12 +713,24 @@ class _TrustedTable extends StatefulWidget {
     required this.selectedIds,
     required this.onToggle,
     required this.onSelectAll,
+    required this.editedGames,
+    required this.onGameChanged,
   });
 
   final List<Suggestion> suggestions;
   final Set<String> selectedIds;
   final ValueChanged<String> onToggle;
   final VoidCallback onSelectAll;
+
+  /// Jeux modifiés par l'admin dans la colonne « Jeu IA »
+  /// (key = suggestion ID, value = nom du jeu). Voir [_editedGames] dans
+  /// [_SentinelleScreenState], qui reste la source de vérité pour que les
+  /// boutons « 1 clic », « Valider sélection » et « Tout valider » voient
+  /// les mêmes valeurs.
+  final Map<String, String> editedGames;
+
+  /// Callback appelé quand l'admin change le jeu d'une suggestion.
+  final void Function(String suggestionId, String game) onGameChanged;
 
   @override
   State<_TrustedTable> createState() => _TrustedTableState();
@@ -811,9 +851,88 @@ class _TrustedTableState extends State<_TrustedTable> {
     );
   }
 
+  /// Cellule « Jeu IA (modifiable) » : dropdown compact listant tous les jeux
+  /// du catalogue, présélectionné sur la proposition de l'IA (ou sur le choix
+  /// précédent de l'admin). Le jeu sélectionné est remonté via
+  /// [widget.onGameChanged] puis utilisé à la validation.
+  ///
+  /// Si le jeu proposé par l'IA n'existe pas encore dans le catalogue, il est
+  /// proposé en tête de liste avec le suffixe « — création » : à défaut de
+  /// modification, le comportement historique de
+  /// [StoreController.acceptOneClick] (création automatique du jeu) est
+  /// conservé.
+  Widget _buildGameSelector(
+    BuildContext context,
+    Suggestion s,
+    List<String> catalogGameNames,
+  ) {
+    final ai = s.aiRecommendation!;
+    final edited = widget.editedGames[s.id];
+    final current = (edited != null && edited.trim().isNotEmpty)
+        ? edited.trim()
+        : ai.suggestedGame?.trim();
+    final hasGame = current != null && current.isNotEmpty;
+    final inCatalog = hasGame && catalogGameNames.contains(current);
+    final muted = Theme.of(context).textTheme.bodySmall?.color;
+
+    return Tooltip(
+      message: hasGame
+          ? 'Jeu cible : « $current » — modifiable avant validation. S\'il '
+                'n\'existe pas encore, il sera créé automatiquement.'
+          : 'Aucun jeu identifié par l\'IA — choisis un jeu du catalogue '
+                'avant de valider.',
+      showDuration: const Duration(seconds: 6),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: hasGame ? current : null,
+          hint: Text('—', style: TextStyle(fontSize: 12, color: muted)),
+          isExpanded: true,
+          isDense: true,
+          iconSize: 16,
+          borderRadius: BorderRadius.circular(8),
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: edited != null ? FontWeight.w700 : FontWeight.w500,
+            color: edited != null ? AppColors.neonCyan : muted,
+          ),
+          items: [
+            if (hasGame && !inCatalog)
+              DropdownMenuItem<String>(
+                value: current,
+                child: Text(
+                  '$current — création',
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ...catalogGameNames.map(
+              (name) => DropdownMenuItem<String>(
+                value: name,
+                child: Text(
+                  name,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ),
+          ],
+          onChanged: (newGame) {
+            if (newGame == null) return;
+            widget.onGameChanged(s.id, newGame);
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
+    // Noms de jeux du catalogue, dédupliqués et triés alphabétiquement
+    // (DropdownButton exige des valeurs uniques ; le tri aide l'admin à
+    // retrouver un jeu).
+    final catalogGameNames = store.games.map((g) => g.name).toSet().toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     // On ne construit que les lignes de la page courante (100 max) pour éviter
     // de matérialiser toute la liste et ralentir l'interface admin.
     final pageItems = _paged;
@@ -828,7 +947,7 @@ class _TrustedTableState extends State<_TrustedTable> {
             '☐',
             'Titre',
             'Titre pour insertion',
-            'Jeu IA',
+            'Jeu IA (modifiable)',
             'Catégorie',
             'Confiance',
             'Vues',
@@ -842,7 +961,7 @@ class _TrustedTableState extends State<_TrustedTable> {
             '☐',
             'Titre',
             'Titre pour insertion',
-            'Jeu IA',
+            'Jeu IA (modifiable)',
             'Catégorie',
             'Actions',
           ],
@@ -898,13 +1017,12 @@ class _TrustedTableState extends State<_TrustedTable> {
                   ),
                 ),
               ),
-              Text(
-                ai.suggestedGame ?? '—',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Theme.of(context).textTheme.bodySmall?.color,
-                ),
-              ),
+              // Jeu IA : dropdown présélectionné sur la proposition de l'IA.
+              // L'admin peut changer le jeu avant de valider — la sélection
+              // est mémorisée dans [_SentinelleScreenState._editedGames] et
+              // utilisée par « 1 clic » / « Valider sélection » / « Tout
+              // valider » (voir [StoreController.acceptOneClick]).
+              _buildGameSelector(context, s, catalogGameNames),
               StatusBadge(
                 label: ai.suggestedCategory ?? '—',
                 color: AppColors.neonCyan,
@@ -938,7 +1056,10 @@ class _TrustedTableState extends State<_TrustedTable> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   FilledButton.icon(
-                    onPressed: () => store.acceptOneClick(s),
+                    onPressed: () => store.acceptOneClick(
+                      s,
+                      gameOverride: widget.editedGames[s.id],
+                    ),
                     icon: const Icon(Icons.bolt_rounded, size: 16),
                     label: const Text('1 clic'),
                     style: FilledButton.styleFrom(
