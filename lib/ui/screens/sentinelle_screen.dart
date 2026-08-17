@@ -110,6 +110,43 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     });
   }
 
+  /// Débloque les suggestions stuck en "Analyse en cours" (> 10 min sans
+  /// verdict — bot crashé/arrêté en pleine analyse). Elles redeviennent
+  /// "nouvelles" dans le menu Suggestions et seront reprises par le bot.
+  Future<void> _unlockStuck(BuildContext context, StoreController store) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Débloquer les analyses'),
+        content: const Text(
+          'Les suggestions en "Analyse en cours" depuis plus de 10 minutes '
+          'sans verdict seront réinitialisées. Elles reviendront dans le menu '
+          'Suggestions et seront reprises par le prochain cycle du bot.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Annuler'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Débloquer'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final unlocked = await store.unlockStuckSuggestions();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(unlocked > 0
+            ? '✅ $unlocked suggestion(s) débloquée(s)'
+            : 'Aucune suggestion bloquée à débloquer.'),
+      ),
+    );
+  }
+
   /// Rejette toutes les suggestions "À vérifier" (ou seulement les sélectionnées).
   Future<void> _rejectAllToVerify(List<Suggestion> toVerify) async {
     final store = context.read<StoreController>();
@@ -206,11 +243,28 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
           const SizedBox(height: 24),
 
           // Section 0 : Analyse en cours (Sentinelle travaille)
-          _SectionHeader(
-            icon: Icons.hourglass_top_rounded,
-            color: AppColors.neonCyan,
-            title: 'Analyse en cours',
-            count: analyzing.length,
+          Row(
+            children: [
+              _SectionHeader(
+                icon: Icons.hourglass_top_rounded,
+                color: AppColors.neonCyan,
+                title: 'Analyse en cours',
+                count: analyzing.length,
+              ),
+              const Spacer(),
+              // Bouton "Débloquer" : reset les suggestions stuck (> 10 min
+              // sans verdict). Elles redeviennent "nouvelles" dans Suggestions.
+              if (analyzing.isNotEmpty)
+                OutlinedButton.icon(
+                  onPressed: () => _unlockStuck(context, store),
+                  icon: const Icon(Icons.lock_open_rounded, size: 16),
+                  label: const Text('Débloquer les analyses bloquées'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.neonCyan,
+                    side: const BorderSide(color: AppColors.neonCyan),
+                  ),
+                ),
+            ],
           ),
           const SizedBox(height: 12),
           if (analyzing.isEmpty)

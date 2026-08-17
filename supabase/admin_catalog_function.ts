@@ -608,6 +608,56 @@ serve(async (req) => {
       return await jsonWithFreshToken({ ok: true });
     }
 
+    if (route === "suggestions/unlock-stuck") {
+      // SOLUTION 1 : Débloque les suggestions stuck en "Analyse en cours".
+      // Une suggestion est "stuck" si sentinelle_started_at est posé depuis
+      // plus de [timeoutMinutes] (défaut 10 min) sans ai_recommendation.
+      // Cela arrive si le bot crash/stop entre markAnalyzing et le verdict.
+      // Reset sentinelle_started_at = NULL → la suggestion redevient "nouvelle"
+      // et sera reprise par le prochain cycle (mode pending-no-ai).
+      const timeoutMinutes =
+        typeof body.timeout_minutes === "number" && body.timeout_minutes > 0
+          ? body.timeout_minutes
+          : 10;
+      const cutoff = new Date(
+        Date.now() - timeoutMinutes * 60 * 1000
+      ).toISOString();
+      const { data, error } = await supabase
+        .from("suggestions")
+        .update({ sentinelle_started_at: null })
+        .not("sentinelle_started_at", "is", null)
+        .is("ai_recommendation", null)
+        .eq("status", "pending")
+        .lt("sentinelle_started_at", cutoff)
+        .select("id");
+      if (error) return safeError(error, 400, "Déblocage échoué");
+      return await jsonWithFreshToken({
+        ok: true,
+        unlocked: data?.length ?? 0,
+        ids: data?.map((r: { id: string }) => r.id) ?? [],
+      });
+    }
+
+    if (route === "suggestions/analyzing-count") {
+      // SOLUTION 2 : Compte les suggestions actuellement en "Analyse en cours"
+      // (pour afficher un badge/alerte dans l'admin si des stuck sont détectés).
+      const stuckCount =
+        typeof body.stuck_only === "boolean" ? body.stuck_only : false;
+      let query = supabase
+        .from("suggestions")
+        .select("id", { count: "exact", head: true })
+        .not("sentinelle_started_at", "is", null)
+        .is("ai_recommendation", null)
+        .eq("status", "pending");
+      if (stuckCount) {
+        const cutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+        query = query.lt("sentinelle_started_at", cutoff);
+      }
+      const { count, error } = await query;
+      if (error) return safeError(error, 400, "Comptage échoué");
+      return await jsonWithFreshToken({ count: count ?? 0 });
+    }
+
     // ======================================================================
     // PROFILS — ban / unban
     // ======================================================================

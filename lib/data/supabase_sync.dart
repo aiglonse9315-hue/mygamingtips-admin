@@ -536,6 +536,23 @@ class SupabaseSync {
     await _post('suggestions/reject', {'id': suggestionId});
   }
 
+  /// Débloque les suggestions stuck en "Analyse en cours" depuis > 10 min.
+  /// Retourne le nombre de suggestions débloquées.
+  Future<int> unlockStuckSuggestions({int timeoutMinutes = 10}) async {
+    final data = await _post('suggestions/unlock-stuck', {
+      'timeout_minutes': timeoutMinutes,
+    });
+    return (data['unlocked'] as int?) ?? 0;
+  }
+
+  /// Compte les suggestions en "Analyse en cours" (optionnel : stuck seulement).
+  Future<int> fetchAnalyzingCount({bool stuckOnly = false}) async {
+    final data = await _post('suggestions/analyzing-count', {
+      'stuck_only': stuckOnly,
+    });
+    return (data['count'] as int?) ?? 0;
+  }
+
   Future<void> banUser(String userId, {String? reason}) async {
     await _post('profiles/ban', {'user_id': userId, 'reason': reason});
   }

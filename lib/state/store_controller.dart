@@ -862,6 +862,27 @@ class StoreController extends ChangeNotifier {
     }
   }
 
+  /// Débloque les suggestions stuck en "Analyse en cours" (> 10 min sans verdict).
+  /// Les suggestions redeviennent "nouvelles" et seront reprises par le bot.
+  Future<int> unlockStuckSuggestions() async {
+    if (sync == null) return 0;
+    try {
+      final unlocked = await sync!.unlockStuckSuggestions();
+      if (unlocked > 0) {
+        await syncFromSupabase();
+      }
+      return unlocked;
+    } catch (e) {
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return 0;
+      }
+      lastActionError = 'Déblocage échoué : $e';
+      notifyListeners();
+      return 0;
+    }
+  }
+
   Future<void> rejectSentinelle(Suggestion suggestion) async {
     // Retire la suggestion de la liste Sentinelle (optimiste).
     _sentinelleSuggestions = _sentinelleSuggestions
