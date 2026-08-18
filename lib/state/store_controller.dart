@@ -684,7 +684,9 @@ class StoreController extends ChangeNotifier {
 
   /// Implémente une suggestion Sentinelle en 1 clic.
   ///
-  /// Utilise le jeu et la catégorie suggérés par l'IA. **Si le jeu suggéré
+  /// Utilise le jeu et la catégorie suggérés par l'IA, sauf si l'admin les a
+  /// modifiés dans les colonnes « Jeu IA » / « Catégorie »
+  /// ([gameOverride] / [categoryOverride]). **Si le jeu suggéré
   /// n'existe pas dans le catalogue, il est créé automatiquement** puis le
   /// contenu y est rattaché. La suggestion est ensuite retirée de la liste
   /// Sentinelle.
@@ -693,9 +695,14 @@ class StoreController extends ChangeNotifier {
   /// (section 99% sûr). S'il est fourni et non vide, il remplace le jeu proposé
   /// par l'IA : le jeu est recherché dans le catalogue (et créé s'il n'existe
   /// pas), puis la suggestion lui est rattachée.
+  ///
+  /// [categoryOverride] : catégorie choisie par l'admin dans la colonne
+  /// « Catégorie » (section 99% sûr) — 'video', 'guides' ou 'links'. Si elle
+  /// est fournie et non vide, elle prime sur la catégorie suggérée par l'IA.
   Future<void> acceptOneClick(
     Suggestion suggestion, {
     String? gameOverride,
+    String? categoryOverride,
   }) async {
     final ai = suggestion.aiRecommendation;
     if (ai == null) {
@@ -704,8 +711,14 @@ class StoreController extends ChangeNotifier {
       return;
     }
 
-    // Détermine la catégorie depuis la suggestion IA.
-    final category = _categoryFromAi(ai.suggestedCategory, suggestion.url);
+    // Détermine la catégorie : le choix de l'admin (colonne « Catégorie »)
+    // prime sur la suggestion IA. [_categoryFromAi] mappe 'video'/'guides'/
+    // 'links' vers l'enum et conserve son fallback URL pour toute autre
+    // valeur.
+    final categoryChoice = categoryOverride?.trim();
+    final category = (categoryChoice != null && categoryChoice.isNotEmpty)
+        ? _categoryFromAi(categoryChoice, suggestion.url)
+        : _categoryFromAi(ai.suggestedCategory, suggestion.url);
 
     // Détermine le jeu cible :
     // 0. Si l'admin a choisi un jeu dans la colonne « Jeu IA », c'est lui qui

@@ -47,6 +47,21 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     });
   }
 
+  /// Catégories modifiées par l'admin dans la colonne « Catégorie »
+  /// (section 99% sûr).
+  /// Key = ID de suggestion, value = catégorie choisie dans le dropdown
+  /// ('video' | 'guides' | 'links'). Absent de la map = l'admin n'a pas
+  /// changé la présélection intelligente (voir [_smartCategoryFor]).
+  final Map<String, String> _editedCategories = <String, String>{};
+
+  /// Enregistre la catégorie choisie par l'admin pour une suggestion
+  /// « 99% sûr ».
+  void _setEditedCategory(String suggestionId, String category) {
+    setState(() {
+      _editedCategories[suggestionId] = category;
+    });
+  }
+
   void _toggleGtcSelect(String id) {
     setState(() {
       if (_gtcSelected.contains(id)) {
@@ -140,9 +155,11 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(unlocked > 0
-            ? '✅ $unlocked suggestion(s) débloquée(s)'
-            : 'Aucune suggestion bloquée à débloquer.'),
+        content: Text(
+          unlocked > 0
+              ? '✅ $unlocked suggestion(s) débloquée(s)'
+              : 'Aucune suggestion bloquée à débloquer.',
+        ),
       ),
     );
   }
@@ -162,28 +179,42 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   /// Valide toutes les suggestions "99% sûr" en une fois.
   ///
   /// Chaque suggestion est rattachée au jeu sélectionné dans la colonne
-  /// « Jeu IA » (jeu édité par l'admin s'il y en a un, sinon celui de l'IA).
+  /// « Jeu IA » (jeu édité par l'admin s'il y en a un, sinon celui de l'IA)
+  /// et à la catégorie effective de la colonne « Catégorie » (choix de
+  /// l'admin s'il y en a un, sinon la présélection intelligente, voir
+  /// [_smartCategoryFor]).
   Future<void> _validateAll(List<Suggestion> trusted) async {
     final store = context.read<StoreController>();
     for (final s in trusted) {
-      await store.acceptOneClick(s, gameOverride: _editedGames[s.id]);
+      await store.acceptOneClick(
+        s,
+        gameOverride: _editedGames[s.id],
+        categoryOverride: _smartCategoryFor(s, _editedCategories[s.id]),
+      );
     }
     setState(() {
       _selected.clear();
       _editedGames.clear();
+      _editedCategories.clear();
     });
   }
 
   /// Valide uniquement les suggestions sélectionnées.
   ///
   /// Comme [_validateAll], chaque suggestion utilise le jeu choisi par l'admin
-  /// dans la colonne « Jeu IA » s'il a été modifié.
+  /// dans la colonne « Jeu IA » et la catégorie de la colonne « Catégorie »
+  /// s'ils ont été modifiés.
   Future<void> _validateSelected(List<Suggestion> trusted) async {
     final store = context.read<StoreController>();
     final selected = trusted.where((s) => _selected.contains(s.id)).toList();
     for (final s in selected) {
-      await store.acceptOneClick(s, gameOverride: _editedGames[s.id]);
+      await store.acceptOneClick(
+        s,
+        gameOverride: _editedGames[s.id],
+        categoryOverride: _smartCategoryFor(s, _editedCategories[s.id]),
+      );
       _editedGames.remove(s.id);
+      _editedCategories.remove(s.id);
     }
     setState(() => _selected.clear());
   }
@@ -332,9 +363,9 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                           message:
                               'Les ${_selected.length} suggestion(s) sélectionnée(s) '
                               'seront implémentées automatiquement avec le jeu '
-                              'choisi dans la colonne « Jeu IA » (ou celui '
-                              'suggéré par l\'IA) et la catégorie suggérée '
-                              'par l\'IA.',
+                              'choisi dans la colonne « Jeu IA » et la catégorie '
+                              'choisie dans la colonne « Catégorie » (ou leurs '
+                              'valeurs intelligentes par défaut).',
                           confirmLabel: 'Valider la sélection',
                           onConfirm: () => _validateSelected(trusted),
                         ),
@@ -360,8 +391,9 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                       message:
                           'Les ${trusted.length} suggestions "99% sûr" seront '
                           'implémentées automatiquement avec le jeu choisi '
-                          'dans la colonne « Jeu IA » (ou celui suggéré par '
-                          'l\'IA) et la catégorie suggérée par l\'IA.',
+                          'dans la colonne « Jeu IA » et la catégorie choisie '
+                          'dans la colonne « Catégorie » (ou leurs valeurs '
+                          'intelligentes par défaut).',
                       confirmLabel: 'Tout valider',
                       onConfirm: () => _validateAll(trusted),
                     ),
@@ -390,6 +422,8 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                 onSelectAll: () => _selectAll(trusted),
                 editedGames: _editedGames,
                 onGameChanged: _setEditedGame,
+                editedCategories: _editedCategories,
+                onCategoryChanged: _setEditedCategory,
               ),
             ),
 
@@ -769,6 +803,8 @@ class _TrustedTable extends StatefulWidget {
     required this.onSelectAll,
     required this.editedGames,
     required this.onGameChanged,
+    required this.editedCategories,
+    required this.onCategoryChanged,
   });
 
   final List<Suggestion> suggestions;
@@ -785,6 +821,16 @@ class _TrustedTable extends StatefulWidget {
 
   /// Callback appelé quand l'admin change le jeu d'une suggestion.
   final void Function(String suggestionId, String game) onGameChanged;
+
+  /// Catégories modifiées par l'admin dans la colonne « Catégorie »
+  /// (key = suggestion ID, value = 'video' | 'guides' | 'links'). Voir
+  /// [_editedCategories] dans [_SentinelleScreenState], qui reste la source
+  /// de vérité pour que « 1 clic », « Valider sélection » et « Tout valider »
+  /// voient les mêmes valeurs.
+  final Map<String, String> editedCategories;
+
+  /// Callback appelé quand l'admin change la catégorie d'une suggestion.
+  final void Function(String suggestionId, String category) onCategoryChanged;
 
   @override
   State<_TrustedTable> createState() => _TrustedTableState();
@@ -979,6 +1025,57 @@ class _TrustedTableState extends State<_TrustedTable> {
     );
   }
 
+  /// Cellule « Catégorie (modifiable) » : dropdown compact avec les 3
+  /// catégories du catalogue (video / guides / links), présélectionné via
+  /// [_smartCategoryFor] (choix de l'admin s'il y en a un, sinon logique
+  /// URL : YouTube → video, page web → links). La catégorie choisie est
+  /// remontée via [widget.onCategoryChanged] puis utilisée à la validation
+  /// ([StoreController.acceptOneClick], paramètre `categoryOverride`).
+  Widget _buildCategorySelector(BuildContext context, Suggestion s) {
+    const options = <String>['video', 'guides', 'links'];
+    final edited = widget.editedCategories[s.id];
+    final current = _smartCategoryFor(s, edited);
+    final muted = Theme.of(context).textTheme.bodySmall?.color;
+
+    return Tooltip(
+      message:
+          'Catégorie d\'insertion : « $current » — modifiable avant '
+          'validation. Présélection intelligente : YouTube → video, page '
+          'web → links.',
+      showDuration: const Duration(seconds: 6),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: current,
+          isExpanded: true,
+          isDense: true,
+          iconSize: 16,
+          borderRadius: BorderRadius.circular(8),
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: edited != null ? FontWeight.w700 : FontWeight.w500,
+            color: edited != null ? AppColors.neonCyan : muted,
+          ),
+          items: options
+              .map(
+                (category) => DropdownMenuItem<String>(
+                  value: category,
+                  child: Text(
+                    category,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+              )
+              .toList(),
+          onChanged: (newCategory) {
+            if (newCategory == null) return;
+            widget.onCategoryChanged(s.id, newCategory);
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
@@ -1002,7 +1099,7 @@ class _TrustedTableState extends State<_TrustedTable> {
             'Titre',
             'Titre pour insertion',
             'Jeu IA (modifiable)',
-            'Catégorie',
+            'Catégorie (modifiable)',
             'Confiance',
             'Vues',
             'Actions',
@@ -1016,7 +1113,7 @@ class _TrustedTableState extends State<_TrustedTable> {
             'Titre',
             'Titre pour insertion',
             'Jeu IA (modifiable)',
-            'Catégorie',
+            'Catégorie (modifiable)',
             'Actions',
           ],
           rows: pageItems.map((s) {
@@ -1077,10 +1174,13 @@ class _TrustedTableState extends State<_TrustedTable> {
               // utilisée par « 1 clic » / « Valider sélection » / « Tout
               // valider » (voir [StoreController.acceptOneClick]).
               _buildGameSelector(context, s, catalogGameNames),
-              StatusBadge(
-                label: ai.suggestedCategory ?? '—',
-                color: AppColors.neonCyan,
-              ),
+              // Catégorie : dropdown présélectionné intelligemment (YouTube →
+              // video, page web → links, choix de l'admin prioritaire). Corrige
+              // les erreurs de l'IA avant validation — la sélection est
+              // mémorisée dans [_SentinelleScreenState._editedCategories] et
+              // utilisée par « 1 clic » / « Valider sélection » / « Tout
+              // valider » (voir [StoreController.acceptOneClick]).
+              _buildCategorySelector(context, s),
               Row(
                 children: [
                   const Icon(
@@ -1113,6 +1213,10 @@ class _TrustedTableState extends State<_TrustedTable> {
                     onPressed: () => store.acceptOneClick(
                       s,
                       gameOverride: widget.editedGames[s.id],
+                      categoryOverride: _smartCategoryFor(
+                        s,
+                        widget.editedCategories[s.id],
+                      ),
                     ),
                     icon: const Icon(Icons.bolt_rounded, size: 16),
                     label: const Text('1 clic'),
@@ -1533,6 +1637,34 @@ String _cleanTitle(Suggestion s) {
     return cleaned.isEmpty ? shared : cleaned;
   }
   return s.url;
+}
+
+/// Catégorie effective d'insertion pour une suggestion « 99% sûr ».
+///
+/// Priorité :
+/// 1. Catégorie explicitement choisie par l'admin dans la colonne
+///    « Catégorie » ([editedCategory], voir
+///    [_SentinelleScreenState._editedCategories]) si elle est valide.
+/// 2. Présélection intelligente fondée sur l'URL, qui corrige les erreurs
+///    fréquentes de l'IA :
+///    - URL YouTube → 'video' (une vidéo YouTube est toujours une vidéo,
+///      même si l'IA a proposé 'links') ;
+///    - page web (non-YouTube) → 'links', sauf si l'IA a proposé 'guides'
+///      (page de guide légitime, plus spécifique que 'links').
+///
+/// ⚠️ Cette fonction est utilisée À LA FOIS pour la valeur affichée dans le
+/// dropdown et pour le `categoryOverride` passé à
+/// [StoreController.acceptOneClick] : la catégorie vue par l'admin est
+/// exactement celle qui sera insérée, même sans modification manuelle.
+String _smartCategoryFor(Suggestion s, [String? editedCategory]) {
+  const options = <String>['video', 'guides', 'links'];
+  if (editedCategory != null && options.contains(editedCategory)) {
+    return editedCategory;
+  }
+  final url = s.url.toLowerCase();
+  if (url.contains('youtube') || url.contains('youtu.be')) return 'video';
+  final suggested = s.aiRecommendation?.suggestedCategory?.trim().toLowerCase();
+  return (suggested == 'guides' || suggested == 'guide') ? 'guides' : 'links';
 }
 
 String _formatViews(int? views) {
