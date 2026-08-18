@@ -62,6 +62,32 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     });
   }
 
+  /// Noms de jeu modifiés par l'admin dans la colonne « Jeu suggéré »
+  /// (section « Jeux à créer »). Key = ID de suggestion, value = nom saisi.
+  /// Absent de la map = l'admin n'a pas retouché la proposition de l'IA.
+  final Map<String, String> _gtcEditedGames = <String, String>{};
+
+  /// Enregistre le nom de jeu saisi par l'admin pour une suggestion
+  /// « Jeux à créer ». Pas de setState : le TextField gère son propre
+  /// affichage (évite un rebuild complet de l'écran à chaque frappe).
+  void _setGtcEditedGame(String suggestionId, String game) {
+    _gtcEditedGames[suggestionId] = game;
+  }
+
+  /// Catégories modifiées par l'admin dans la colonne « Catégorie »
+  /// (section « Jeux à créer »). Key = ID de suggestion, value =
+  /// 'video' | 'guides' | 'links'. Absent de la map = présélection
+  /// intelligente (voir [_smartCategoryFor]).
+  final Map<String, String> _gtcEditedCategories = <String, String>{};
+
+  /// Enregistre la catégorie choisie par l'admin pour une suggestion
+  /// « Jeux à créer ».
+  void _setGtcEditedCategory(String suggestionId, String category) {
+    setState(() {
+      _gtcEditedCategories[suggestionId] = category;
+    });
+  }
+
   void _toggleGtcSelect(String id) {
     setState(() {
       if (_gtcSelected.contains(id)) {
@@ -598,7 +624,9 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                               'Valider ${_gtcSelected.length} suggestion(s) ?',
                           message:
                               'Les jeux seront créés automatiquement avec le '
-                              'nom suggéré par l\'IA, puis le contenu ajouté.',
+                              'nom indiqué dans la colonne « Jeu suggéré » et '
+                              'la catégorie choisie dans la colonne '
+                              '« Catégorie », puis le contenu ajouté.',
                           confirmLabel: 'Valider la sélection',
                           onConfirm: () {
                             final selected = gamesToCreate
@@ -606,8 +634,22 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                                 .toList();
                             context
                                 .read<StoreController>()
-                                .acceptAllGamesToCreate(selected);
-                            setState(() => _gtcSelected.clear());
+                                .acceptAllGamesToCreate(
+                                  selected,
+                                  gameNameOverrides: _gtcEditedGames,
+                                  categoryOverrides: {
+                                    for (final s in selected)
+                                      s.id: _smartCategoryFor(
+                                        s,
+                                        _gtcEditedCategories[s.id],
+                                      ),
+                                  },
+                                );
+                            setState(() {
+                              _gtcSelected.clear();
+                              _gtcEditedGames.clear();
+                              _gtcEditedCategories.clear();
+                            });
                           },
                         ),
                       ),
@@ -664,11 +706,29 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                           'Accepter toutes les suggestions (${gamesToCreate.length}) ?',
                       message:
                           'Tous les jeux seront créés automatiquement avec le '
-                          'nom suggéré par l\'IA, puis les contenus ajoutés.',
+                          'nom indiqué dans la colonne « Jeu suggéré » et la '
+                          'catégorie choisie dans la colonne « Catégorie », '
+                          'puis les contenus ajoutés.',
                       confirmLabel: 'Tout accepter',
-                      onConfirm: () => context
-                          .read<StoreController>()
-                          .acceptAllGamesToCreate(gamesToCreate),
+                      onConfirm: () {
+                        context
+                            .read<StoreController>()
+                            .acceptAllGamesToCreate(
+                              gamesToCreate,
+                              gameNameOverrides: _gtcEditedGames,
+                              categoryOverrides: {
+                                for (final s in gamesToCreate)
+                                  s.id: _smartCategoryFor(
+                                    s,
+                                    _gtcEditedCategories[s.id],
+                                  ),
+                              },
+                            );
+                        setState(() {
+                          _gtcEditedGames.clear();
+                          _gtcEditedCategories.clear();
+                        });
+                      },
                     ),
                   ),
                   icon: const Icon(Icons.done_all_rounded, size: 16),
@@ -715,6 +775,9 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                 suggestions: gamesToCreate,
                 selectedIds: _gtcSelected,
                 onToggle: _toggleGtcSelect,
+                editedCategories: _gtcEditedCategories,
+                onCategoryChanged: _setGtcEditedCategory,
+                onGameNameChanged: _setGtcEditedGame,
               ),
             ),
         ],
@@ -1686,16 +1749,39 @@ String _formatElapsed(Duration d) {
 /// Tableau des suggestions marquées « Jeux à créer » : le jeu n'existe pas
 /// dans la base mais la vidéo est un tuto/guide valide. L'admin crée le jeu
 /// (nom pré-rempli par l'IA, modifiable) puis le contenu est ajouté.
+///
+/// Comme dans la section « 99% sûr », le nom du jeu (champ texte) et la
+/// catégorie (dropdown) sont modifiables avant validation — les valeurs
+/// éditées sont remontées à [_SentinelleScreenState] via [onGameNameChanged]
+/// et [onCategoryChanged], puis utilisées par « Créer », « Valider
+/// sélection » et « Tout accepter » (voir
+/// [StoreController.acceptGameToCreate] et
+/// [StoreController.acceptAllGamesToCreate]).
 class _GamesToCreateTable extends StatefulWidget {
   const _GamesToCreateTable({
     required this.suggestions,
     required this.selectedIds,
     required this.onToggle,
+    required this.editedCategories,
+    required this.onCategoryChanged,
+    required this.onGameNameChanged,
   });
 
   final List<Suggestion> suggestions;
   final Set<String> selectedIds;
   final ValueChanged<String> onToggle;
+
+  /// Catégories modifiées par l'admin (key = suggestion ID, value =
+  /// 'video' | 'guides' | 'links'). Source de vérité :
+  /// [_SentinelleScreenState._gtcEditedCategories].
+  final Map<String, String> editedCategories;
+
+  /// Callback appelé quand l'admin change la catégorie d'une suggestion.
+  final void Function(String suggestionId, String category) onCategoryChanged;
+
+  /// Callback appelé à chaque frappe dans le champ « nom du jeu » — remonte
+  /// la saisie au parent pour que les validations par lot l'utilisent.
+  final void Function(String suggestionId, String gameName) onGameNameChanged;
 
   @override
   State<_GamesToCreateTable> createState() => _GamesToCreateTableState();
@@ -1742,6 +1828,57 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
     setState(() => _currentPage = page.clamp(0, _totalPages - 1));
   }
 
+  /// Cellule « Catégorie (modifiable) » : dropdown compact avec les 3
+  /// catégories du catalogue (video / guides / links), présélectionné via
+  /// [_smartCategoryFor] (choix de l'admin s'il y en a un, sinon logique
+  /// URL : YouTube → video, page web → links). Même comportement que la
+  /// section « 99% sûr » : la catégorie affichée est exactement celle qui
+  /// sera insérée à la validation.
+  Widget _buildCategorySelector(BuildContext context, Suggestion s) {
+    const options = <String>['video', 'guides', 'links'];
+    final edited = widget.editedCategories[s.id];
+    final current = _smartCategoryFor(s, edited);
+    final muted = Theme.of(context).textTheme.bodySmall?.color;
+
+    return Tooltip(
+      message:
+          'Catégorie d\'insertion : « $current » — modifiable avant '
+          'validation. Présélection intelligente : YouTube → video, page '
+          'web → links.',
+      showDuration: const Duration(seconds: 6),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: current,
+          isExpanded: true,
+          isDense: true,
+          iconSize: 16,
+          borderRadius: BorderRadius.circular(8),
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: edited != null ? FontWeight.w700 : FontWeight.w500,
+            color: edited != null ? AppColors.neonCyan : muted,
+          ),
+          items: options
+              .map(
+                (category) => DropdownMenuItem<String>(
+                  value: category,
+                  child: Text(
+                    category,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+              )
+              .toList(),
+          onChanged: (newCategory) {
+            if (newCategory == null) return;
+            widget.onCategoryChanged(s.id, newCategory);
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
@@ -1763,7 +1900,7 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
             '☐',
             'Titre',
             'Jeu suggéré (modifiable)',
-            'Catégorie',
+            'Catégorie (modifiable)',
             'Vues',
             'Actions',
           ],
@@ -1805,11 +1942,15 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
                   ),
                 ),
               ),
-              // Nom du jeu (éditable, pré-rempli par l'IA).
+              // Nom du jeu (éditable, pré-rempli par l'IA). Chaque frappe
+              // est remontée au parent pour que « Valider sélection » et
+              // « Tout accepter » utilisent le nom saisi — pas seulement le
+              // bouton « Créer » de la ligne.
               SizedBox(
                 width: 180,
                 child: TextField(
                   controller: controller,
+                  onChanged: (text) => widget.onGameNameChanged(s.id, text),
                   decoration: const InputDecoration(
                     isDense: true,
                     border: OutlineInputBorder(),
@@ -1822,11 +1963,9 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
                   style: const TextStyle(fontSize: 12),
                 ),
               ),
-              // Catégorie.
-              StatusBadge(
-                label: ai?.suggestedCategory ?? 'video',
-                color: AppColors.neonCyan,
-              ),
+              // Catégorie : dropdown présélectionné intelligemment (YouTube →
+              // video, page web → links), choix de l'admin prioritaire.
+              _buildCategorySelector(context, s),
               // Vues.
               Text(
                 _formatViews(ai?.youtubeViews),
@@ -1840,8 +1979,14 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   FilledButton.icon(
-                    onPressed: () =>
-                        store.acceptGameToCreate(s, controller.text),
+                    onPressed: () => store.acceptGameToCreate(
+                      s,
+                      controller.text,
+                      categoryOverride: _smartCategoryFor(
+                        s,
+                        widget.editedCategories[s.id],
+                      ),
+                    ),
                     icon: const Icon(Icons.add_circle_rounded, size: 16),
                     label: const Text('Créer'),
                     style: FilledButton.styleFrom(

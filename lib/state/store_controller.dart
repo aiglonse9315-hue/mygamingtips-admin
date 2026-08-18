@@ -923,10 +923,16 @@ class StoreController extends ChangeNotifier {
   /// Crée un nouveau jeu puis ajoute le contenu depuis une suggestion
   /// « Jeux à créer ». Le [gameName] est le nom saisi par l'admin (pré-rempli
   /// avec le suggestedGame de l'IA).
+  ///
+  /// [categoryOverride] : catégorie explicitement choisie par l'admin dans le
+  /// tableau « Jeux à créer » ('video' | 'guides' | 'links'). Prioritaire sur
+  /// la proposition de l'IA — la catégorie affichée dans le dropdown est
+  /// exactement celle qui sera insérée.
   Future<void> acceptGameToCreate(
     Suggestion suggestion,
-    String gameName,
-  ) async {
+    String gameName, {
+    String? categoryOverride,
+  }) async {
     final trimmed = gameName.trim();
     if (trimmed.isEmpty) {
       lastActionError = 'Le nom du jeu est requis.';
@@ -942,33 +948,49 @@ class StoreController extends ChangeNotifier {
 
     if (sync == null || !_isUuid(suggestion.id)) return;
 
-    // 1. Crée le jeu (addGame crée + resync l'UUID réel).
-    await addGame(name: trimmed);
-
-    // 2. Trouve le jeu fraîchement créé.
+    // 1. Si le jeu existe déjà dans le catalogue (l'admin a saisi le nom
+    // d'un jeu existant), on l'utilise directement — pas de doublon ni de
+    // création inutile.
     Game? targetGame;
-    try {
-      targetGame = _games.firstWhere(
-        (g) => g.name.toLowerCase() == trimmed.toLowerCase(),
-      );
-    } catch (_) {
-      lastActionError = 'Création du jeu échouée.';
-      _gamesToCreate = [..._gamesToCreate, suggestion];
-      notifyListeners();
-      return;
+    for (final g in _games) {
+      if (g.name.toLowerCase() == trimmed.toLowerCase()) {
+        targetGame = g;
+        break;
+      }
     }
 
-    // 3. Accepte la suggestion (crée le contenu + marque accepted).
+    // 2. Sinon, crée le jeu (addGame crée + resync l'UUID réel), puis
+    // retrouve le jeu fraîchement créé.
+    if (targetGame == null) {
+      await addGame(name: trimmed);
+      try {
+        targetGame = _games.firstWhere(
+          (g) => g.name.toLowerCase() == trimmed.toLowerCase(),
+        );
+      } catch (_) {
+        lastActionError = 'Création du jeu échouée.';
+        _gamesToCreate = [..._gamesToCreate, suggestion];
+        notifyListeners();
+        return;
+      }
+    }
+
+    // 3. Catégorie effective : choix de l'admin (dropdown) prioritaire sur
+    // la proposition de l'IA.
     final ai = suggestion.aiRecommendation;
+    final effectiveCategory = _categoryFromAi(
+      categoryOverride ?? ai?.suggestedCategory,
+      suggestion.url,
+    );
+
+    // 4. Accepte la suggestion (crée le contenu + marque accepted).
     try {
       await sync!.acceptSuggestion(
         suggestionId: suggestion.id,
         gameId: targetGame.id,
-        category: _categoryFromAi(ai?.suggestedCategory, suggestion.url),
+        category: effectiveCategory,
         titleAdmin: _titleForInsertion(suggestion),
-        isVideo:
-            _categoryFromAi(ai?.suggestedCategory, suggestion.url) ==
-            ContentCategory.video,
+        isVideo: effectiveCategory == ContentCategory.video,
         publishedAt: _dateForInsertion(suggestion),
       );
       await syncFromSupabase();
@@ -1024,11 +1046,27 @@ class StoreController extends ChangeNotifier {
   }
 
   /// Accepte toutes les suggestions « Jeux à créer » (crée les jeux + contenus).
-  Future<void> acceptAllGamesToCreate(List<Suggestion> items) async {
+  ///
+  /// [gameNameOverrides] : noms de jeux modifiés par l'admin dans le tableau
+  /// (key = suggestion ID). Prioritaires sur le `suggestedGame` de l'IA.
+  /// [categoryOverrides] : catégories choisies par l'admin dans le tableau
+  /// (key = suggestion ID, 'video' | 'guides' | 'links').
+  Future<void> acceptAllGamesToCreate(
+    List<Suggestion> items, {
+    Map<String, String>? gameNameOverrides,
+    Map<String, String>? categoryOverrides,
+  }) async {
     for (final s in items) {
-      final gameName = s.aiRecommendation?.suggestedGame ?? '';
+      final overrideName = gameNameOverrides?[s.id]?.trim();
+      final gameName = (overrideName != null && overrideName.isNotEmpty)
+          ? overrideName
+          : (s.aiRecommendation?.suggestedGame ?? '');
       if (gameName.trim().isNotEmpty) {
-        await acceptGameToCreate(s, gameName);
+        await acceptGameToCreate(
+          s,
+          gameName,
+          categoryOverride: categoryOverrides?[s.id],
+        );
       }
     }
   }
