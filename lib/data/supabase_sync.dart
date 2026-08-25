@@ -165,6 +165,33 @@ class SupabaseSync {
         .toList();
   }
 
+  /// Compte les lignes d'une table via une requête HEAD avec
+  /// `Prefer: count=exact` — PostgREST renvoie le total dans le header
+  /// `content-range: */N` SANS transférer aucune ligne (0 egress utile).
+  ///
+  /// [filter] : filtre PostgREST optionnel (ex. `active=eq.true`).
+  /// Retourne -1 si le comptage est indisponible (table protégée par RLS
+  /// pour l'anon key, header absent, etc.).
+  Future<int> fetchTableCount(String table, {String? filter}) async {
+    try {
+      final Uri uri = Uri.parse(
+        '$supabaseUrl/rest/v1/$table?select=*'
+        '${filter != null ? '&$filter' : ''}',
+      );
+      final http.Response res = await http.head(uri, headers: {
+        ..._anonHeaders,
+        'Prefer': 'count=exact',
+      });
+      if (res.statusCode >= 300) return -1;
+      final String contentRange = res.headers['content-range'] ?? '';
+      final int slash = contentRange.indexOf('/');
+      if (slash < 0) return -1;
+      return int.tryParse(contentRange.substring(slash + 1).trim()) ?? -1;
+    } catch (_) {
+      return -1;
+    }
+  }
+
   // ── Suggestions : lectures service_role (Phase 2 du durcissement RLS) ──
   // Les lectures suggestions/profils du panneau passent par la route
   // `suggestions/list` de l'Edge Function admin-catalog (service_role) au

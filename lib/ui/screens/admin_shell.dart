@@ -12,6 +12,7 @@ import 'contents_screen.dart';
 import 'contributors_screen.dart';
 import 'dashboard_screen.dart';
 import 'games_screen.dart';
+import 'limites_screen.dart';
 import 'login_screen.dart';
 import 'sentinelle_screen.dart';
 import 'scruteur_screen.dart';
@@ -42,6 +43,7 @@ class _AdminShellState extends State<AdminShell> {
     NavItem('Abonnements', Icons.card_membership_rounded, '/abonnements'),
     NavItem('Contributeurs', Icons.groups_rounded, '/contributors'),
     NavItem('Comptes à bannir', Icons.block_rounded, '/banned'),
+    NavItem('Limite', Icons.data_usage_rounded, '/limites'),
   ];
 
   @override
@@ -135,6 +137,8 @@ class _AdminShellState extends State<AdminShell> {
         return const ContributorsScreen();
       case '/banned':
         return const BannedScreen();
+      case '/limites':
+        return const LimitesScreen();
       default:
         return DashboardScreen(onOpenSuggestions: () => _go('/suggestions'));
     }

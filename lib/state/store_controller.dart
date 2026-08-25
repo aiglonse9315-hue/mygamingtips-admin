@@ -1462,9 +1462,9 @@ class StoreController extends ChangeNotifier {
   /// Effectue réellement la sync (sans la garde ni le timeout — appelé par
   /// [syncFromSupabase]).
   Future<void> _doSyncFromSupabase() async {
-    // Pagination : récupère jusqu'à 10 000 jeux par pages de 1000
+    // Pagination : récupère jusqu'à 100 000 jeux par pages de 1000
     // (dépasse la limite par défaut de 1000 lignes de PostgREST).
-    const int maxGames = 10000;
+    const int maxGames = 100000;
     const int gamesPageSize = 1000;
     final allGames = <Game>[];
     for (var page = 0; page * gamesPageSize < maxGames; page++) {
@@ -1474,9 +1474,9 @@ class StoreController extends ChangeNotifier {
     }
     final games = allGames;
 
-    // Pagination : récupère jusqu'à 100 000 contenus par pages de 1000
+    // Pagination : récupère jusqu'à 500 000 contenus par pages de 1000
     // (dépasse la limite par défaut de 1000 lignes de PostgREST).
-    const int maxContents = 100000;
+    const int maxContents = 500000;
     const int contentsPageSize = 1000;
     final allContents = <Content>[];
     for (var page = 0; page * contentsPageSize < maxContents; page++) {
