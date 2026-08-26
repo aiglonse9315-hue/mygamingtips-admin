@@ -6,6 +6,7 @@ import '../../domain/models/category.dart';
 import '../../domain/models/plus_user.dart';
 import '../../domain/models/suggestion.dart';
 import '../../state/store_controller.dart';
+import '../widgets/limits_alert_card.dart';
 import '../widgets/stat_card.dart';
 
 /// Tableau de bord : vue d'ensemble statistiques + dernières suggestions.
@@ -84,6 +85,10 @@ class DashboardScreen extends StatelessWidget {
               ),
             ],
           ),
+          const SizedBox(height: 16),
+          // Surveillance des limites : alerte orange ≥ 60 %, rouge ≥ 85 %
+          // du plafond de prise en compte (anti saturation silencieuse).
+          const LimitsAlertCard(),
           const SizedBox(height: 28),
           // Répartition par catégorie
           Card(
