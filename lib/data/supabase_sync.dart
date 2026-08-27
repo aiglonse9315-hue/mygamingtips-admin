@@ -580,6 +580,22 @@ class SupabaseSync {
     return await _post('suggestions/accept-batch', {'items': items});
   }
 
+  /// Rejette un LOT de suggestions Sentinelle en un seul appel EF
+  /// (`suggestions/reject-batch`, 28/08/2026) — « Tout supprimer » /
+  /// « Rejeter la sélection » du tableau « À vérifier ». Remplace N appels
+  /// [rejectSuggestion] par 1 appel par chunk de 100.
+  ///
+  /// Même effet métier que le rejet unitaire : status 'rejected', sans
+  /// suppression de ligne ni journal cache_ops (l'URL reste en cache
+  /// anti-doublons). L'EF est idempotente : rejouer un lot déjà rejeté est
+  /// sans effet (skip non-pending/introuvable).
+  ///
+  /// Retourne la réponse EF : `{ok: [ids], skipped: [{id, reason}],
+  /// failed: [{id, error}]}`.
+  Future<Map<String, dynamic>> rejectSuggestionsBatch(List<String> ids) async {
+    return await _post('suggestions/reject-batch', {'ids': ids});
+  }
+
   /// Débloque les suggestions stuck en "Analyse en cours" depuis > 10 min.
   /// Retourne le nombre de suggestions débloquées.
   Future<int> unlockStuckSuggestions({int timeoutMinutes = 10}) async {

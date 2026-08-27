@@ -1102,6 +1102,109 @@ class StoreController extends ChangeNotifier {
     }
   }
 
+  /// Rejette EN LOT des suggestions Sentinelle (28/08/2026, route EF
+  /// `suggestions/reject-batch`) — « Tout supprimer » / « Rejeter la
+  /// sélection » du tableau « À vérifier ».
+  ///
+  /// Même effet métier que [rejectSentinelle] (status 'rejected', SANS
+  /// journal cache_ops : l'URL d'un refusé reste en cache anti-doublons),
+  /// mais en 1 appel EF par chunk de 100 + UNE sync finale, sur le modèle
+  /// d'[acceptSentinelleBatch] (tombstones anti-race + rollback partiel).
+  ///
+  /// Retourne le nombre de suggestions rejetées (hors échecs restaurés).
+  Future<int> rejectSentinelleBatch(
+    List<Suggestion> items, {
+    void Function(int rejected, int total)? onProgress,
+  }) async {
+    if (items.isEmpty) return 0;
+
+    // Mode démo (pas de sync) : repli sur le chemin unitaire existant.
+    if (sync == null) {
+      var done = 0;
+      for (final s in items) {
+        await rejectSentinelle(s);
+        done++;
+        onProgress?.call(done, items.length);
+      }
+      return done;
+    }
+
+    // Sépare les vrais UUID (distants) des ids locaux de démo : ces derniers
+    // sont simplement retirés de la liste locale, comme le rejet unitaire
+    // qui s'arrête avant l'appel EF quand l'id n'est pas un UUID.
+    final remote = items.where((s) => _isUuid(s.id)).toList();
+    final localOnly = items.where((s) => !_isUuid(s.id)).toList();
+    if (localOnly.isNotEmpty) {
+      final localIds = localOnly.map((s) => s.id).toSet();
+      _sentinelleSuggestions = _sentinelleSuggestions
+          .where((s) => !localIds.contains(s.id))
+          .toList();
+    }
+    if (remote.isEmpty) {
+      notifyListeners();
+      onProgress?.call(items.length, items.length);
+      return items.length;
+    }
+
+    // ── Phase 1 : retrait optimiste UNIQUE + tombstones anti-race.
+    final ids = remote.map((s) => s.id).toSet();
+    _pendingRemovalIds.addAll(ids);
+    _sentinelleSuggestions =
+        _sentinelleSuggestions.where((s) => !ids.contains(s.id)).toList();
+    notifyListeners();
+
+    // ── Phase 2 : appels EF par chunks de 100 (plafond côté EF).
+    var rejected = 0;
+    final failedIds = <String>[];
+    String? firstError;
+    const chunkSize = 100;
+    final idList = remote.map((s) => s.id).toList();
+    for (var start = 0; start < idList.length; start += chunkSize) {
+      final chunk = idList.sublist(
+        start,
+        (start + chunkSize) > idList.length ? idList.length : start + chunkSize,
+      );
+      try {
+        final res = await sync!.rejectSuggestionsBatch(chunk);
+        final ok = (res['ok'] as List? ?? []).cast<String>();
+        rejected += ok.length;
+        // Les « skipped » (déjà rejected/accepted, introuvables) ne sont PAS
+        // rollbackés : l'effet métier est déjà atteint ou sans objet — le
+        // tombstone reste jusqu'à la purge par la sync finale.
+        final failed = (res['failed'] as List? ?? []);
+        for (final f in failed) {
+          if (f is Map) {
+            final fid = f['id']?.toString();
+            if (fid != null) failedIds.add(fid);
+            firstError ??= f['error']?.toString();
+          }
+        }
+        onProgress?.call(rejected + localOnly.length, items.length);
+      } catch (e) {
+        // Chunk entier en échec (réseau / 401) : ses items sont à rollback.
+        if (_isAuthError(e)) {
+          onAuthError?.call();
+        }
+        firstError ??= e.toString();
+        failedIds.addAll(chunk);
+      }
+    }
+
+    // ── Phase 3 : rollback partiel des échecs + UNE sync finale.
+    if (failedIds.isNotEmpty) {
+      final failedSet = failedIds.toSet();
+      _pendingRemovalIds.removeAll(failedSet);
+      final restored = remote.where((s) => failedSet.contains(s.id)).toList();
+      _sentinelleSuggestions = [..._sentinelleSuggestions, ...restored];
+      lastActionError =
+          'Suppression en lot : ${failedIds.length} échec(s) — $firstError. '
+          'Les lignes concernées ont été restaurées (réessayez).';
+    }
+    await syncFromSupabase(); // purge aussi les tombstones confirmés
+    notifyListeners();
+    return rejected + localOnly.length;
+  }
+
   // ── « Jeux à créer » ──
 
   /// Crée un nouveau jeu puis ajoute le contenu depuis une suggestion

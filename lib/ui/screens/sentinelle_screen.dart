@@ -37,6 +37,15 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   int _batchDone = 0;
   int _batchTotal = 0;
 
+  /// Rejet EN LOT en cours (28/08/2026, appel EF groupé
+  /// `suggestions/reject-batch`) : boutons « Tout supprimer » / « Rejeter la
+  /// sélection » remplacés par la progression « X / N », tableau figé.
+  bool _batchRejecting = false;
+
+  /// Progression du rejet en lot : rejetés / total.
+  int _batchRejectDone = 0;
+  int _batchRejectTotal = 0;
+
   /// IDs des suggestions sélectionnées (section À vérifier).
   final Set<String> _toVerifySelected = <String>{};
 
@@ -200,15 +209,15 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   }
 
   /// Rejette toutes les suggestions "À vérifier" (ou seulement les sélectionnées).
+  ///
+  /// Correctif 28/08/2026 : passe par [StoreController.rejectSentinelleBatch]
+  /// (1 appel EF par chunk de 100 + UNE sync finale) au lieu de N appels
+  /// unitaires — même rapidité que le « Tout valider » (27/08/2026).
   Future<void> _rejectAllToVerify(List<Suggestion> toVerify) async {
-    final store = context.read<StoreController>();
     final toReject = _toVerifySelected.isNotEmpty
         ? toVerify.where((s) => _toVerifySelected.contains(s.id)).toList()
         : toVerify;
-    for (final s in toReject) {
-      await store.rejectSentinelle(s);
-    }
-    setState(() => _toVerifySelected.clear());
+    await _runRejectBatch(toReject);
   }
 
   /// Valide toutes les suggestions "99% sûr" en une fois.
@@ -291,6 +300,45 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
           _selected.clear();
           _editedGames.removeWhere((id, _) => !remaining.contains(id));
           _editedCategories.removeWhere((id, _) => !remaining.contains(id));
+        });
+      }
+    }
+  }
+
+  /// Exécute le rejet EN LOT d'un ensemble de suggestions « À vérifier »
+  /// (28/08/2026 — miroir de [_runBatch] pour le « Tout supprimer »).
+  ///
+  /// Pendant l'opération : [_batchRejecting] remplace les boutons par la
+  /// progression « X / N » (tableau figé). À la fin (quel que soit le
+  /// résultat) : la sélection est vidée ; les lignes en échec ont été
+  /// restaurées par le store (rollback partiel) et restent visibles.
+  Future<void> _runRejectBatch(List<Suggestion> items) async {
+    if (items.isEmpty || _batchRejecting) return;
+    final store = context.read<StoreController>();
+
+    setState(() {
+      _batchRejecting = true;
+      _batchRejectDone = 0;
+      _batchRejectTotal = items.length;
+    });
+    try {
+      await store.rejectSentinelleBatch(
+        items,
+        onProgress: (done, total) {
+          if (!mounted) return;
+          setState(() {
+            _batchRejectDone = done;
+            _batchRejectTotal = total;
+          });
+        },
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _batchRejecting = false;
+          _batchRejectDone = 0;
+          _batchRejectTotal = 0;
+          _toVerifySelected.clear();
         });
       }
     }
@@ -429,7 +477,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                   ),
                 ),
                 // Bouton : valider la sélection
-                if (_selected.isNotEmpty && !_batchValidating)
+                if (_selected.isNotEmpty && !_batchValidating && !_batchRejecting)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: FilledButton.icon(
@@ -484,21 +532,24 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                   )
                 else
                   FilledButton.icon(
-                    onPressed: () => showDialog<void>(
-                      context: context,
-                      builder: (_) => ConfirmDialog(
-                        title:
-                            'Valider toutes les suggestions (${trusted.length}) ?',
-                        message:
-                            'Les ${trusted.length} suggestions "99% sûr" seront '
-                            'implémentées automatiquement avec le jeu choisi '
-                            'dans la colonne « Jeu IA » et la catégorie choisie '
-                            'dans la colonne « Catégorie » (ou leurs valeurs '
-                            'intelligentes par défaut).',
-                        confirmLabel: 'Tout valider',
-                        onConfirm: () => _validateAll(trusted),
-                      ),
-                    ),
+                    // Désactivé pendant un rejet en lot (tableau figé).
+                    onPressed: _batchRejecting
+                        ? null
+                        : () => showDialog<void>(
+                            context: context,
+                            builder: (_) => ConfirmDialog(
+                              title:
+                                  'Valider toutes les suggestions (${trusted.length}) ?',
+                              message:
+                                  'Les ${trusted.length} suggestions "99% sûr" seront '
+                                  'implémentées automatiquement avec le jeu choisi '
+                                  'dans la colonne « Jeu IA » et la catégorie choisie '
+                                  'dans la colonne « Catégorie » (ou leurs valeurs '
+                                  'intelligentes par défaut).',
+                              confirmLabel: 'Tout valider',
+                              onConfirm: () => _validateAll(trusted),
+                            ),
+                          ),
                     icon: const Icon(Icons.done_all_rounded, size: 16),
                     label: const Text('Tout valider'),
                     style: FilledButton.styleFrom(
@@ -577,22 +628,26 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                   ),
                 ),
                 // Bouton : rejeter la sélection (ou tout si rien de sélectionné).
-                if (_toVerifySelected.isNotEmpty)
+                // Masqué pendant un rejet en lot, désactivé pendant une
+                // validation en lot (tableau figé).
+                if (_toVerifySelected.isNotEmpty && !_batchRejecting)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: FilledButton.icon(
-                      onPressed: () => showDialog<void>(
-                        context: context,
-                        builder: (_) => ConfirmDialog(
-                          title:
-                              'Rejeter ${_toVerifySelected.length} suggestion(s) ?',
-                          message:
-                              'Les ${_toVerifySelected.length} suggestion(s) sélectionnée(s) seront rejetées.',
-                          confirmLabel: 'Rejeter la sélection',
-                          destructive: true,
-                          onConfirm: () => _rejectAllToVerify(toVerify),
-                        ),
-                      ),
+                      onPressed: _batchValidating
+                          ? null
+                          : () => showDialog<void>(
+                              context: context,
+                              builder: (_) => ConfirmDialog(
+                                title:
+                                    'Rejeter ${_toVerifySelected.length} suggestion(s) ?',
+                                message:
+                                    'Les ${_toVerifySelected.length} suggestion(s) sélectionnée(s) seront rejetées.',
+                                confirmLabel: 'Rejeter la sélection',
+                                destructive: true,
+                                onConfirm: () => _rejectAllToVerify(toVerify),
+                              ),
+                            ),
                       icon: const Icon(Icons.cancel_outlined, size: 16),
                       label: Text(
                         'Rejeter sélection (${_toVerifySelected.length})',
@@ -603,28 +658,56 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                       ),
                     ),
                   ),
-                // Bouton : tout rejeter.
-                FilledButton.icon(
-                  onPressed: () => showDialog<void>(
-                    context: context,
-                    builder: (_) => ConfirmDialog(
-                      title:
-                          'Rejeter toutes les suggestions (${toVerify.length}) ?',
-                      message:
-                          'Les ${toVerify.length} suggestions "À vérifier" seront '
-                          'définitivement rejetées.',
-                      confirmLabel: 'Tout rejeter',
-                      destructive: true,
-                      onConfirm: () => _rejectAllToVerify(toVerify),
+                // Bouton : tout supprimer (rejet EN LOT, 28/08/2026) —
+                // remplacé par la progression « X / N » pendant l'opération,
+                // désactivé pendant une validation en lot (tableau figé).
+                if (_batchRejecting)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppColors.categoryVideo,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Suppression en cours… $_batchRejectDone / $_batchRejectTotal',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.categoryVideo,
+                        ),
+                      ),
+                    ],
+                  )
+                else
+                  FilledButton.icon(
+                    onPressed: _batchValidating
+                        ? null
+                        : () => showDialog<void>(
+                            context: context,
+                            builder: (_) => ConfirmDialog(
+                              title:
+                                  'Supprimer toutes les suggestions (${toVerify.length}) ?',
+                              message:
+                                  'Les ${toVerify.length} suggestions "À vérifier" '
+                                  'seront définitivement rejetées (action de masse '
+                                  'irréversible depuis cet écran).',
+                              confirmLabel: 'Tout supprimer',
+                              destructive: true,
+                              onConfirm: () => _rejectAllToVerify(toVerify),
+                            ),
+                          ),
+                    icon: const Icon(Icons.delete_sweep_rounded, size: 16),
+                    label: const Text('Tout supprimer'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.categoryVideo,
+                      foregroundColor: Colors.white,
                     ),
                   ),
-                  icon: const Icon(Icons.delete_sweep_rounded, size: 16),
-                  label: const Text('Tout rejeter'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.categoryVideo,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
               ],
             ],
           ),

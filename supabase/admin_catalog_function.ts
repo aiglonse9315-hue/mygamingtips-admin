@@ -1,5 +1,5 @@
 // ============================================================================
-// MyGamingTips — Edge Function Supabase "admin-catalog" (v60)
+// MyGamingTips — Edge Function Supabase "admin-catalog" (v61)
 // ============================================================================
 // Opérations d'écriture administrateur sur le catalogue (jeux, contenus,
 // suggestions, profils bannis, abonnements). Contourne la RLS via
@@ -21,6 +21,11 @@
 //     en 1 appel — « Tout valider » Sentinelle (27/08/2026). Idempotent :
 //     skip non-pending + pas de doublon de contenu (couple url+game_id).
 //   POST /suggestions/reject → rejeter une suggestion
+//   POST /suggestions/reject-batch → rejeter un LOT de suggestions (max 100)
+//     en 1 appel — « Tout supprimer » du tableau « À vérifier » Sentinelle
+//     (28/08/2026). Idempotent : skip non-pending/introuvable. Même effet
+//     métier que suggestions/reject : status 'rejected', SANS journal
+//     cache_ops (l'URL reste en cache pour ne jamais reproposer un refusé).
 //   POST /suggestions/delete → supprimer définitivement une suggestion pending
 //   POST /suggestions/ai-recommend → écrire la recommandation IA Sentinelle
 //   POST /profiles/ban     → bannir un utilisateur (is_banned = true)
@@ -63,6 +68,16 @@
 // Correctif passation §25 (3-C) : « Tout valider » ne déclenche plus N
 // appels unitaires + N resyncs complets côté client (~3 s/item).
 // Erreurs SQL internes loggées serveur uniquement (convention safeError).
+//
+// v61 (28/08/2026) : nouvelle route POST /suggestions/reject-batch —
+// rejet EN LOT des suggestions « À vérifier » (max 100 ids/appel,
+// idempotente : seules les suggestions encore 'pending' sont marquées,
+// introuvable/déjà rejetée/déjà acceptée → skipped). Reproduit l'effet
+// métier EXACT du reject unitaire : UPDATE status='rejected' uniquement,
+// AUCUNE ligne supprimée, AUCUNE journalisation cache_ops (l'URL d'un
+// refusé reste volontairement dans le cache anti-doublons). Durcissement
+// par rapport au reject unitaire (qui ne vérifie pas le status) : le lot
+// est une action DESTRUCTIVE DE MASSE → garde 'pending' obligatoire.
 //
 // Lecture : les lectures du catalogue (games, contents) se font via l'API
 // REST PostgREST (anon key suffit grâce aux politiques RLS publiques).
@@ -809,6 +824,89 @@ serve(async (req) => {
       // Pas de journalisation : l'URL d'une suggestion REJETÉE reste
       // volontairement dans le cache Vision (ne jamais reproposer un refusé).
       return await jsonWithFreshToken({ ok: true });
+    }
+
+    if (route === "suggestions/reject-batch") {
+      // ── Rejet EN LOT de suggestions « À vérifier » (28/08/2026) ──
+      // « Tout supprimer » rejetait N suggestions via N appels
+      // suggestions/reject (~1 appel réseau/item). Ici : 1 appel pour N ids
+      // (le client chunke à 100 max), UNE requête UPDATE atomique.
+      //
+      // EFFET MÉTIER = reject unitaire, à l'identique : UPDATE
+      // status='rejected' UNIQUEMENT — aucune ligne supprimée, AUCUNE
+      // journalisation cache_ops (l'URL d'un refusé reste dans le cache
+      // Vision pour ne jamais être reproposée).
+      //
+      // SÉCURITÉ (action destructive de masse) :
+      //   - auth JWT admin identique (verifyAdminToken en amont du routage) ;
+      //   - requêtes paramétrées PostgREST — AUCUNE interpolation SQL ;
+      //   - plafond 100 ids/appel ; validation stricte UUID de CHAQUE id ;
+      //   - DURCISSEMENT vs reject unitaire : seules les suggestions encore
+      //     'pending' sont marquées — une 'accepted' n'est JAMAIS rejetée
+      //     par ce chemin de masse (le unitaire ne vérifie pas le status,
+      //     risque acceptable à l'unité, pas en lot).
+      //
+      // IDEMPOTENCE : introuvable ou non-pending (déjà rejected/accepted)
+      // → skipped ; rejouer le même lot est sans effet.
+      //
+      // RÉPONSE : { ok: [ids], skipped: [{id, reason}], failed: [] }
+      // (même contrat que accept-batch côté client).
+      const rawIds = body.ids;
+      if (!Array.isArray(rawIds) || rawIds.length === 0) {
+        return json({ error: "ids manquant ou vide (tableau attendu)." }, 400);
+      }
+      if (rawIds.length > 100) {
+        return json(
+          { error: "Maximum 100 ids par appel (le client chunke)." },
+          400
+        );
+      }
+      const ids: string[] = [];
+      for (const raw of rawIds) {
+        const id = uuidOrUndefined(raw);
+        if (!id) {
+          return json({ error: "id invalide (UUID attendu)." }, 400);
+        }
+        ids.push(id);
+      }
+
+      // Partition : à rejeter (pending) vs skippées (idempotence).
+      const { data: rows, error: fe } = await supabase
+        .from("suggestions")
+        .select("id, status")
+        .in("id", ids);
+      if (fe) return safeError(fe, 400);
+      const statusById = new Map<string, string>(
+        (rows ?? []).map((r) => [r.id as string, r.status as string])
+      );
+      const skipped: { id: string; reason: string }[] = [];
+      const toReject: string[] = [];
+      for (const id of ids) {
+        const st = statusById.get(id);
+        if (st === undefined) {
+          skipped.push({ id, reason: "introuvable" });
+          continue;
+        }
+        if (st !== "pending") {
+          skipped.push({ id, reason: `déjà ${st}` });
+          continue;
+        }
+        toReject.push(id);
+      }
+      if (toReject.length === 0) {
+        return await jsonWithFreshToken({ ok: [], skipped, failed: [] });
+      }
+
+      // Multi-update = UNE requête SQL atomique : tout ou rien.
+      const { error: ue } = await supabase
+        .from("suggestions")
+        .update({ status: "rejected" })
+        .in("id", toReject);
+      if (ue) return safeError(ue, 400, "Rejet en lot échoué");
+
+      // PAS de journalisation cache_ops — identique au reject unitaire :
+      // l'URL d'une suggestion rejetée reste dans le cache anti-doublons.
+      return await jsonWithFreshToken({ ok: toReject, skipped, failed: [] });
     }
 
     if (route === "suggestions/delete") {
