@@ -75,6 +75,18 @@ class StoreController extends ChangeNotifier {
   /// Garde anti-réentrance pour syncFromSupabase.
   bool _syncing = false;
 
+  /// IDs de suggestions en cours de suppression/validation (« tombstones »,
+  /// correctif 27/08/2026 — race sync vs action admin).
+  ///
+  /// Une sync EN VOL peut ramener un snapshot périmé contenant encore une
+  /// ligne tout juste rejetée/acceptée (le fetch `analyzed` a été émis AVANT
+  /// le commit serveur) : la ligne « réapparaissait » quelques secondes après
+  /// sa suppression. Toute méthode qui retire une suggestion de façon
+  /// optimiste ajoute son id ici ; [_doSyncFromSupabase] EXCLUT ces ids du
+  /// snapshot entrant, puis purge de l'ensemble les ids confirmés absents du
+  /// serveur. En cas d'échec de l'action (rollback), l'id est retiré.
+  final Set<String> _pendingRemovalIds = <String>{};
+
   /// Dernier token admin connu (pour éviter les resync inutiles).
   String? _lastToken;
 
@@ -774,14 +786,19 @@ class StoreController extends ChangeNotifier {
       }
     }
 
-    // Retire la suggestion de la liste Sentinelle (optimiste).
+    // Retire la suggestion de la liste Sentinelle (optimiste) + tombstone
+    // anti-race (une sync en vol ne doit pas la ramener avant le commit).
+    _pendingRemovalIds.add(suggestion.id);
     _sentinelleSuggestions = _sentinelleSuggestions
         .where((s) => s.id != suggestion.id)
         .toList();
     notifyListeners();
 
     // Si l'ID n'est pas un vrai UUID (donnée de démo locale), on s'arrête.
-    if (sync == null || !_isUuid(suggestion.id)) return;
+    if (sync == null || !_isUuid(suggestion.id)) {
+      _pendingRemovalIds.remove(suggestion.id);
+      return;
+    }
     try {
       await sync!.acceptSuggestion(
         suggestionId: suggestion.id,
@@ -792,9 +809,11 @@ class StoreController extends ChangeNotifier {
         publishedAt: _dateForInsertion(suggestion),
       );
       // Resync pour récupérer le contenu créé côté serveur + le nouveau jeu.
+      // La sync purge aussi le tombstone une fois l'absence confirmée.
       await syncFromSupabase();
     } catch (e) {
-      // Rollback : remet la suggestion dans Sentinelle.
+      // Rollback : remet la suggestion dans Sentinelle + retire le tombstone.
+      _pendingRemovalIds.remove(suggestion.id);
       _sentinelleSuggestions = [..._sentinelleSuggestions, suggestion];
       if (_isAuthError(e)) {
         onAuthError?.call();
@@ -805,7 +824,154 @@ class StoreController extends ChangeNotifier {
     }
   }
 
-  /// Valide une suggestion Scruteur en 1 clic : insère le site web comme
+  /// Valide un LOT de suggestions « 99% sûr » en un appel EF par chunk
+  /// (correctif 27/08/2026 — « Tout valider » : ~3 s/item → ~1 appel/100).
+  ///
+  /// Réplique la résolution d'[acceptOneClick] pour chaque item (catégorie :
+  /// choix admin > IA ; jeu : override admin > nom IA, recherché dans le
+  /// catalogue puis créé s'il est absent), puis envoie les ids à l'EF
+  /// `suggestions/accept-batch` par chunks de 100, avec UNE SEULE
+  /// [syncFromSupabase] à la fin (le tableau est figé pendant l'opération :
+  /// un seul notifyListeners au retrait optimiste, puis à la fin).
+  ///
+  /// L'EF est idempotente : un échec réseau peut être retenté sans doublon.
+  /// Les items en échec sont RÉINSÉRÉS dans la liste (rollback partiel) avec
+  /// un message d'erreur explicite ; les items « skipped » (déjà validés)
+  /// ne sont pas restaurés.
+  ///
+  /// Retourne le nombre de suggestions effectivement validées.
+  Future<int> acceptSentinelleBatch(
+    List<Suggestion> items, {
+    Map<String, String>? gameOverrides,
+    Map<String, String>? categoryOverrides,
+    void Function(int validated, int total)? onProgress,
+  }) async {
+    if (items.isEmpty) return 0;
+
+    // Mode démo (pas de sync) : repli sur le chemin unitaire existant.
+    if (sync == null) {
+      var done = 0;
+      for (final s in items) {
+        await acceptOneClick(
+          s,
+          gameOverride: gameOverrides?[s.id],
+          categoryOverride: categoryOverrides?[s.id],
+        );
+        done++;
+        onProgress?.call(done, items.length);
+      }
+      return done;
+    }
+
+    // ── Phase 1 : résolution locale des jeux/catégories (aucune écriture
+    //    distante sauf création de jeu, rare) — même logique qu'acceptOneClick.
+    final payload = <Map<String, dynamic>>[];
+    final byId = <String, Suggestion>{for (final s in items) s.id: s};
+    for (final s in items) {
+      final ai = s.aiRecommendation;
+      if (ai == null) continue; // pas d'analyse IA → ignoré (reste en liste)
+      final categoryChoice = categoryOverrides?[s.id]?.trim();
+      final category = (categoryChoice != null && categoryChoice.isNotEmpty)
+          ? _categoryFromAi(categoryChoice, s.url)
+          : _categoryFromAi(ai.suggestedCategory, s.url);
+      final override = gameOverrides?[s.id]?.trim();
+      final suggestedName =
+          (override != null && override.isNotEmpty) ? override : ai.suggestedGame;
+      if (suggestedName == null || suggestedName.trim().isEmpty) continue;
+      final lower = suggestedName.toLowerCase();
+      Game? targetGame;
+      for (final g in _games) {
+        if (g.name.toLowerCase() == lower) {
+          targetGame = g;
+          break;
+        }
+      }
+      targetGame ??= _games.cast<Game?>().firstWhere(
+            (g) =>
+                g!.name.toLowerCase().contains(lower) ||
+                lower.contains(g.name.toLowerCase()),
+            orElse: () => null,
+          );
+      if (targetGame == null) {
+        // Crée le jeu (réutilise le chemin existant addGame + resync UUID).
+        await addGame(name: suggestedName.trim());
+        try {
+          targetGame = _games.firstWhere(
+            (g) => g.name.toLowerCase() == suggestedName.toLowerCase(),
+          );
+        } catch (_) {
+          continue; // création échouée → l'item reste en liste
+        }
+      }
+      payload.add({
+        'id': s.id,
+        'game_id': targetGame.id,
+        'category': category.name,
+        'title_admin': _titleForInsertion(s),
+        'is_video': category == ContentCategory.video,
+        if (_dateForInsertion(s) != null)
+          'published_at': _dateForInsertion(s)!.toIso8601String(),
+      });
+    }
+    if (payload.isEmpty) {
+      lastActionError = 'Aucune suggestion validable (analyse IA ou jeu manquant).';
+      notifyListeners();
+      return 0;
+    }
+
+    // ── Phase 2 : retrait optimiste UNIQUE + tombstones anti-race.
+    final ids = payload.map((p) => p['id'] as String).toSet();
+    _pendingRemovalIds.addAll(ids);
+    _sentinelleSuggestions =
+        _sentinelleSuggestions.where((s) => !ids.contains(s.id)).toList();
+    notifyListeners();
+
+    // ── Phase 3 : appels EF par chunks de 100 (plafond côté EF).
+    var validated = 0;
+    final failedIds = <String>[];
+    String? firstError;
+    const chunkSize = 100;
+    for (var start = 0; start < payload.length; start += chunkSize) {
+      final chunk = payload.sublist(
+        start,
+        (start + chunkSize) > payload.length ? payload.length : start + chunkSize,
+      );
+      try {
+        final res = await sync!.acceptSuggestionsBatch(chunk);
+        final ok = (res['ok'] as List? ?? []).cast<String>();
+        validated += ok.length;
+        final failed = (res['failed'] as List? ?? []);
+        for (final f in failed) {
+          final fid = (f as Map)['id']?.toString();
+          if (fid != null) failedIds.add(fid);
+          firstError ??= (f as Map)['error']?.toString();
+        }
+        onProgress?.call(validated, payload.length);
+      } catch (e) {
+        // Chunk entier en échec (réseau / 401) : ses items sont à rollback.
+        if (_isAuthError(e)) {
+          onAuthError?.call();
+        }
+        firstError ??= e.toString();
+        failedIds.addAll(chunk.map((p) => p['id'] as String));
+      }
+    }
+
+    // ── Phase 4 : rollback partiel des échecs + UNE sync finale.
+    if (failedIds.isNotEmpty) {
+      final failedSet = failedIds.toSet();
+      _pendingRemovalIds.removeAll(failedSet);
+      final restored = items.where((s) => failedSet.contains(s.id)).toList();
+      _sentinelleSuggestions = [..._sentinelleSuggestions, ...restored];
+      lastActionError =
+          'Validation en lot : ${failedIds.length} échec(s) — $firstError. '
+          'Les lignes concernées ont été restaurées (réessayez).';
+    }
+    await syncFromSupabase(); // purge aussi les tombstones confirmés
+    notifyListeners();
+    return validated;
+  }
+
   /// contenu catégorie 'links' (is_video=false) avec la langue détectée.
   ///
   /// Contrairement à [acceptOneClick] (Sentinelle) qui DEVINE le jeu depuis
@@ -825,13 +991,17 @@ class StoreController extends ChangeNotifier {
     // La catégorie est TOUJOURS 'links' pour le Scruteur (sites web).
     final category = ContentCategory.links;
 
-    // Retire la suggestion de la liste Scruteur (optimiste).
+    // Retire la suggestion de la liste Scruteur (optimiste) + tombstone.
+    _pendingRemovalIds.add(suggestion.id);
     _scruteurSuggestions = _scruteurSuggestions
         .where((s) => s.id != suggestion.id)
         .toList();
     notifyListeners();
 
-    if (sync == null || !_isUuid(suggestion.id)) return;
+    if (sync == null || !_isUuid(suggestion.id)) {
+      _pendingRemovalIds.remove(suggestion.id);
+      return;
+    }
     try {
       await sync!.acceptSuggestion(
         suggestionId: suggestion.id,
@@ -844,6 +1014,7 @@ class StoreController extends ChangeNotifier {
       );
       await syncFromSupabase();
     } catch (e) {
+      _pendingRemovalIds.remove(suggestion.id);
       _scruteurSuggestions = [..._scruteurSuggestions, suggestion];
       if (_isAuthError(e)) {
         onAuthError?.call();
@@ -856,15 +1027,20 @@ class StoreController extends ChangeNotifier {
 
   /// Rejette une suggestion Scruteur (la retire du menu).
   Future<void> rejectScruteur(Suggestion suggestion) async {
+    _pendingRemovalIds.add(suggestion.id);
     _scruteurSuggestions = _scruteurSuggestions
         .where((s) => s.id != suggestion.id)
         .toList();
     notifyListeners();
-    if (sync == null || !_isUuid(suggestion.id)) return;
+    if (sync == null || !_isUuid(suggestion.id)) {
+      _pendingRemovalIds.remove(suggestion.id);
+      return;
+    }
     try {
       await sync!.rejectSuggestion(suggestion.id);
       await syncFromSupabase();
     } catch (e) {
+      _pendingRemovalIds.remove(suggestion.id);
       _scruteurSuggestions = [..._scruteurSuggestions, suggestion];
       if (_isAuthError(e)) {
         onAuthError?.call();
@@ -897,17 +1073,25 @@ class StoreController extends ChangeNotifier {
   }
 
   Future<void> rejectSentinelle(Suggestion suggestion) async {
-    // Retire la suggestion de la liste Sentinelle (optimiste).
+    // Retire la suggestion de la liste Sentinelle (optimiste) + tombstone
+    // anti-race (une sync en vol ne doit pas la ramener).
+    _pendingRemovalIds.add(suggestion.id);
     _sentinelleSuggestions = _sentinelleSuggestions
         .where((s) => s.id != suggestion.id)
         .toList();
     notifyListeners();
     // Si l'ID n'est pas un vrai UUID (donnée de démo locale), on s'arrête.
-    if (sync == null || !_isUuid(suggestion.id)) return;
+    if (sync == null || !_isUuid(suggestion.id)) {
+      _pendingRemovalIds.remove(suggestion.id);
+      return;
+    }
     try {
       await sync!.rejectSuggestion(suggestion.id);
+      // L'id reste dans _pendingRemovalIds jusqu'à ce qu'une sync confirme
+      // son absence serveur (purge dans _doSyncFromSupabase).
     } catch (e) {
-      // Rollback : remet la suggestion dans Sentinelle.
+      // Rollback : remet la suggestion dans Sentinelle + retire le tombstone.
+      _pendingRemovalIds.remove(suggestion.id);
       _sentinelleSuggestions = [..._sentinelleSuggestions, suggestion];
       if (_isAuthError(e)) {
         onAuthError?.call();
@@ -940,13 +1124,17 @@ class StoreController extends ChangeNotifier {
       return;
     }
 
-    // Retrait optimiste de la liste « Jeux à créer ».
+    // Retrait optimiste de la liste « Jeux à créer » + tombstone anti-race.
+    _pendingRemovalIds.add(suggestion.id);
     _gamesToCreate = _gamesToCreate
         .where((s) => s.id != suggestion.id)
         .toList();
     notifyListeners();
 
-    if (sync == null || !_isUuid(suggestion.id)) return;
+    if (sync == null || !_isUuid(suggestion.id)) {
+      _pendingRemovalIds.remove(suggestion.id);
+      return;
+    }
 
     // 1. Si le jeu existe déjà dans le catalogue (l'admin a saisi le nom
     // d'un jeu existant), on l'utilise directement — pas de doublon ni de
@@ -969,6 +1157,7 @@ class StoreController extends ChangeNotifier {
         );
       } catch (_) {
         lastActionError = 'Création du jeu échouée.';
+        _pendingRemovalIds.remove(suggestion.id);
         _gamesToCreate = [..._gamesToCreate, suggestion];
         notifyListeners();
         return;
@@ -995,6 +1184,7 @@ class StoreController extends ChangeNotifier {
       );
       await syncFromSupabase();
     } catch (e) {
+      _pendingRemovalIds.remove(suggestion.id);
       _gamesToCreate = [..._gamesToCreate, suggestion];
       if (_isAuthError(e)) {
         onAuthError?.call();
@@ -1007,14 +1197,19 @@ class StoreController extends ChangeNotifier {
 
   /// Supprime une entrée « Jeux à créer » (marque rejected).
   Future<void> rejectGameToCreate(Suggestion suggestion) async {
+    _pendingRemovalIds.add(suggestion.id);
     _gamesToCreate = _gamesToCreate
         .where((s) => s.id != suggestion.id)
         .toList();
     notifyListeners();
-    if (sync == null || !_isUuid(suggestion.id)) return;
+    if (sync == null || !_isUuid(suggestion.id)) {
+      _pendingRemovalIds.remove(suggestion.id);
+      return;
+    }
     try {
       await sync!.deleteGameToCreateEntry(suggestion.id);
     } catch (e) {
+      _pendingRemovalIds.remove(suggestion.id);
       _gamesToCreate = [..._gamesToCreate, suggestion];
       if (_isAuthError(e)) {
         onAuthError?.call();
@@ -1028,14 +1223,22 @@ class StoreController extends ChangeNotifier {
   /// Supprime un lot d'entrées « Jeux à créer ».
   Future<void> rejectGamesToCreateBatch(List<Suggestion> items) async {
     final ids = items.map((s) => s.id).toSet();
+    _pendingRemovalIds.addAll(ids);
     _gamesToCreate = _gamesToCreate.where((s) => !ids.contains(s.id)).toList();
     notifyListeners();
-    if (sync == null) return;
+    if (sync == null) {
+      _pendingRemovalIds.removeAll(ids);
+      return;
+    }
     final uuidIds = items.where((s) => _isUuid(s.id)).map((s) => s.id).toList();
-    if (uuidIds.isEmpty) return;
+    if (uuidIds.isEmpty) {
+      _pendingRemovalIds.removeAll(ids);
+      return;
+    }
     try {
       await sync!.deleteGamesToCreateBatch(uuidIds);
     } catch (e) {
+      _pendingRemovalIds.removeAll(ids);
       if (_isAuthError(e)) {
         onAuthError?.call();
         return;
@@ -1532,6 +1735,32 @@ class StoreController extends ChangeNotifier {
       final batch = await sync!.fetchGamesToCreate(page: page, pageSize: 500);
       allGamesToCreate.addAll(batch);
       if (batch.length < 500) break;
+    }
+
+    // ── Tombstones (correctif 27/08/2026) : une ligne tout juste rejetée /
+    //    acceptée / supprimée peut encore figurer dans le snapshot entrant si
+    //    CE fetch a été émis AVANT le commit serveur (sync en vol démarrée
+    //    avant l'action admin). On EXCLUT ces ids des listes entrantes pour
+    //    éviter la « réapparition » quelques secondes après la suppression.
+    //    Puis on purge de l'ensemble les ids confirmés absents du serveur
+    //    (présents dans AUCUNE liste fraîche → suppression bien prise en
+    //    compte, le filtre n'est plus nécessaire).
+    if (_pendingRemovalIds.isNotEmpty) {
+      allSuggestions.removeWhere((s) => _pendingRemovalIds.contains(s.id));
+      allAnalyzing.removeWhere((s) => _pendingRemovalIds.contains(s.id));
+      allSentinelle.removeWhere((s) => _pendingRemovalIds.contains(s.id));
+      allScruteur.removeWhere((s) => _pendingRemovalIds.contains(s.id));
+      allGamesToCreate.removeWhere((s) => _pendingRemovalIds.contains(s.id));
+      // Purge : id absent de TOUTES les listes fraîches = disparition
+      // confirmée côté serveur → on arrête de le filtrer.
+      final stillVisible = <String>{
+        for (final s in allSuggestions) s.id,
+        for (final s in allAnalyzing) s.id,
+        for (final s in allSentinelle) s.id,
+        for (final s in allScruteur) s.id,
+        for (final s in allGamesToCreate) s.id,
+      };
+      _pendingRemovalIds.removeWhere((id) => !stillVisible.contains(id));
     }
 
     final suggestions = allSuggestions;

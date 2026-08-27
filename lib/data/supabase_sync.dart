@@ -563,6 +563,23 @@ class SupabaseSync {
     await _post('suggestions/reject', {'id': suggestionId});
   }
 
+  /// Valide un LOT de suggestions Sentinelle en un seul appel EF
+  /// (`suggestions/accept-batch`, 27/08/2026). Remplace N appels
+  /// [acceptSuggestion] + N resyncs complets par 1 appel par chunk de 100.
+  ///
+  /// [items] : une map par suggestion avec les clés `id`, `game_id`,
+  /// `category` ('video'|'guides'|'links'), `title_admin`, `is_video`,
+  /// et optionnellement `published_at` (ISO) / `video_language`.
+  ///
+  /// Retourne la réponse EF : `{ok: [ids], skipped: [{id, reason}],
+  /// failed: [{id, error}]}`. L'EF est idempotente : rejouer un lot déjà
+  /// validé est sans effet (skip non-pending, pas de doublon de contenu).
+  Future<Map<String, dynamic>> acceptSuggestionsBatch(
+    List<Map<String, dynamic>> items,
+  ) async {
+    return await _post('suggestions/accept-batch', {'items': items});
+  }
+
   /// Débloque les suggestions stuck en "Analyse en cours" depuis > 10 min.
   /// Retourne le nombre de suggestions débloquées.
   Future<int> unlockStuckSuggestions({int timeoutMinutes = 10}) async {

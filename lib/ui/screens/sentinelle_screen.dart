@@ -28,6 +28,15 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   /// IDs des suggestions sélectionnées (section 99% sûr).
   final Set<String> _selected = <String>{};
 
+  /// Validation EN LOT en cours (correctif 27/08/2026, appel EF groupé
+  /// `suggestions/accept-batch`) : boutons « Tout valider » / « Valider
+  /// sélection » désactivés et progression « X / N » affichée.
+  bool _batchValidating = false;
+
+  /// Progression de la validation en lot : validés / total.
+  int _batchDone = 0;
+  int _batchTotal = 0;
+
   /// IDs des suggestions sélectionnées (section À vérifier).
   final Set<String> _toVerifySelected = <String>{};
 
@@ -209,20 +218,12 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   /// et à la catégorie effective de la colonne « Catégorie » (choix de
   /// l'admin s'il y en a un, sinon la présélection intelligente, voir
   /// [_smartCategoryFor]).
+  ///
+  /// Correctif 27/08/2026 : passe par [StoreController.acceptSentinelleBatch]
+  /// (1 appel EF par chunk de 100 + UNE sync finale) au lieu de N appels
+  /// unitaires + N resyncs complets (~3 s/item → quasi-instantané).
   Future<void> _validateAll(List<Suggestion> trusted) async {
-    final store = context.read<StoreController>();
-    for (final s in trusted) {
-      await store.acceptOneClick(
-        s,
-        gameOverride: _editedGames[s.id],
-        categoryOverride: _smartCategoryFor(s, _editedCategories[s.id]),
-      );
-    }
-    setState(() {
-      _selected.clear();
-      _editedGames.clear();
-      _editedCategories.clear();
-    });
+    await _runBatch(trusted);
   }
 
   /// Valide uniquement les suggestions sélectionnées.
@@ -231,18 +232,68 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   /// dans la colonne « Jeu IA » et la catégorie de la colonne « Catégorie »
   /// s'ils ont été modifiés.
   Future<void> _validateSelected(List<Suggestion> trusted) async {
-    final store = context.read<StoreController>();
     final selected = trusted.where((s) => _selected.contains(s.id)).toList();
-    for (final s in selected) {
-      await store.acceptOneClick(
-        s,
-        gameOverride: _editedGames[s.id],
-        categoryOverride: _smartCategoryFor(s, _editedCategories[s.id]),
-      );
-      _editedGames.remove(s.id);
-      _editedCategories.remove(s.id);
+    await _runBatch(selected);
+  }
+
+  /// Exécute la validation EN LOT d'un ensemble de suggestions « 99% sûr ».
+  ///
+  /// Les overrides (jeu / catégorie) sont RÉSOLUS AVANT l'appel, avec la
+  /// même logique que le « 1 clic » unitaire : le jeu édité par l'admin
+  /// prime sur celui de l'IA, et la catégorie est celle affichée dans le
+  /// dropdown (voir [_smartCategoryFor] — la catégorie vue par l'admin est
+  /// exactement celle qui sera insérée).
+  ///
+  /// Pendant l'opération : [_batchValidating] désactive les boutons et la
+  /// progression « X / N » est affichée. À la fin (quel que soit le résultat)
+  /// : la sélection est vidée et les overrides des lignes qui ont DISPARU de
+  /// la liste sont purgés — les overrides des lignes restaurées après un
+  /// échec partiel sont conservés pour permettre une nouvelle tentative.
+  Future<void> _runBatch(List<Suggestion> items) async {
+    if (items.isEmpty || _batchValidating) return;
+    final store = context.read<StoreController>();
+
+    final gameOverrides = <String, String>{};
+    final categoryOverrides = <String, String>{};
+    for (final s in items) {
+      final g = _editedGames[s.id];
+      if (g != null && g.trim().isNotEmpty) gameOverrides[s.id] = g;
+      categoryOverrides[s.id] = _smartCategoryFor(s, _editedCategories[s.id]);
     }
-    setState(() => _selected.clear());
+
+    setState(() {
+      _batchValidating = true;
+      _batchDone = 0;
+      _batchTotal = items.length;
+    });
+    try {
+      await store.acceptSentinelleBatch(
+        items,
+        gameOverrides: gameOverrides,
+        categoryOverrides: categoryOverrides,
+        onProgress: (done, total) {
+          if (!mounted) return;
+          setState(() {
+            _batchDone = done;
+            _batchTotal = total;
+          });
+        },
+      );
+    } finally {
+      if (mounted) {
+        // Ids encore présents après la sync finale = échecs restaurés :
+        // on CONSERVE leurs overrides pour la tentative suivante.
+        final remaining = store.sentinelleSuggestions.map((s) => s.id).toSet();
+        setState(() {
+          _batchValidating = false;
+          _batchDone = 0;
+          _batchTotal = 0;
+          _selected.clear();
+          _editedGames.removeWhere((id, _) => !remaining.contains(id));
+          _editedCategories.removeWhere((id, _) => !remaining.contains(id));
+        });
+      }
+    }
   }
 
   @override
@@ -378,7 +429,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                   ),
                 ),
                 // Bouton : valider la sélection
-                if (_selected.isNotEmpty)
+                if (_selected.isNotEmpty && !_batchValidating)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: FilledButton.icon(
@@ -407,30 +458,54 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                       ),
                     ),
                   ),
-                // Bouton : tout valider
-                FilledButton.icon(
-                  onPressed: () => showDialog<void>(
-                    context: context,
-                    builder: (_) => ConfirmDialog(
-                      title:
-                          'Valider toutes les suggestions (${trusted.length}) ?',
-                      message:
-                          'Les ${trusted.length} suggestions "99% sûr" seront '
-                          'implémentées automatiquement avec le jeu choisi '
-                          'dans la colonne « Jeu IA » et la catégorie choisie '
-                          'dans la colonne « Catégorie » (ou leurs valeurs '
-                          'intelligentes par défaut).',
-                      confirmLabel: 'Tout valider',
-                      onConfirm: () => _validateAll(trusted),
+                // Bouton : tout valider (remplacé par la progression « X / N »
+                // pendant une validation en lot).
+                if (_batchValidating)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppColors.neonGreen,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Validation en cours… $_batchDone / $_batchTotal',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.neonGreen,
+                        ),
+                      ),
+                    ],
+                  )
+                else
+                  FilledButton.icon(
+                    onPressed: () => showDialog<void>(
+                      context: context,
+                      builder: (_) => ConfirmDialog(
+                        title:
+                            'Valider toutes les suggestions (${trusted.length}) ?',
+                        message:
+                            'Les ${trusted.length} suggestions "99% sûr" seront '
+                            'implémentées automatiquement avec le jeu choisi '
+                            'dans la colonne « Jeu IA » et la catégorie choisie '
+                            'dans la colonne « Catégorie » (ou leurs valeurs '
+                            'intelligentes par défaut).',
+                        confirmLabel: 'Tout valider',
+                        onConfirm: () => _validateAll(trusted),
+                      ),
+                    ),
+                    icon: const Icon(Icons.done_all_rounded, size: 16),
+                    label: const Text('Tout valider'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.neonGreen,
+                      foregroundColor: Colors.black,
                     ),
                   ),
-                  icon: const Icon(Icons.done_all_rounded, size: 16),
-                  label: const Text('Tout valider'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.neonGreen,
-                    foregroundColor: Colors.black,
-                  ),
-                ),
               ],
             ],
           ),

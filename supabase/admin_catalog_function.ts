@@ -1,5 +1,5 @@
 // ============================================================================
-// MyGamingTips — Edge Function Supabase "admin-catalog" (v50)
+// MyGamingTips — Edge Function Supabase "admin-catalog" (v60)
 // ============================================================================
 // Opérations d'écriture administrateur sur le catalogue (jeux, contenus,
 // suggestions, profils bannis, abonnements). Contourne la RLS via
@@ -17,6 +17,9 @@
 //   POST /games/delete     → supprimer un jeu + cascade contenus
 //   POST /contents         → upsert contenu (create/update)
 //   POST /suggestions/accept → valider une suggestion (crée un contenu)
+//   POST /suggestions/accept-batch → valider un LOT de suggestions (max 100)
+//     en 1 appel — « Tout valider » Sentinelle (27/08/2026). Idempotent :
+//     skip non-pending + pas de doublon de contenu (couple url+game_id).
 //   POST /suggestions/reject → rejeter une suggestion
 //   POST /suggestions/delete → supprimer définitivement une suggestion pending
 //   POST /suggestions/ai-recommend → écrire la recommandation IA Sentinelle
@@ -28,7 +31,38 @@
 //   POST /suggestions/insert → insertion suggestion bot (Vision/Scruteur) :
 //     body.source ('vision'|'scruteur'), author_name, ai_recommendation optionnel
 //   POST /suggestions/urls → URLs de toutes les suggestions, paginé (anti-doublons Vision)
+//     paramètre optionnel `since` (ISO 8601) : sync incrémentale du cache
+//     local Vision (shared_at >= since)
+//   POST /cache-ops/list → journal des opérations add/remove d'URLs
+//     (migration 0051) — paramètre optionnel `since` (ISO 8601) ; permet à
+//     Vision.exe de maintenir son cache local anti-doublons À L'IDENTIQUE
+//     de la base, y compris les suppressions (que la sync par created_at
+//     ne voit pas).
 //   POST /profiles/find-by-email → résolution email → UUID (service_role)
+//
+// JOURNALISATION cache_ops (v58) : chaque route qui ajoute ou supprime une
+// URL du périmètre anti-doublons écrit une ligne dans cache_ops :
+//   add    ← contents (upsert), suggestions/insert, suggestions/accept,
+//            blocked-urls/insert-batch
+//   remove ← contents/delete, contents/delete-batch, games/delete (cascade),
+//            suggestions/delete (Sentinelle libère une pending → l'URL
+//            redevient candidate)
+//   suggestions/reject ne journalise PAS : l'URL reste volontairement dans
+//   le cache pour ne jamais reproposer un lien refusé.
+// La journalisation est NON BLOQUANTE : un échec est loggé, jamais retourné.
+//
+// v59 (migration 0052) : chaque ligne journalisée porte désormais un `src`
+// ('contents' | 'suggestions' | 'blocked') — permet à l'APP MOBILE de ne
+// rejouer QUE les suppressions de contenus (RPC cache_ops_removals_since)
+// sans risquer de supprimer un contenu valide à cause d'un « remove »
+// provenant de suggestions/delete.
+//
+// v60 (27/08/2026) : nouvelle route POST /suggestions/accept-batch —
+// validation EN LOT des suggestions Sentinelle (max 100 items/appel,
+// idempotente : skip non-pending + garde anti-doublon sur url+game_id).
+// Correctif passation §25 (3-C) : « Tout valider » ne déclenche plus N
+// appels unitaires + N resyncs complets côté client (~3 s/item).
+// Erreurs SQL internes loggées serveur uniquement (convention safeError).
 //
 // Lecture : les lectures du catalogue (games, contents) se font via l'API
 // REST PostgREST (anon key suffit grâce aux politiques RLS publiques).
@@ -222,6 +256,28 @@ serve(async (req) => {
     return uuidRegex.test(id) ? id : undefined;
   };
 
+  // --- Journalisation cache_ops (migration 0051 + src 0052) ---
+  // Écrit une ligne par URL dans le journal consommé par Vision.exe pour
+  // maintenir son cache local anti-doublons synchro avec la base.
+  // [src] distingue l'origine ('contents' | 'suggestions' | 'blocked') :
+  // l'app mobile ne rejoue QUE les remove src='contents' (RPC dédiée).
+  // NON BLOQUANT : un échec est loggé côté serveur, jamais retourné — une
+  // action admin ne doit jamais échouer à cause de la journalisation.
+  const journalCacheOp = async (
+    op: "add" | "remove",
+    urls: (string | null | undefined)[],
+    src: "contents" | "suggestions" | "blocked"
+  ) => {
+    const rows = urls
+      .filter((u): u is string => typeof u === "string" && u.length > 0)
+      .map((u) => ({ url: u, op, src }));
+    if (rows.length === 0) return;
+    const { error } = await supabase.from("cache_ops").insert(rows);
+    if (error) {
+      console.error(`[cache_ops] journalisation ${op} échouée:`, error.message);
+    }
+  };
+
   try {
     // ======================================================================
     // JEUX
@@ -251,10 +307,20 @@ serve(async (req) => {
           400
         );
       }
+      // Journalise les URLs des contenus supprimés (cache Vision).
+      const { data: doomed } = await supabase
+        .from("contents")
+        .select("url")
+        .eq("game_id", gameId);
       await supabase.from("contents").delete().eq("game_id", gameId);
       await supabase.from("favorite_games").delete().eq("game_id", gameId);
       const { error } = await supabase.from("games").delete().eq("id", gameId);
       if (error) return safeError(error, 400);
+      await journalCacheOp(
+        "remove",
+        (doomed ?? []).map((r: { url: string }) => r.url),
+        "contents"
+      );
       return await jsonWithFreshToken({ ok: true });
     }
 
@@ -331,6 +397,7 @@ serve(async (req) => {
         .select()
         .single();
       if (error) return safeError(error, 400);
+      await journalCacheOp("add", [typeof body.url === "string" ? body.url : null], "contents");
       return await jsonWithFreshToken({ content: data });
     }
 
@@ -361,6 +428,7 @@ serve(async (req) => {
         }
         return json({ error: `Insertion échouée: ${error.message} (code: ${error.code})` }, 400);
       }
+      await journalCacheOp("add", [typeof body.url === "string" ? body.url : null], "suggestions");
       return await jsonWithFreshToken({ ok: true, duplicate: false, id: data?.id });
     }
 
@@ -384,11 +452,21 @@ serve(async (req) => {
       if (!Array.isArray(ids) || ids.length === 0) {
         return json({ error: "ids (array) requis." }, 400);
       }
+      // Journalise les URLs supprimées (cache Vision).
+      const { data: doomed } = await supabase
+        .from("contents")
+        .select("url")
+        .in("id", ids);
       const { error } = await supabase
         .from("contents")
         .delete()
         .in("id", ids);
       if (error) return safeError(error, 400, "Suppression batch échouée");
+      await journalCacheOp(
+        "remove",
+        (doomed ?? []).map((r: { url: string }) => r.url),
+        "contents"
+      );
       return await jsonWithFreshToken({ ok: true, deleted: ids.length });
     }
 
@@ -410,6 +488,7 @@ serve(async (req) => {
         .from("blocked_urls")
         .upsert(rows, { onConflict: "url", ignoreDuplicates: true });
       if (error) return safeError(error, 400, "Insertion blocked_urls échouée");
+      await journalCacheOp("add", urls.map((u: unknown) => String(u)), "blocked");
       return await jsonWithFreshToken({ ok: true, blocked: urls.length });
     }
 
@@ -452,6 +531,12 @@ serve(async (req) => {
           400
         );
       }
+      // Journalise l'URL supprimée (cache Vision).
+      const { data: doomed } = await supabase
+        .from("contents")
+        .select("url")
+        .eq("id", contentId)
+        .maybeSingle();
       // Supprime d'abord les favoris liés (cohérence référentielle).
       await supabase.from("favorite_contents").delete().eq("content_id", contentId);
       const { error } = await supabase
@@ -459,6 +544,7 @@ serve(async (req) => {
         .delete()
         .eq("id", contentId);
       if (error) return safeError(error, 400);
+      await journalCacheOp("remove", [doomed?.url ?? null], "contents");
       return await jsonWithFreshToken({ ok: true });
     }
 
@@ -500,7 +586,218 @@ serve(async (req) => {
         .update({ status: "accepted", accepted_at: new Date().toISOString() })
         .eq("id", suggestionId);
       if (use) return json({ error: use.message }, 400);
+      // L'URL figure désormais aussi dans contents (elle y était déjà via la
+      // suggestion) — add idempotent côté cache Vision (Set normalisé).
+      await journalCacheOp("add", [suggestion.url ?? null], "contents");
       return await jsonWithFreshToken({ ok: true });
+    }
+
+    if (route === "suggestions/accept-batch") {
+      // ── Validation EN LOT de suggestions Sentinelle (27/08/2026) ──
+      // « Tout valider » validait N suggestions via N appels suggestions/accept
+      // + N resyncs complets côté client (~3 s/item → ~15 min pour 300).
+      // Ici : 1 appel pour N items (le client chunke à 100 max).
+      //
+      // SÉCURITÉ : l'auth JWT admin est la MÊME que pour toutes les routes
+      // (verifyAdminToken appliqué en amont, avant le routage). Toutes les
+      // requêtes sont paramétrées PostgREST — AUCUNE interpolation SQL.
+      // La clé service_role reste côté EF (jamais exposée au client).
+      //
+      // ENTRÉE : { items: [{ id, game_id, category, title_admin?, is_video?,
+      //   published_at?, video_language? }, ...] } — max 100 items/appel.
+      //
+      // TRANSACTIONNALITÉ (choix documenté) : le multi-insert contents est
+      // UNE requête atomique, le multi-update suggestions également.
+      //   - Insert contents en échec → 400, RIEN n'est validé (atomique).
+      //   - Update suggestions en échec APRÈS un insert réussi → les contenus
+      //     existent mais les suggestions restent 'pending' : REJOUER le lot
+      //     est sans effet grâce à l'idempotence ci-dessous (le contenu
+      //     existant n'est pas réinséré, la suggestion est juste marquée).
+      //
+      // IDEMPOTENCE : une suggestion non 'pending' (déjà accepted/rejected)
+      // ou introuvable est skippée ; un couple (url, game_id) déjà présent
+      // dans contents n'est PAS réinséré (couvre le replay après échec
+      // partiel de l'update).
+      //
+      // RÉPONSE : { ok: [ids], skipped: [{id, reason}], failed: [{id, error}] }
+      const rawItems = body.items;
+      if (!Array.isArray(rawItems) || rawItems.length === 0) {
+        return json(
+          { error: "items manquant ou vide (tableau attendu)." },
+          400
+        );
+      }
+      if (rawItems.length > 100) {
+        return json(
+          { error: "Maximum 100 items par appel (le client chunke)." },
+          400
+        );
+      }
+
+      // Validation stricte de CHAQUE item (aucun confiance au client).
+      const ALLOWED_CATEGORIES = new Set(["video", "guides", "links"]);
+      interface BatchItem {
+        id: string;
+        game_id: string;
+        category: string;
+        title_admin: string | null;
+        is_video: boolean;
+        published_at: string | null;
+        video_language: string | null;
+      }
+      const items: BatchItem[] = [];
+      for (const raw of rawItems) {
+        const it = raw as Record<string, unknown> | null;
+        const id = uuidOrUndefined(it?.id);
+        const gameId = uuidOrUndefined(it?.game_id);
+        const category =
+          typeof it?.category === "string" ? it.category : "";
+        if (!id || !gameId || !ALLOWED_CATEGORIES.has(category)) {
+          return json(
+            {
+              error:
+                "Item invalide : id et game_id doivent être des UUID, " +
+                "category ∈ video|guides|links.",
+            },
+            400
+          );
+        }
+        const titleAdmin =
+          it?.title_admin == null ? null : String(it.title_admin).slice(0, 500);
+        const publishedAt =
+          typeof it?.published_at === "string" &&
+          !Number.isNaN(Date.parse(it.published_at as string))
+            ? (it.published_at as string)
+            : null;
+        const videoLanguage =
+          typeof it?.video_language === "string"
+            ? (it.video_language as string).slice(0, 10)
+            : null;
+        items.push({
+          id,
+          game_id: gameId,
+          category,
+          title_admin: titleAdmin,
+          is_video: it?.is_video === true,
+          published_at: publishedAt,
+          video_language: videoLanguage,
+        });
+      }
+
+      const ids = items.map((i) => i.id);
+      const { data: rows, error: fe } = await supabase
+        .from("suggestions")
+        .select("*")
+        .in("id", ids);
+      if (fe) return safeError(fe, 400);
+      const byId = new Map<string, Record<string, unknown>>(
+        (rows ?? []).map((r) => [r.id as string, r as Record<string, unknown>])
+      );
+
+      // Partition : introuvables / non-pending (idempotence) vs à valider.
+      const skipped: { id: string; reason: string }[] = [];
+      const toAccept: { item: BatchItem; suggestion: Record<string, unknown> }[] =
+        [];
+      for (const item of items) {
+        const s = byId.get(item.id);
+        if (!s) {
+          skipped.push({ id: item.id, reason: "introuvable" });
+          continue;
+        }
+        if (s.status !== "pending") {
+          skipped.push({ id: item.id, reason: `déjà ${s.status}` });
+          continue;
+        }
+        toAccept.push({ item, suggestion: s });
+      }
+      if (toAccept.length === 0) {
+        return await jsonWithFreshToken({ ok: [], skipped, failed: [] });
+      }
+
+      // Garde-fou anti-doublon (idempotence de replay) : ne pas réinsérer un
+      // contenu déjà créé pour le même couple (url, game_id).
+      const urls = toAccept.map((t) => t.suggestion.url as string);
+      const { data: existing } = await supabase
+        .from("contents")
+        .select("url, game_id")
+        .in("url", urls);
+      const existingPairs = new Set(
+        (existing ?? []).map((c) => `${c.url}|${c.game_id}`)
+      );
+
+      const inserts: Record<string, unknown>[] = [];
+      const acceptedIds: string[] = [];
+      const okUrls: string[] = [];
+      for (const { item, suggestion } of toAccept) {
+        const url = suggestion.url as string;
+        acceptedIds.push(item.id);
+        if (existingPairs.has(`${url}|${item.game_id}`)) {
+          continue; // contenu déjà créé (replay) → on marque juste accepted
+        }
+        inserts.push({
+          game_id: item.game_id,
+          category: item.category,
+          url,
+          title_source: suggestion.shared_text ?? null,
+          title_admin: item.title_admin,
+          validated: true,
+          is_video: item.is_video,
+          author_id: suggestion.author_id ?? null,
+          video_language: item.video_language,
+          published_at: item.published_at ?? new Date().toISOString(),
+        });
+        okUrls.push(url);
+      }
+
+      if (inserts.length > 0) {
+        // Multi-insert = UNE requête SQL atomique : tout ou rien.
+        const { error: ce } = await supabase.from("contents").insert(inserts);
+        if (ce) {
+          // Détails SQL loggés serveur uniquement (jamais renvoyés au
+          // client, convention safeError du fichier).
+          console.error("[admin-catalog] accept-batch insert contents:", ce.message);
+          return json(
+            {
+              error: "Insertion des contenus échouée — rien n'a été validé.",
+              ok: [],
+              skipped,
+              failed: acceptedIds.map((id) => ({
+                id,
+                error: "insert contents échoué (lot rejouable)",
+              })),
+            },
+            400
+          );
+        }
+      }
+
+      // Multi-update = UNE requête SQL atomique : tout ou rien.
+      const { error: ue } = await supabase
+        .from("suggestions")
+        .update({ status: "accepted", accepted_at: new Date().toISOString() })
+        .in("id", acceptedIds);
+      if (ue) {
+        // Contenus insérés mais suggestions non marquées : le client peut
+        // REJOUER le lot — l'idempotence (skip url+game_id existants) évite
+        // les doublons et l'update passera au second essai.
+        console.error("[admin-catalog] accept-batch update suggestions:", ue.message);
+        return json(
+          {
+            error:
+              "Marquage des suggestions échoué — rejouez le lot (idempotent).",
+            ok: [],
+            skipped,
+            failed: acceptedIds.map((id) => ({
+              id,
+              error: "update suggestions échoué (lot rejouable)",
+            })),
+          },
+          400
+        );
+      }
+
+      await journalCacheOp("add", okUrls, "contents");
+      return await jsonWithFreshToken({ ok: acceptedIds, skipped, failed: [] });
     }
 
     if (route === "suggestions/reject") {
@@ -509,6 +806,8 @@ serve(async (req) => {
         .update({ status: "rejected" })
         .eq("id", body.id);
       if (error) return safeError(error, 400);
+      // Pas de journalisation : l'URL d'une suggestion REJETÉE reste
+      // volontairement dans le cache Vision (ne jamais reproposer un refusé).
       return await jsonWithFreshToken({ ok: true });
     }
 
@@ -526,12 +825,19 @@ serve(async (req) => {
           400
         );
       }
+      // Journalise l'URL libérée AVANT suppression (cache Vision : remove).
+      const { data: doomed } = await supabase
+        .from("suggestions")
+        .select("url")
+        .eq("id", suggestionId)
+        .maybeSingle();
       const { error } = await supabase
         .from("suggestions")
         .delete()
         .eq("id", suggestionId)
         .eq("status", "pending");
       if (error) return safeError(error, 400);
+      await journalCacheOp("remove", [doomed?.url ?? null], "suggestions");
       return await jsonWithFreshToken({ ok: true });
     }
 
@@ -541,7 +847,10 @@ serve(async (req) => {
       // mais status='rejected' la sort des résultats pending).
       const suggestionId = uuidOrUndefined(body.id);
       if (!suggestionId) {
-        return json({ error: "id manquant ou invalide." }, 400);
+        return json(
+          { error: "id manquant ou invalide." },
+          400
+        );
       }
       const { error } = await supabase
         .from("suggestions")
@@ -758,7 +1067,7 @@ serve(async (req) => {
       if (userIds.length > 0) {
         const { data: profiles } = await supabase
           .from("profiles")
-          .select("id, display_name, is_banned, ban_reason")
+          .select("id, display_name, is_banned")
           .in("id", userIds);
         for (const p of profiles ?? []) {
           profilesMap[p.id] = {
@@ -776,7 +1085,7 @@ serve(async (req) => {
           ...s,
           display_name: p.name,
           is_banned: p.banned,
-          ban_reason: p.reason,
+          ban_reason: p.ban_reason,
         };
       });
       return json({ subscriptions: result });
@@ -817,7 +1126,7 @@ serve(async (req) => {
         case "analyzed":
           // Analysées par Sentinelle (verdict IA présent).
           query = query
-            .not("ai_recommendation", "is", "null")
+            .not("ai_recommendation", "is", null)
             .eq("status", "pending");
           break;
         case "games-to-create":
@@ -916,6 +1225,11 @@ serve(async (req) => {
       // Anti-doublons Vision : TOUTES les URLs de suggestions (tous statuts,
       // y compris rejected pour ne jamais reproposer un lien refusé), paginé.
       // service_role — remplace la lecture PostgREST anon du bot (Phase 3.2b).
+      //
+      // Paramètre optionnel `since` (ISO 8601) : ne retourne que les
+      // suggestions dont shared_at >= since — utilisé par Vision pour la
+      // synchronisation INCRÉMENTALE de son cache local anti-doublons
+      // (évite de re-télécharger les ~33k URLs à chaque cycle, egress).
       const page =
         typeof body.page === "number" && body.page >= 0 ? body.page : 0;
       const pageSize =
@@ -924,15 +1238,49 @@ serve(async (req) => {
         body.pageSize <= 1000
           ? body.pageSize
           : 1000;
-      const { data: rows, error } = await supabase
+      const since =
+        typeof body.since === "string" && body.since.length > 0
+          ? body.since
+          : null;
+      let query = supabase
         .from("suggestions")
         .select("url")
-        .order("shared_at", { ascending: true })
+        .order("shared_at", { ascending: true });
+      if (since) query = query.gte("shared_at", since);
+      const { data: rows, error } = await query
         .range(page * pageSize, (page + 1) * pageSize - 1);
       if (error) return safeError(error, 400, "Lecture des URLs échouée");
       return await jsonWithFreshToken({
         urls: (rows ?? []).map((r: any) => r.url),
       });
+    }
+
+    if (route === "cache-ops/list") {
+      // Journal des opérations d'URLs (migration 0051) pour la sync du cache
+      // local Vision : additions ET suppressions, dans l'ordre chronologique.
+      // Paramètre optionnel `since` (ISO 8601) : created_at >= since.
+      const page =
+        typeof body.page === "number" && body.page >= 0 ? body.page : 0;
+      const pageSize =
+        typeof body.pageSize === "number" &&
+        body.pageSize > 0 &&
+        body.pageSize <= 1000
+          ? body.pageSize
+          : 1000;
+      const since =
+        typeof body.since === "string" && body.since.length > 0
+          ? body.since
+          : null;
+      let query = supabase
+        .from("cache_ops")
+        .select("url,op,created_at")
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true });
+      if (since) query = query.gte("created_at", since);
+      const { data: rows, error } = await query
+        .range(page * pageSize, (page + 1) * pageSize - 1);
+      if (error) return safeError(error, 400, "Lecture du journal échouée");
+      return await jsonWithFreshToken({ ops: rows ?? [] });
     }
 
     // Route inconnue.
