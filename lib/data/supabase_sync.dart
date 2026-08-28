@@ -108,6 +108,10 @@ class SupabaseSync {
           out['videoLanguage'] = value;
         case 'checked_at':
           out['checkedAt'] = value;
+        case 'manual_date':
+          out['manualDate'] = value;
+        case 'manual_check':
+          out['manualCheck'] = value;
         case 'shared_text':
           out['sharedText'] = value;
         case 'shared_at':
@@ -534,6 +538,35 @@ class SupabaseSync {
 
   Future<void> deleteContent(String id) async {
     await _post('contents/delete', {'id': id});
+  }
+
+  /// Met à jour les dates d'un contenu SAISIES MANUELLEMENT par l'admin
+  /// (« Publié le » et/ou « Ajouté le »). Passe manual:true → l'EF pose
+  /// manual_date=true : le bot Check ne tentera plus de retrouver ces dates
+  /// (migration 0053).
+  Future<void> updateContentDates(
+    String id, {
+    DateTime? publishedAt,
+    DateTime? createdAt,
+  }) async {
+    await _post('contents/update-date', {
+      'id': id,
+      if (publishedAt != null)
+        'published_at': publishedAt.toUtc().toIso8601String(),
+      if (createdAt != null)
+        'created_at': createdAt.toUtc().toIso8601String(),
+      'manual': true,
+    });
+  }
+
+  /// Marque un contenu comme vérifié MANUELLEMENT par l'admin
+  /// (checked_at=now + manual_check=true) — le bot Check l'exclut
+  /// définitivement de toutes ses phases (migration 0053).
+  Future<void> markContentCheckedManual(String id) async {
+    await _post('contents/mark-checked', {
+      'ids': [id],
+      'manual': true,
+    });
   }
 
   Future<void> acceptSuggestion({

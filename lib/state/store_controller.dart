@@ -570,6 +570,99 @@ class StoreController extends ChangeNotifier {
     }
   }
 
+  /// Met à jour les dates d'un contenu saisies MANUELLEMENT par l'admin
+  /// (« Publié le » / « Ajouté le »). Update optimiste + appel EF
+  /// (manual:true → manual_date=true : le bot Check ne retouchera plus
+  /// jamais ces dates — migration 0053).
+  Future<void> updateContentDates(
+    Content content, {
+    DateTime? publishedAt,
+    DateTime? createdAt,
+  }) async {
+    // Normalisation : showDatePicker renvoie minuit HEURE LOCALE ; stocké en
+    // UTC, le jour peut décaler d'un jour à l'affichage. On force midi UTC,
+    // le jour affiché reste alors celui choisi quel que soit le fuseau.
+    DateTime? noonUtc(DateTime? d) =>
+        d == null ? null : DateTime.utc(d.year, d.month, d.day, 12);
+    publishedAt = noonUtc(publishedAt);
+    createdAt = noonUtc(createdAt);
+    final Content previous = _contents.firstWhere(
+      (c) => c.id == content.id,
+      orElse: () => content,
+    );
+    _contents = _contents
+        .map(
+          (c) => c.id == content.id
+              ? c.copyWith(
+                  publishedAt: publishedAt,
+                  createdAt: createdAt,
+                  manualDate: true,
+                )
+              : c,
+        )
+        .toList();
+    _store.saveContents(_contents);
+    notifyListeners();
+    if (sync == null) return;
+    try {
+      await sync!.updateContentDates(
+        content.id,
+        publishedAt: publishedAt,
+        createdAt: createdAt,
+      );
+    } catch (e) {
+      // Rollback.
+      _contents = _contents
+          .map((c) => c.id == content.id ? previous : c)
+          .toList();
+      _store.saveContents(_contents);
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
+      lastActionError = 'Dates non modifiées (erreur serveur) : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Marque un contenu comme vérifié MANUELLEMENT (checked_at=now +
+  /// manual_check=true). Le bot Check ne le reprendra plus jamais, dans
+  /// aucune de ses phases (migration 0053).
+  Future<void> markContentChecked(Content content) async {
+    final Content previous = _contents.firstWhere(
+      (c) => c.id == content.id,
+      orElse: () => content,
+    );
+    _contents = _contents
+        .map(
+          (c) => c.id == content.id
+              ? c.copyWith(
+                  checkedAt: DateTime.now().toUtc(),
+                  manualCheck: true,
+                )
+              : c,
+        )
+        .toList();
+    _store.saveContents(_contents);
+    notifyListeners();
+    if (sync == null) return;
+    try {
+      await sync!.markContentCheckedManual(content.id);
+    } catch (e) {
+      // Rollback.
+      _contents = _contents
+          .map((c) => c.id == content.id ? previous : c)
+          .toList();
+      _store.saveContents(_contents);
+      if (_isAuthError(e)) {
+        onAuthError?.call();
+        return;
+      }
+      lastActionError = 'Check manuel non enregistré (erreur serveur) : $e';
+      notifyListeners();
+    }
+  }
+
   /// Supprime un contenu. Attend la confirmation serveur.
   Future<void> deleteContent(String id) async {
     final List<Content> backup = List<Content>.from(_contents);
@@ -1977,18 +2070,28 @@ class StoreController extends ChangeNotifier {
       ).hasMatch(id);
 
   /// Met à jour le jeton admin pour les écritures Supabase (appelé après
-  /// login/logout).
+  /// login/logout ET après chaque écriture via le fresh_token de la sliding
+  /// session).
   ///
-  /// ⚠️ Ne resync QUE si le token a changé (évite les resync en boucle à
-  /// chaque rebuild de l'UI).
+  /// ⚠️ Ne resync QUE sur un VRAI login (transition « pas de token » →
+  /// « token valide »). Une simple ROTATION du token (fresh_token renvoyé
+  /// par l'EF après chaque écriture) ne doit PAS déclencher de resync
+  /// global — sinon chaque édition rechargeait toute la base (jeux +
+  /// contenus + suggestions + abonnements...), d'où le lag de 5-6 s et le
+  /// double refresh observés dans le menu Contenus (fix 28/08/2026).
   void updateAdminToken(String? token) {
     if (sync == null) return;
     if (token == _lastToken) return; // pas de changement → pas de resync
+    final hadToken = _lastToken != null && _lastToken!.isNotEmpty;
+    final hasToken = token != null && token.isNotEmpty;
     _lastToken = token;
-    if (token != null && token.isNotEmpty) {
+    if (hasToken) {
       sync!.setAdminToken(token);
-      // Re-sync pour récupérer les données à jour une fois connecté.
-      syncFromSupabase();
+      // Resync uniquement au login (hadToken == false). Sur rotation, les
+      // données locales sont déjà à jour (updates optimistes des écritures).
+      if (!hadToken) {
+        syncFromSupabase();
+      }
     } else {
       sync!.setAdminToken('');
     }

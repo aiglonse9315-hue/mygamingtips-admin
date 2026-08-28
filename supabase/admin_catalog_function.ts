@@ -1,5 +1,5 @@
 // ============================================================================
-// MyGamingTips — Edge Function Supabase "admin-catalog" (v61)
+// MyGamingTips — Edge Function Supabase "admin-catalog" (v62)
 // ============================================================================
 // Opérations d'écriture administrateur sur le catalogue (jeux, contenus,
 // suggestions, profils bannis, abonnements). Contourne la RLS via
@@ -78,6 +78,21 @@
 // refusé reste volontairement dans le cache anti-doublons). Durcissement
 // par rapport au reject unitaire (qui ne vérifie pas le status) : le lot
 // est une action DESTRUCTIVE DE MASSE → garde 'pending' obligatoire.
+//
+// v62 (28/08/2026) : flags « manuel » (migration 0053) —
+//   - contents/update-date accepte created_at + manual:true (pose
+//     manual_date=true → le bot Check ne recherche/corrige plus la date) ;
+//   - contents/mark-checked accepte manual:true (pose manual_check=true →
+//     le bot Check exclut le contenu de toutes ses phases).
+//   Les appels bots (sans manual) ne posent aucun flag — comportement
+//   strictement inchangé pour eux.
+//   Durcissements post-audit (pentester-micro-agents, 28/08/2026) :
+//   - update-date SANS manual:true refuse d'écraser une date verrouillée
+//     (garde-fou serveur .eq('manual_date', false) — anti race TOCTOU) ;
+//   - dates validées en ISO 8601 strict, plage 2000-01-01 → demain ;
+//   - mark-checked : validation UUID de chaque id + plafond 500/lot.
+//   Point résiduel connu (accepté) : bot et panneau partagent le même token
+//   admin — un durcissement futur ajouterait une claim 'actor' au JWT.
 //
 // Lecture : les lectures du catalogue (games, contents) se font via l'API
 // REST PostgREST (anon key suffit grâce aux politiques RLS publiques).
@@ -449,16 +464,34 @@ serve(async (req) => {
 
     if (route === "contents/mark-checked") {
       // Marque un ou plusieurs contenus comme vérifiés (checked_at = now).
+      // manual:true (panneau admin uniquement) pose aussi manual_check=true →
+      // le bot Check exclut définitivement ces contenus de TOUTES ses phases
+      // (migration 0053). Les bots appellent sans manual → flag inchangé.
       const ids = body.ids;
       if (!Array.isArray(ids) || ids.length === 0) {
         return json({ error: "ids (array) requis." }, 400);
       }
+      // Durcissement v62 (audit) : validation UUID de chaque id + plafond de
+      // lot, aligné sur les autres routes batch.
+      if (ids.length > 500) {
+        return json({ error: "Trop d'ids (max 500 par appel)." }, 400);
+      }
+      const validIds: string[] = [];
+      for (const raw of ids) {
+        const id = uuidOrUndefined(raw);
+        if (!id) return json({ error: "id invalide (UUID attendu)." }, 400);
+        validIds.push(id);
+      }
+      const patch: Record<string, unknown> = {
+        checked_at: new Date().toISOString(),
+      };
+      if (body.manual === true) patch.manual_check = true;
       const { error } = await supabase
         .from("contents")
-        .update({ checked_at: new Date().toISOString() })
-        .in("id", ids);
+        .update(patch)
+        .in("id", validIds);
       if (error) return safeError(error, 400, "Marquage checked échoué");
-      return await jsonWithFreshToken({ ok: true, marked: ids.length });
+      return await jsonWithFreshToken({ ok: true, marked: validIds.length });
     }
 
     if (route === "contents/delete-batch") {
@@ -523,17 +556,57 @@ serve(async (req) => {
     }
 
     if (route === "contents/update-date") {
-      // Met à jour uniquement la date de publication d'un contenu.
+      // Met à jour la date de publication d'un contenu.
       // Utilisé par le bot Check pour corriger les dates YouTube.
+      // v62 : accepte aussi created_at (« Ajouté le ») et le flag manual:true
+      // (panneau admin) qui pose manual_date=true → le bot Check ne tentera
+      // plus jamais de retrouver/corriger ces dates (migration 0053).
+      // Le bot Check appelle SANS manual → manual_date reste false.
       const contentId = uuidOrUndefined(body.id);
       const newDate = body.published_at;
-      if (!contentId || !newDate) {
-        return json({ error: "id et published_at requis." }, 400);
+      const newCreatedAt = body.created_at;
+      if (!contentId || (!newDate && !newCreatedAt)) {
+        return json(
+          { error: "id et au moins une date (published_at/created_at) requis." },
+          400
+        );
       }
-      const { error } = await supabase
+      const patch: Record<string, unknown> = {};
+      // Durcissement v62 (audit) : format ISO strict + plage bornée
+      // (2000-01-01 → demain) pour interdire les dates aberrantes
+      // (année 9999, formats non-ISO acceptés par Date.parse).
+      const maxDate = Date.now() + 24 * 3600 * 1000;
+      const validDate = (v: unknown): v is string =>
+        typeof v === "string" &&
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v) &&
+        !isNaN(Date.parse(v)) &&
+        Date.parse(v) >= Date.parse("2000-01-01T00:00:00Z") &&
+        Date.parse(v) <= maxDate;
+      if (typeof newDate === "string" && newDate.length > 0) {
+        if (!validDate(newDate)) {
+          return json({ error: "published_at invalide (ISO 8601, 2000→demain)." }, 400);
+        }
+        patch.published_at = newDate;
+      }
+      if (typeof newCreatedAt === "string" && newCreatedAt.length > 0) {
+        if (!validDate(newCreatedAt)) {
+          return json({ error: "created_at invalide (ISO 8601, 2000→demain)." }, 400);
+        }
+        patch.created_at = newCreatedAt;
+      }
+      if (Object.keys(patch).length === 0) {
+        return json({ error: "Aucune date valide fournie." }, 400);
+      }
+      if (body.manual === true) patch.manual_date = true;
+      // Durcissement v62 (audit, race TOCTOU) : un appel SANS manual:true
+      // (bot Check) ne peut pas écraser une date verrouillée manuellement —
+      // le garde-fou est appliqué côté serveur, pas seulement dans le bot.
+      let query = supabase
         .from("contents")
-        .update({ published_at: newDate })
+        .update(patch)
         .eq("id", contentId);
+      if (body.manual !== true) query = query.eq("manual_date", false);
+      const { error } = await query;
       if (error) return safeError(error, 400, "Mise à jour date échouée");
       return await jsonWithFreshToken({ ok: true });
     }

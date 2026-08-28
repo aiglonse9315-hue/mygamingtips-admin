@@ -19,6 +19,12 @@ class Content {
   final bool isVideo;
   final String? videoLanguage;
   final DateTime? checkedAt;
+  /// Date(s) saisies manuellement par l'admin (migration 0053) — le bot
+  /// Check ne recherche/corrige plus jamais la date de ce contenu.
+  final bool manualDate;
+  /// Check validé manuellement par l'admin (migration 0053) — le bot Check
+  /// exclut ce contenu de toutes ses phases.
+  final bool manualCheck;
 
   const Content({
     required this.id,
@@ -34,6 +40,8 @@ class Content {
     this.isVideo = false,
     this.videoLanguage,
     this.checkedAt,
+    this.manualDate = false,
+    this.manualCheck = false,
   });
 
   factory Content.fromJson(Map<String, dynamic> json) {
@@ -60,6 +68,8 @@ class Content {
       checkedAt: json['checkedAt'] != null
           ? DateTime.tryParse(json['checkedAt'] as String)
           : null,
+      manualDate: (json['manualDate'] as bool?) ?? false,
+      manualCheck: (json['manualCheck'] as bool?) ?? false,
     );
   }
 
@@ -91,7 +101,11 @@ class Content {
     String? gameId,
     ContentCategory? category,
     DateTime? publishedAt,
+    DateTime? createdAt,
+    DateTime? checkedAt,
     bool? validated,
+    bool? manualDate,
+    bool? manualCheck,
     String? videoLanguage,
   }) {
     return Content(
@@ -103,9 +117,16 @@ class Content {
       titleAdmin: titleAdmin != null ? titleAdmin() : this.titleAdmin,
       imageUrl: imageUrl != null ? imageUrl() : this.imageUrl,
       publishedAt: publishedAt ?? this.publishedAt,
+      // createdAt / checkedAt / flags manuels : préservés par défaut (le
+      // copyWith les perdait avant — l'icône Checked repassait rouge après
+      // chaque édition locale jusqu'au prochain resync).
+      createdAt: createdAt ?? this.createdAt,
+      checkedAt: checkedAt ?? this.checkedAt,
       validated: validated ?? this.validated,
       isVideo: category == ContentCategory.video ? true : (category == null ? isVideo : false),
       videoLanguage: videoLanguage ?? this.videoLanguage,
+      manualDate: manualDate ?? this.manualDate,
+      manualCheck: manualCheck ?? this.manualCheck,
     );
   }
 

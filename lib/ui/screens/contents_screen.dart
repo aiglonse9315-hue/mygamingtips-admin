@@ -41,8 +41,10 @@ class _ContentsScreenState extends State<ContentsScreen> {
   bool _sortAscending = false; // false = décroissant par défaut.
 
   // ── Pagination ──
+  // 100 lignes/page (au lieu de 250) : le DataTable rendait 250 lignes × 8
+  // colonnes de widgets à chaque rebuild — trop lourd pendant les resyncs.
   int _currentPage = 0;
-  static const int _pageSize = 250;
+  static const int _pageSize = 100;
 
   @override
   void dispose() {
@@ -85,7 +87,7 @@ class _ContentsScreenState extends State<ContentsScreen> {
     // ── Tri par colonne ──
     _applySort(list, store);
 
-    // ── Pagination locale : découpe la liste filtrée+triée en pages de 250 ──
+    // ── Pagination locale : découpe la liste filtrée+triée en pages de 100 ──
     final totalPages = (list.length / _pageSize).ceil();
     if (_currentPage >= totalPages && totalPages > 0) {
       _currentPage = totalPages - 1;
@@ -274,19 +276,58 @@ class _ContentsScreenState extends State<ContentsScreen> {
                         languageCode: c.videoLanguage,
                         size: BadgeSize.small,
                       ),
-                      // Indicateur "Checked" (vert = vérifié, rouge = non vérifié).
-                      Icon(
-                        c.checkedAt != null
-                            ? Icons.check_circle_rounded
-                            : Icons.radio_button_unchecked_rounded,
-                        size: 16,
-                        color: c.checkedAt != null
-                            ? Colors.green
-                            : Colors.red,
+                      // Indicateur "Checked" (vert = vérifié, rouge = non
+                      // vérifié). Tooltip : distingue vérifié manuellement
+                      // (l'admin — bot Check exclu) / par le bot / non vérifié.
+                      Tooltip(
+                        message: c.checkedAt != null
+                            ? (c.manualCheck
+                                ? 'Vérifié manuellement — exclu du bot Check'
+                                : 'Vérifié par le bot Check')
+                            : 'Non vérifié',
+                        child: Icon(
+                          c.checkedAt != null
+                              ? (c.manualCheck
+                                  ? Icons.verified_rounded
+                                  : Icons.check_circle_rounded)
+                              : Icons.radio_button_unchecked_rounded,
+                          size: 16,
+                          color: c.checkedAt != null
+                              ? Colors.green
+                              : Colors.red,
+                        ),
                       ),
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          // Check manuel : marque le contenu vérifié à la
+                          // main → le bot Check ne le reprendra plus jamais
+                          // (migration 0053). Inactif si déjà vérifié.
+                          IconButton(
+                            tooltip: c.checkedAt != null
+                                ? 'Déjà vérifié'
+                                : 'Marquer vérifié (manuel)',
+                            icon: const Icon(
+                                Icons.check_circle_outline_rounded,
+                                size: 20),
+                            color: c.checkedAt != null
+                                ? Colors.green.withValues(alpha: 0.4)
+                                : Colors.green,
+                            onPressed: c.checkedAt != null
+                                ? null
+                                : () => showDialog<void>(
+                                      context: context,
+                                      builder: (_) => ConfirmDialog(
+                                        title: 'Marquer comme vérifié ?',
+                                        message:
+                                            '« ${c.displayTitle} » sera marqué vérifié manuellement. '
+                                            'Le bot Check ne le reprendra plus (dates, doublons, langues).',
+                                        confirmLabel: 'Marquer vérifié',
+                                        onConfirm: () =>
+                                            store.markContentChecked(c),
+                                      ),
+                                    ),
+                          ),
                           IconButton(
                             tooltip: 'Modifier le titre et l\'URL',
                             icon: const Icon(Icons.edit_outlined, size: 20),
@@ -659,6 +700,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
   String? _gameId;
   ContentCategory _category = ContentCategory.video;
   DateTime? _publishedAt;
+  DateTime? _createdAt;
   String? _videoLanguage;
 
   @override
@@ -671,6 +713,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
     _gameId = widget.content?.gameId;
     _category = widget.content?.category ?? ContentCategory.video;
     _publishedAt = widget.content?.publishedAt;
+    _createdAt = widget.content?.createdAt;
     _videoLanguage = widget.content?.videoLanguage;
   }
 
@@ -696,16 +739,31 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
         imageUrl: _image.text,
       );
     } else {
-      // Édition : met à jour le titre, l'URL, le jeu, la catégorie et la date.
+      // Édition : met à jour le titre, l'URL, le jeu et la catégorie.
+      // Les dates passent par updateContentDates ci-dessous (flag manuel).
       store.updateContent(
         widget.content!,
         titleAdmin: _title.text,
         url: url,
         category: _category,
-        publishedAt: _publishedAt,
         gameId: _gameId,
         videoLanguage: _videoLanguage,
       );
+      // Dates saisies MANUELLEMENT : persistance dédiée (contents/update-date
+      // avec manual:true → manual_date=true, le bot Check n'y touchera plus).
+      // Avant le 28/08, la date modifiée ici était silencieusement perdue
+      // (jamais envoyée au serveur).
+      final orig = widget.content!;
+      final pubChanged =
+          _publishedAt != null && _publishedAt != orig.publishedAt;
+      final creChanged = _createdAt != null && _createdAt != orig.createdAt;
+      if (pubChanged || creChanged) {
+        store.updateContentDates(
+          orig,
+          publishedAt: pubChanged ? _publishedAt : null,
+          createdAt: creChanged ? _createdAt : null,
+        );
+      }
     }
     Navigator.pop(context);
   }
@@ -766,14 +824,16 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
                 onChanged: (v) => setState(() => _category = v ?? _category),
               ),
               const SizedBox(height: 12),
-              // Champ date de création (modifiable manuellement).
+              // Date « Publié le » (date YouTube/site source, modifiable
+              // manuellement — la saisie pose manual_date=true, le bot
+              // Check ne la recherchera plus).
               InkWell(
                 onTap: () async {
                   final picked = await showDatePicker(
                     context: context,
                     initialDate: _publishedAt ?? DateTime.now(),
                     firstDate: DateTime(2000),
-                    lastDate: DateTime.now(),
+                    lastDate: DateTime.now().add(const Duration(days: 365)),
                   );
                   if (picked != null) {
                     setState(() => _publishedAt = picked);
@@ -781,7 +841,9 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
                 },
                 child: InputDecorator(
                   decoration: const InputDecoration(
-                    labelText: 'Date de création',
+                    labelText: 'Publié le (date source)',
+                    helperText:
+                        'Date saisie manuellement : le bot Check n\'y touchera plus.',
                     suffixIcon: Icon(Icons.calendar_today_outlined, size: 18),
                   ),
                   child: Text(
@@ -791,6 +853,40 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
                     style: TextStyle(
                       fontSize: 14,
                       color: _publishedAt != null
+                          ? null
+                          : Theme.of(context).textTheme.bodySmall?.color,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Date « Ajouté le » (date d'insertion dans la base).
+              InkWell(
+                onTap: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: _createdAt ?? DateTime.now(),
+                    firstDate: DateTime(2000),
+                    lastDate: DateTime.now().add(const Duration(days: 365)),
+                  );
+                  if (picked != null) {
+                    setState(() => _createdAt = picked);
+                  }
+                },
+                child: InputDecorator(
+                  decoration: const InputDecoration(
+                    labelText: 'Ajouté le (base de données)',
+                    helperText:
+                        'Date saisie manuellement : le bot Check n\'y touchera plus.',
+                    suffixIcon: Icon(Icons.calendar_today_outlined, size: 18),
+                  ),
+                  child: Text(
+                    _createdAt != null
+                        ? '${_createdAt!.day.toString().padLeft(2, '0')}/${_createdAt!.month.toString().padLeft(2, '0')}/${_createdAt!.year}'
+                        : 'Non définie',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: _createdAt != null
                           ? null
                           : Theme.of(context).textTheme.bodySmall?.color,
                     ),
