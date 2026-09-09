@@ -466,8 +466,18 @@ class _StatusTab extends StatelessWidget {
 
 /// Dialog de validation d'une suggestion : choix du jeu + catégorie + titre admin.
 class SuggestionReviewDialog extends StatefulWidget {
-  const SuggestionReviewDialog({super.key, required this.suggestion});
+  const SuggestionReviewDialog({
+    super.key,
+    required this.suggestion,
+    this.initialTitle,
+  });
   final Suggestion suggestion;
+
+  /// Titre pour insertion déjà édité par l'admin en amont (colonne « Titre
+  /// pour insertion » du tableau Sentinelle « À vérifier »). S'il est fourni
+  /// et non vide après trim, il pré-remplit le champ titre à la place du
+  /// titre calculé automatiquement.
+  final String? initialTitle;
 
   @override
   State<SuggestionReviewDialog> createState() =>
@@ -484,12 +494,17 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
   void initState() {
     super.initState();
     // Pré-remplissage intelligent du titre (par ordre de priorité) :
+    // 0. Titre déjà édité par l'admin en amont ([initialTitle], colonne
+    //    « Titre pour insertion » du tableau Sentinelle « À vérifier »).
     // 1. Titre réel YouTube (récupéré par Sentinelle via l'API YouTube).
     // 2. Texte partagé nettoyé (sans URL).
     // 3. URL brute.
     final ai = widget.suggestion.aiRecommendation;
+    final provided = widget.initialTitle?.trim();
     String title = widget.suggestion.url;
-    if (ai != null && ai.youtubeTitle != null && ai.youtubeTitle!.trim().isNotEmpty) {
+    if (provided != null && provided.isNotEmpty) {
+      title = provided;
+    } else if (ai != null && ai.youtubeTitle != null && ai.youtubeTitle!.trim().isNotEmpty) {
       title = ai.youtubeTitle!.trim();
     } else {
       final sharedText = widget.suggestion.sharedText;

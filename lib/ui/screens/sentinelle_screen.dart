@@ -92,6 +92,30 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     _gtcEditedGames[suggestionId] = game;
   }
 
+  /// Titres pour insertion modifiés par l'admin dans la colonne « Titre
+  /// pour insertion » (section 99% sûr). Key = ID de suggestion, value =
+  /// titre saisi. Absent de la map = l'admin n'a pas retouché le titre
+  /// calculé (voir [StoreController.titleForInsertion]).
+  final Map<String, String> _editedTitles = <String, String>{};
+
+  /// Enregistre le titre saisi par l'admin pour une suggestion « 99% sûr ».
+  /// Pas de setState : le TextField gère son propre affichage (évite un
+  /// rebuild complet de l'écran à chaque frappe).
+  void _setEditedTitle(String suggestionId, String title) {
+    _editedTitles[suggestionId] = title;
+  }
+
+  /// Titres pour insertion modifiés par l'admin (section « Jeux à créer »).
+  /// Key = ID de suggestion, value = titre saisi. Absent de la map = titre
+  /// calculé conservé.
+  final Map<String, String> _gtcEditedTitles = <String, String>{};
+
+  /// Enregistre le titre saisi par l'admin pour une suggestion
+  /// « Jeux à créer ». Pas de setState : le TextField gère son propre état.
+  void _setGtcEditedTitle(String suggestionId, String title) {
+    _gtcEditedTitles[suggestionId] = title;
+  }
+
   /// Catégories modifiées par l'admin dans la colonne « Catégorie »
   /// (section « Jeux à créer »). Key = ID de suggestion, value =
   /// 'video' | 'guides' | 'links'. Absent de la map = présélection
@@ -264,10 +288,13 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
 
     final gameOverrides = <String, String>{};
     final categoryOverrides = <String, String>{};
+    final titleOverrides = <String, String>{};
     for (final s in items) {
       final g = _editedGames[s.id];
       if (g != null && g.trim().isNotEmpty) gameOverrides[s.id] = g;
       categoryOverrides[s.id] = _smartCategoryFor(s, _editedCategories[s.id]);
+      final t = _editedTitles[s.id];
+      if (t != null && t.trim().isNotEmpty) titleOverrides[s.id] = t;
     }
 
     setState(() {
@@ -280,6 +307,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
         items,
         gameOverrides: gameOverrides,
         categoryOverrides: categoryOverrides,
+        titleOverrides: titleOverrides,
         onProgress: (done, total) {
           if (!mounted) return;
           setState(() {
@@ -300,6 +328,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
           _selected.clear();
           _editedGames.removeWhere((id, _) => !remaining.contains(id));
           _editedCategories.removeWhere((id, _) => !remaining.contains(id));
+          _editedTitles.removeWhere((id, _) => !remaining.contains(id));
         });
       }
     }
@@ -576,6 +605,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                 onGameChanged: _setEditedGame,
                 editedCategories: _editedCategories,
                 onCategoryChanged: _setEditedCategory,
+                onTitleChanged: _setEditedTitle,
               ),
             ),
 
@@ -802,11 +832,13 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                                         _gtcEditedCategories[s.id],
                                       ),
                                   },
+                                  titleOverrides: _gtcEditedTitles,
                                 );
                             setState(() {
                               _gtcSelected.clear();
                               _gtcEditedGames.clear();
                               _gtcEditedCategories.clear();
+                              _gtcEditedTitles.clear();
                             });
                           },
                         ),
@@ -881,10 +913,12 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                                     _gtcEditedCategories[s.id],
                                   ),
                               },
+                              titleOverrides: _gtcEditedTitles,
                             );
                         setState(() {
                           _gtcEditedGames.clear();
                           _gtcEditedCategories.clear();
+                          _gtcEditedTitles.clear();
                         });
                       },
                     ),
@@ -936,6 +970,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                 editedCategories: _gtcEditedCategories,
                 onCategoryChanged: _setGtcEditedCategory,
                 onGameNameChanged: _setGtcEditedGame,
+                onTitleChanged: _setGtcEditedTitle,
               ),
             ),
         ],
@@ -1026,6 +1061,7 @@ class _TrustedTable extends StatefulWidget {
     required this.onGameChanged,
     required this.editedCategories,
     required this.onCategoryChanged,
+    required this.onTitleChanged,
   });
 
   final List<Suggestion> suggestions;
@@ -1053,6 +1089,12 @@ class _TrustedTable extends StatefulWidget {
   /// Callback appelé quand l'admin change la catégorie d'une suggestion.
   final void Function(String suggestionId, String category) onCategoryChanged;
 
+  /// Callback appelé à chaque frappe dans le champ « Titre pour insertion »
+  /// — remonte la saisie au parent ([_SentinelleScreenState._editedTitles])
+  /// pour que « Valider sélection » et « Tout valider » utilisent le titre
+  /// saisi, pas seulement le bouton « 1 clic » de la ligne.
+  final void Function(String suggestionId, String title) onTitleChanged;
+
   @override
   State<_TrustedTable> createState() => _TrustedTableState();
 }
@@ -1062,6 +1104,29 @@ class _TrustedTableState extends State<_TrustedTable> {
   /// Colonne 5 = Confiance, colonne 6 = Vues.
   int? _sortColumnIndex;
   bool _sortAscending = true;
+
+  /// Contrôleurs de texte pour le champ « Titre pour insertion » éditable.
+  /// Keyed par suggestion ID pour préserver la saisie entre les pages et
+  /// les rebuilds (pattern identique à _GamesToCreateTable._gameNameControllers).
+  final Map<String, TextEditingController> _titleControllers = {};
+
+  /// Retourne le contrôleur du titre pour une suggestion, pré-rempli avec le
+  /// titre calculé ([StoreController.titleForInsertion] : titre YouTube IA
+  /// sinon texte partagé nettoyé) à la première utilisation.
+  TextEditingController _titleControllerFor(Suggestion s, StoreController store) {
+    return _titleControllers.putIfAbsent(
+      s.id,
+      () => TextEditingController(text: store.titleForInsertion(s)),
+    );
+  }
+
+  @override
+  void dispose() {
+    for (final c in _titleControllers.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
 
   // ── Pagination (réplique du système de _ToVerifyTable) ──
   /// Nombre maximum de suggestions affichées par page. Au-delà, l'admin doit
@@ -1318,7 +1383,7 @@ class _TrustedTableState extends State<_TrustedTable> {
           columns: const [
             '☐',
             'Titre',
-            'Titre pour insertion',
+            'Titre pour insertion (modifiable)',
             'Jeu IA (modifiable)',
             'Catégorie (modifiable)',
             'Confiance',
@@ -1332,7 +1397,7 @@ class _TrustedTableState extends State<_TrustedTable> {
           nonSortableColumns: const [
             '☐',
             'Titre',
-            'Titre pour insertion',
+            'Titre pour insertion (modifiable)',
             'Jeu IA (modifiable)',
             'Catégorie (modifiable)',
             'Actions',
@@ -1340,6 +1405,7 @@ class _TrustedTableState extends State<_TrustedTable> {
           rows: pageItems.map((s) {
             final ai = s.aiRecommendation!;
             final isSelected = widget.selectedIds.contains(s.id);
+            final titleController = _titleControllerFor(s, store);
             return [
               // Checkbox de sélection (cliquable).
               InkWell(
@@ -1362,30 +1428,35 @@ class _TrustedTableState extends State<_TrustedTable> {
                   fontSize: 13,
                 ),
               ),
-              // Titre réel de la vidéo YouTube (pour insertion 1 clic).
+              // Titre pour insertion (éditable) : pré-rempli avec le titre
+              // calculé (titre YouTube IA sinon texte partagé nettoyé) —
+              // c'est le titre enregistré en base (title_admin) à la
+              // validation. Chaque frappe est remontée au parent pour que
+              // « Valider sélection » / « Tout valider » utilisent la saisie.
               Tooltip(
-                message: ai.youtubeTitle ?? _cleanTitle(s),
-                showDuration: const Duration(seconds: 8),
-                margin: const EdgeInsets.symmetric(horizontal: 16),
-                padding: const EdgeInsets.all(10),
-                textStyle: const TextStyle(fontSize: 12, color: Colors.white),
-                decoration: BoxDecoration(
-                  color: Colors.grey[900],
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Container(
-                  constraints: const BoxConstraints(maxWidth: 200),
-                  child: Text(
-                    ai.youtubeTitle ?? _cleanTitle(s),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontStyle: FontStyle.italic,
-                      color: ai.youtubeTitle != null
-                          ? AppColors.neonCyan
-                          : Theme.of(context).textTheme.bodySmall?.color,
+                message:
+                    'Titre pour insertion : c\'est le titre qui sera '
+                    'enregistré pour le contenu validé — modifiable avant '
+                    'validation. Pré-rempli avec le titre YouTube ou le '
+                    'texte partagé nettoyé.',
+                showDuration: const Duration(seconds: 6),
+                child: SizedBox(
+                  width: 220,
+                  child: TextField(
+                    controller: titleController,
+                    onChanged: (text) => widget.onTitleChanged(s.id, text),
+                    minLines: 1,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 6,
+                      ),
+                      hintText: 'Titre pour insertion',
                     ),
+                    style: const TextStyle(fontSize: 12),
                   ),
                 ),
               ),
@@ -1438,6 +1509,7 @@ class _TrustedTableState extends State<_TrustedTable> {
                         s,
                         widget.editedCategories[s.id],
                       ),
+                      titleOverride: titleController.text,
                     ),
                     icon: const Icon(Icons.bolt_rounded, size: 16),
                     label: const Text('1 clic'),
@@ -1499,6 +1571,29 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
   static const int _pageSize = 100;
   int _currentPage = 0;
 
+  /// Contrôleurs de texte pour le champ « Titre pour insertion » éditable.
+  /// Keyed par suggestion ID pour préserver la saisie entre les pages et
+  /// les rebuilds (pattern identique à _GamesToCreateTable._gameNameControllers).
+  final Map<String, TextEditingController> _titleControllers = {};
+
+  /// Retourne le contrôleur du titre pour une suggestion, pré-rempli avec le
+  /// titre calculé ([StoreController.titleForInsertion] : titre YouTube IA
+  /// sinon texte partagé nettoyé) à la première utilisation.
+  TextEditingController _titleControllerFor(Suggestion s, StoreController store) {
+    return _titleControllers.putIfAbsent(
+      s.id,
+      () => TextEditingController(text: store.titleForInsertion(s)),
+    );
+  }
+
+  @override
+  void dispose() {
+    for (final c in _titleControllers.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
   /// Filtre : null = tout, AiVerdict.caution = uniquement "À vérifier".
   AiVerdict? _verdictFilter;
 
@@ -1544,6 +1639,7 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
     final isReject = ai?.verdict == AiVerdict.reject;
     final isSelected = widget.selectedIds?.contains(s.id) ?? false;
     final hasCheckbox = widget.selectedIds != null && widget.onToggle != null;
+    final titleController = _titleControllerFor(s, store);
     return [
       if (hasCheckbox)
         InkWell(
@@ -1563,29 +1659,32 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
         _cleanTitle(s),
         style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
       ),
+      // Titre pour insertion (éditable) : pré-rempli avec le titre calculé
+      // (titre YouTube IA sinon texte partagé nettoyé). La saisie est
+      // transmise au dialogue « Ajouter manuellement » comme titre initial —
+      // c'est le titre enregistré en base (title_admin) à la validation.
       Tooltip(
-        message: ai?.youtubeTitle ?? _cleanTitle(s),
-        showDuration: const Duration(seconds: 8),
-        margin: const EdgeInsets.symmetric(horizontal: 16),
-        padding: const EdgeInsets.all(10),
-        textStyle: const TextStyle(fontSize: 12, color: Colors.white),
-        decoration: BoxDecoration(
-          color: Colors.grey[900],
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Container(
-          constraints: const BoxConstraints(maxWidth: 200),
-          child: Text(
-            ai?.youtubeTitle ?? _cleanTitle(s),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 12,
-              fontStyle: FontStyle.italic,
-              color: ai?.youtubeTitle != null
-                  ? AppColors.neonCyan
-                  : Theme.of(context).textTheme.bodySmall?.color,
+        message:
+            'Titre pour insertion : c\'est le titre qui sera enregistré '
+            'pour le contenu validé — modifiable avant validation. '
+            'Pré-rempli avec le titre YouTube ou le texte partagé nettoyé.',
+        showDuration: const Duration(seconds: 6),
+        child: SizedBox(
+          width: 220,
+          child: TextField(
+            controller: titleController,
+            minLines: 1,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              isDense: true,
+              border: OutlineInputBorder(),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 8,
+                vertical: 6,
+              ),
+              hintText: 'Titre pour insertion',
             ),
+            style: const TextStyle(fontSize: 12),
           ),
         ),
       ),
@@ -1639,7 +1738,10 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
             icon: const Icon(Icons.edit_outlined, size: 20),
             onPressed: () => showDialog<void>(
               context: context,
-              builder: (_) => SuggestionReviewDialog(suggestion: s),
+              builder: (_) => SuggestionReviewDialog(
+                suggestion: s,
+                initialTitle: titleController.text,
+              ),
             ),
           ),
           IconButton(
@@ -1712,7 +1814,7 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
               ? const [
                   '☐',
                   'Titre',
-                  'Titre pour insertion',
+                  'Titre pour insertion (modifiable)',
                   'Verdict IA',
                   'Raison',
                   'Confiance',
@@ -1720,7 +1822,7 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
                 ]
               : const [
                   'Titre',
-                  'Titre pour insertion',
+                  'Titre pour insertion (modifiable)',
                   'Verdict IA',
                   'Raison',
                   'Confiance',
@@ -1923,6 +2025,7 @@ class _GamesToCreateTable extends StatefulWidget {
     required this.editedCategories,
     required this.onCategoryChanged,
     required this.onGameNameChanged,
+    required this.onTitleChanged,
   });
 
   final List<Suggestion> suggestions;
@@ -1941,6 +2044,12 @@ class _GamesToCreateTable extends StatefulWidget {
   /// la saisie au parent pour que les validations par lot l'utilisent.
   final void Function(String suggestionId, String gameName) onGameNameChanged;
 
+  /// Callback appelé à chaque frappe dans le champ « Titre pour insertion »
+  /// — remonte la saisie au parent ([_SentinelleScreenState._gtcEditedTitles])
+  /// pour que « Valider sélection » et « Tout accepter » utilisent le titre
+  /// saisi, pas seulement le bouton « Créer » de la ligne.
+  final void Function(String suggestionId, String title) onTitleChanged;
+
   @override
   State<_GamesToCreateTable> createState() => _GamesToCreateTableState();
 }
@@ -1953,6 +2062,10 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
   /// Keyed par suggestion ID pour préserver la saisie entre les pages.
   final Map<String, TextEditingController> _gameNameControllers = {};
 
+  /// Contrôleurs de texte pour le champ « Titre pour insertion » éditable.
+  /// Keyed par suggestion ID pour préserver la saisie entre les pages.
+  final Map<String, TextEditingController> _titleControllers = {};
+
   TextEditingController _controllerFor(Suggestion s) {
     final ai = s.aiRecommendation;
     final suggested = ai?.suggestedGame ?? '';
@@ -1962,9 +2075,22 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
     );
   }
 
+  /// Retourne le contrôleur du titre pour une suggestion, pré-rempli avec le
+  /// titre calculé ([StoreController.titleForInsertion] : titre YouTube IA
+  /// sinon texte partagé nettoyé) à la première utilisation.
+  TextEditingController _titleControllerFor(Suggestion s, StoreController store) {
+    return _titleControllers.putIfAbsent(
+      s.id,
+      () => TextEditingController(text: store.titleForInsertion(s)),
+    );
+  }
+
   @override
   void dispose() {
     for (final c in _gameNameControllers.values) {
+      c.dispose();
+    }
+    for (final c in _titleControllers.values) {
       c.dispose();
     }
     super.dispose();
@@ -2057,6 +2183,7 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
           columns: const [
             '☐',
             'Titre',
+            'Titre pour insertion (modifiable)',
             'Jeu suggéré (modifiable)',
             'Catégorie (modifiable)',
             'Vues',
@@ -2066,6 +2193,7 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
             final ai = s.aiRecommendation;
             final isSelected = widget.selectedIds.contains(s.id);
             final controller = _controllerFor(s);
+            final titleController = _titleControllerFor(s, store);
             return [
               // Checkbox.
               InkWell(
@@ -2097,6 +2225,38 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
                           ? AppColors.neonCyan
                           : null,
                     ),
+                  ),
+                ),
+              ),
+              // Titre pour insertion (éditable) : pré-rempli avec le titre
+              // calculé (titre YouTube IA sinon texte partagé nettoyé) —
+              // c'est le titre enregistré en base (title_admin) à la
+              // validation. Chaque frappe est remontée au parent pour que
+              // « Valider sélection » / « Tout accepter » utilisent la saisie.
+              Tooltip(
+                message:
+                    'Titre pour insertion : c\'est le titre qui sera '
+                    'enregistré pour le contenu validé — modifiable avant '
+                    'validation. Pré-rempli avec le titre YouTube ou le '
+                    'texte partagé nettoyé.',
+                showDuration: const Duration(seconds: 6),
+                child: SizedBox(
+                  width: 220,
+                  child: TextField(
+                    controller: titleController,
+                    onChanged: (text) => widget.onTitleChanged(s.id, text),
+                    minLines: 1,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 6,
+                      ),
+                      hintText: 'Titre pour insertion',
+                    ),
+                    style: const TextStyle(fontSize: 12),
                   ),
                 ),
               ),
@@ -2144,6 +2304,7 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
                         s,
                         widget.editedCategories[s.id],
                       ),
+                      titleOverride: titleController.text,
                     ),
                     icon: const Icon(Icons.add_circle_rounded, size: 16),
                     label: const Text('Créer'),

@@ -804,10 +804,16 @@ class StoreController extends ChangeNotifier {
   /// [categoryOverride] : catégorie choisie par l'admin dans la colonne
   /// « Catégorie » (section 99% sûr) — 'video', 'guides' ou 'links'. Si elle
   /// est fournie et non vide, elle prime sur la catégorie suggérée par l'IA.
+  ///
+  /// [titleOverride] : titre pour insertion modifié par l'admin dans la
+  /// colonne « Titre pour insertion ». S'il est fourni et non vide après
+  /// trim, il devient le `title_admin` envoyé au serveur (sinon le titre
+  /// calculé par [_titleForInsertion] est conservé).
   Future<void> acceptOneClick(
     Suggestion suggestion, {
     String? gameOverride,
     String? categoryOverride,
+    String? titleOverride,
   }) async {
     final ai = suggestion.aiRecommendation;
     if (ai == null) {
@@ -897,7 +903,7 @@ class StoreController extends ChangeNotifier {
         suggestionId: suggestion.id,
         gameId: targetGame.id,
         category: category,
-        titleAdmin: _titleForInsertion(suggestion),
+        titleAdmin: _effectiveTitle(suggestion, titleOverride),
         isVideo: category == ContentCategory.video,
         publishedAt: _dateForInsertion(suggestion),
       );
@@ -933,10 +939,16 @@ class StoreController extends ChangeNotifier {
   /// ne sont pas restaurés.
   ///
   /// Retourne le nombre de suggestions effectivement validées.
+  ///
+  /// [titleOverrides] : titres pour insertion modifiés par l'admin (key =
+  /// suggestion ID) — colonne « Titre pour insertion ». Un override non vide
+  /// après trim devient le `title_admin` envoyé ; sinon le titre calculé par
+  /// [_titleForInsertion] est conservé.
   Future<int> acceptSentinelleBatch(
     List<Suggestion> items, {
     Map<String, String>? gameOverrides,
     Map<String, String>? categoryOverrides,
+    Map<String, String>? titleOverrides,
     void Function(int validated, int total)? onProgress,
   }) async {
     if (items.isEmpty) return 0;
@@ -949,6 +961,7 @@ class StoreController extends ChangeNotifier {
           s,
           gameOverride: gameOverrides?[s.id],
           categoryOverride: categoryOverrides?[s.id],
+          titleOverride: titleOverrides?[s.id],
         );
         done++;
         onProgress?.call(done, items.length);
@@ -1000,7 +1013,7 @@ class StoreController extends ChangeNotifier {
         'id': s.id,
         'game_id': targetGame.id,
         'category': category.name,
-        'title_admin': _titleForInsertion(s),
+        'title_admin': _effectiveTitle(s, titleOverrides?[s.id]),
         'is_video': category == ContentCategory.video,
         if (_dateForInsertion(s) != null)
           'published_at': _dateForInsertion(s)!.toIso8601String(),
@@ -1308,10 +1321,15 @@ class StoreController extends ChangeNotifier {
   /// tableau « Jeux à créer » ('video' | 'guides' | 'links'). Prioritaire sur
   /// la proposition de l'IA — la catégorie affichée dans le dropdown est
   /// exactement celle qui sera insérée.
+  ///
+  /// [titleOverride] : titre pour insertion modifié par l'admin dans la
+  /// colonne « Titre pour insertion ». S'il est fourni et non vide après
+  /// trim, il devient le `title_admin` envoyé (sinon titre calculé).
   Future<void> acceptGameToCreate(
     Suggestion suggestion,
     String gameName, {
     String? categoryOverride,
+    String? titleOverride,
   }) async {
     final trimmed = gameName.trim();
     if (trimmed.isEmpty) {
@@ -1374,7 +1392,7 @@ class StoreController extends ChangeNotifier {
         suggestionId: suggestion.id,
         gameId: targetGame.id,
         category: effectiveCategory,
-        titleAdmin: _titleForInsertion(suggestion),
+        titleAdmin: _effectiveTitle(suggestion, titleOverride),
         isVideo: effectiveCategory == ContentCategory.video,
         publishedAt: _dateForInsertion(suggestion),
       );
@@ -1450,10 +1468,13 @@ class StoreController extends ChangeNotifier {
   /// (key = suggestion ID). Prioritaires sur le `suggestedGame` de l'IA.
   /// [categoryOverrides] : catégories choisies par l'admin dans le tableau
   /// (key = suggestion ID, 'video' | 'guides' | 'links').
+  /// [titleOverrides] : titres pour insertion modifiés par l'admin (key =
+  /// suggestion ID) — prioritaires sur le titre calculé.
   Future<void> acceptAllGamesToCreate(
     List<Suggestion> items, {
     Map<String, String>? gameNameOverrides,
     Map<String, String>? categoryOverrides,
+    Map<String, String>? titleOverrides,
   }) async {
     for (final s in items) {
       final overrideName = gameNameOverrides?[s.id]?.trim();
@@ -1465,6 +1486,7 @@ class StoreController extends ChangeNotifier {
           s,
           gameName,
           categoryOverride: categoryOverrides?[s.id],
+          titleOverride: titleOverrides?[s.id],
         );
       }
     }
@@ -1514,6 +1536,21 @@ class StoreController extends ChangeNotifier {
     // 2. Fallback : texte partagé nettoyé.
     return _cleanTitle(s);
   }
+
+  /// Titre d'insertion effectif : l'override saisi par l'admin (colonne
+  /// « Titre pour insertion » des tableaux Sentinelle) prime sur le titre
+  /// calculé, sauf s'il est vide après trim (champ effacé = titre calculé).
+  static String _effectiveTitle(Suggestion s, String? titleOverride) {
+    final override = titleOverride?.trim();
+    return (override != null && override.isNotEmpty)
+        ? override
+        : _titleForInsertion(s);
+  }
+
+  /// Titre calculé pour l'insertion d'un contenu (titre YouTube IA sinon
+  /// texte partagé nettoyé). Exposé à l'UI Sentinelle pour pré-remplir les
+  /// champs « Titre pour insertion » éditables des 3 tableaux.
+  String titleForInsertion(Suggestion s) => _titleForInsertion(s);
 
   /// Détermine la date de publication pour l'insertion d'un contenu.
   ///
