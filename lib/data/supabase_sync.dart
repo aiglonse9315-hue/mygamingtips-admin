@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -85,6 +86,46 @@ class SupabaseSync {
   void setAdminToken(String token) => adminToken = token;
 
   // ===========================================================================
+  // RETRY ANTI MICRO-COUPURES (10/09/2026)
+  // ===========================================================================
+  // En cas de micro-coupure réseau (ClientException — fréquent en connexion
+  // instable à l'étranger), de timeout, ou de 5xx transitoire (cold start
+  // d'Edge Function / gateway), on retente automatiquement au lieu d'échouer
+  // immédiatement. JAMAIS de retry sur 4xx (400 logique, 401 auth) : ces
+  // erreurs sont définitives et le retry serait contre-productif.
+  // Les routes EF d'écriture sont idempotentes (skip non-pending, pas de
+  // doublon) → rejouer une écriture dont la réponse s'est perdue est sûr.
+  static const List<Duration> _retryDelays = [
+    Duration(seconds: 2),
+    Duration(seconds: 4),
+  ];
+
+  /// Exécute [call] avec retry automatique (3 tentatives max : immédiate,
+  /// +2 s, +4 s) sur erreur réseau transitoire ou 5xx.
+  Future<http.Response> _withRetry(
+    Future<http.Response> Function() call,
+  ) async {
+    Object? lastError;
+    for (var attempt = 0; attempt <= _retryDelays.length; attempt++) {
+      if (attempt > 0) {
+        await Future<void>.delayed(_retryDelays[attempt - 1]);
+      }
+      try {
+        final res = await call();
+        // 5xx = transitoire (cold start, gateway) → retente si possible.
+        if (res.statusCode >= 500 && attempt < _retryDelays.length) continue;
+        return res;
+      } on http.ClientException catch (e) {
+        lastError = e; // NetworkError (fetch navigateur avorté, coupure)
+      } on TimeoutException catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError ?? Exception('Requête échouée après retries');
+  }
+
+
+  // ===========================================================================
   // LECTURES CATALOGUE (PostgREST — anon key, données publiques par design)
   // ===========================================================================
 
@@ -170,9 +211,9 @@ class SupabaseSync {
       '&order=id.asc'
       '&limit=$pageSize&offset=${page * pageSize}',
     );
-    final http.Response res = await http
-        .get(uri, headers: _anonHeaders)
-        .timeout(requestTimeout);
+    final http.Response res = await _withRetry(
+      () => http.get(uri, headers: _anonHeaders).timeout(requestTimeout),
+    );
     if (res.statusCode != 200) {
       throw Exception('fetchGames échec ${res.statusCode}: ${res.body}');
     }
@@ -206,9 +247,9 @@ class SupabaseSync {
       '${since != null ? '&updated_at=gte.$since' : ''}'
       '&limit=$pageSize&offset=${page * pageSize}',
     );
-    final http.Response res = await http
-        .get(uri, headers: _anonHeaders)
-        .timeout(requestTimeout);
+    final http.Response res = await _withRetry(
+      () => http.get(uri, headers: _anonHeaders).timeout(requestTimeout),
+    );
     if (res.statusCode != 200) {
       throw Exception('fetchContents échec ${res.statusCode}: ${res.body}');
     }
@@ -234,9 +275,11 @@ class SupabaseSync {
         '$supabaseUrl/rest/v1/$table?select=*'
         '${filter != null ? '&$filter' : ''}',
       );
-      final http.Response res = await http
-          .head(uri, headers: {..._anonHeaders, 'Prefer': 'count=exact'})
-          .timeout(requestTimeout);
+      final http.Response res = await _withRetry(
+        () => http
+            .head(uri, headers: {..._anonHeaders, 'Prefer': 'count=exact'})
+            .timeout(requestTimeout),
+      );
       if (res.statusCode >= 300) return -1;
       final String contentRange = res.headers['content-range'] ?? '';
       final int slash = contentRange.indexOf('/');
@@ -392,9 +435,9 @@ class SupabaseSync {
       '&order=accepted_count.desc'
       '&limit=$limit',
     );
-    final http.Response res = await http
-        .get(uri, headers: _anonHeaders)
-        .timeout(requestTimeout);
+    final http.Response res = await _withRetry(
+      () => http.get(uri, headers: _anonHeaders).timeout(requestTimeout),
+    );
     if (res.statusCode != 200) {
       throw Exception(
         'fetchTopContributors échec ${res.statusCode}: ${res.body}',
@@ -445,12 +488,14 @@ class SupabaseSync {
   Future<int> countSuggestions({String? filter}) async {
     var query = '$supabaseUrl/rest/v1/suggestions?select=id';
     if (filter != null) query += '&$filter';
-    final res = await http
-        .get(
-          Uri.parse(query),
-          headers: {..._anonHeaders, 'Prefer': 'count=exact'},
-        )
-        .timeout(requestTimeout);
+    final res = await _withRetry(
+      () => http
+          .get(
+            Uri.parse(query),
+            headers: {..._anonHeaders, 'Prefer': 'count=exact'},
+          )
+          .timeout(requestTimeout),
+    );
     if (res.statusCode == 200) {
       final range = res.headers['content-range'];
       if (range != null) {
@@ -472,13 +517,15 @@ class SupabaseSync {
     String route,
     Map<String, dynamic> body,
   ) async {
-    final http.Response res = await http
-        .post(
-          Uri.parse('$catalogEndpoint/$route'),
-          headers: _adminHeaders,
-          body: jsonEncode(body),
-        )
-        .timeout(requestTimeout);
+    final http.Response res = await _withRetry(
+      () => http
+          .post(
+            Uri.parse('$catalogEndpoint/$route'),
+            headers: _adminHeaders,
+            body: jsonEncode(body),
+          )
+          .timeout(requestTimeout),
+    );
     final Map<String, dynamic> data =
         jsonDecode(res.body) as Map<String, dynamic>;
     if (res.statusCode >= 400) {
@@ -554,14 +601,16 @@ class SupabaseSync {
   /// limité par la pagination), cette méthode ne récupère que les 12 lignes
   /// max du jeu concerné — aucun cutoff possible.
   Future<Map<String, String>> fetchTranslationsForGame(String gameId) async {
-    final res = await http
-        .get(
-          Uri.parse(
-            '$supabaseUrl/rest/v1/game_translations?select=lang,title&game_id=eq.$gameId',
-          ),
-          headers: {'apikey': anonKey, 'Authorization': 'Bearer $anonKey'},
-        )
-        .timeout(requestTimeout);
+    final res = await _withRetry(
+      () => http
+          .get(
+            Uri.parse(
+              '$supabaseUrl/rest/v1/game_translations?select=lang,title&game_id=eq.$gameId',
+            ),
+            headers: {'apikey': anonKey, 'Authorization': 'Bearer $anonKey'},
+          )
+          .timeout(requestTimeout),
+    );
     if (res.statusCode != 200) return {};
     final List<dynamic> rows = jsonDecode(res.body) as List? ?? [];
     final Map<String, String> result = {};
