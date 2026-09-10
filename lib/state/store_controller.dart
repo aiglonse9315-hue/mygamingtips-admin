@@ -14,6 +14,33 @@ import '../domain/models/suggestion.dart';
 /// Détecte si une erreur provient d'un token admin expiré/invalide (HTTP 401).
 bool _isAuthError(Object e) => e is AdminAuthException;
 
+/// Datasets synchronisables indépendamment (chargement paresseux par menu).
+///
+/// Chaque écran déclare ses besoins via [StoreController.ensureDatasets] ;
+/// seuls les datasets demandés (et pas encore chargés) sont fetchés. Les
+/// resyncs post-action ne rechargent que les datasets impactés.
+///
+/// - [games] : catalogue des jeux (PostgREST anon).
+/// - [contents] : contenus validés (PostgREST anon, le plus volumineux).
+/// - [suggestionsNew] : suggestions jamais prises en charge (menu Suggestions).
+/// - [sentinelleAnalyzing] : analyses Sentinelle en cours.
+/// - [sentinelleAnalyzed] : suggestions analysées par Sentinelle.
+/// - [scruteur] : suggestions du bot Scruteur (sites de guides).
+/// - [gamesToCreate] : file « Jeux à créer ».
+/// - [subscriptions] : abonnements Plus.
+/// - [banned] : comptes bannis + mauvais contributeurs (menu Comptes à bannir).
+enum SyncDataset {
+  games,
+  contents,
+  suggestionsNew,
+  sentinelleAnalyzing,
+  sentinelleAnalyzed,
+  scruteur,
+  gamesToCreate,
+  subscriptions,
+  banned,
+}
+
 /// Contrôleur applicatif (Provider) gérant l'état du catalogue et des
 /// suggestions.
 ///
@@ -50,10 +77,15 @@ class StoreController extends ChangeNotifier {
     sync?.onTokenRefreshed = (freshToken) {
       onTokenRefreshed?.call(freshToken);
     };
-    // En mode production, on synchronise immédiatement avec Supabase.
+    // En mode production, on précharge les données PUBLIQUES (PostgREST anon,
+    // pas besoin du token admin) : jeux + contenus. Les datasets sensibles
+    // (suggestions, abonnements, bannis — Edge Function, token requis) sont
+    // chargés à la demande par chaque écran via ensureDatasets, et au login.
     if (sync != null) {
       // sync async sans bloquer l'init ; _reload() a déjà chargé le cache.
-      syncFromSupabase().catchError((Object e) {
+      syncFromSupabase(
+        datasets: const {SyncDataset.games, SyncDataset.contents},
+      ).catchError((Object e) {
         debugPrint('syncFromSupabase initial échec: $e');
       });
     }
@@ -86,6 +118,86 @@ class StoreController extends ChangeNotifier {
   /// snapshot entrant, puis purge de l'ensemble les ids confirmés absents du
   /// serveur. En cas d'échec de l'action (rollback), l'id est retiré.
   final Set<String> _pendingRemovalIds = <String>{};
+
+  /// Datasets chargés avec succès dans cette session (chargement paresseux).
+  /// Un dataset y figure dès que sa première sync (full ou incrémentale) a
+  /// réussi ; [ensureDatasets] ne recharge pas ce qui y figure déjà.
+  final Set<SyncDataset> _loadedDatasets = <SyncDataset>{};
+
+  /// Datasets en cours de chargement (pour l'indicateur par écran).
+  final Set<SyncDataset> _loadingDatasets = <SyncDataset>{};
+
+  /// Datasets chargés avec succès dans cette session (lecture seule).
+  Set<SyncDataset> get loadedDatasets =>
+      Set<SyncDataset>.unmodifiable(_loadedDatasets);
+
+  /// Ce dataset est-il en cours de chargement ?
+  bool isDatasetLoading(SyncDataset dataset) =>
+      _loadingDatasets.contains(dataset);
+
+  // ── Curseurs de sync incrémentale (migration 0056) ──
+  //
+  // Pour chaque dataset à curseur, on persiste en localStorage le
+  // `max(updated_at)` vu MOINS une marge de 5 s (anti-désalignement
+  // d'horloge serveur/client), plus l'horodatage du fetch (règle des 24 h :
+  // au-delà, full sync de sécurité du dataset).
+  //
+  // ⚠️ Un curseur PAR mode de suggestions (pas un curseur global
+  // « suggestions ») : avec le chargement paresseux, les modes ne sont pas
+  // toujours fetchés ensemble — un curseur partagé avancé par le mode « new »
+  // pourrait dépasser l'updated_at d'une ligne modifiée dans un mode non
+  // fetché, qui ne serait alors JAMAIS revue (trou de sync). Un curseur par
+  // mode élimine ce risque.
+  static const Duration _cursorSafetyMargin = Duration(seconds: 5);
+  static const Duration _cursorMaxAge = Duration(hours: 24);
+
+  /// Noms de curseur localStorage par dataset à curseur.
+  static const Map<SyncDataset, String> _cursorNames = <SyncDataset, String>{
+    SyncDataset.games: 'games',
+    SyncDataset.contents: 'contents',
+    SyncDataset.suggestionsNew: 'sug_new',
+    SyncDataset.sentinelleAnalyzing: 'sug_analyzing',
+    SyncDataset.sentinelleAnalyzed: 'sug_analyzed',
+    SyncDataset.scruteur: 'sug_scruteur',
+    SyncDataset.gamesToCreate: 'sug_gtc',
+  };
+
+  /// Curseur du journal cache_ops (created_at, indépendant des updated_at).
+  static const String _cacheOpsCursorName = 'cacheops';
+
+  /// Curseur valide (présent ET fetché il y a moins de 24 h) pour [dataset],
+  /// ou null s'il faut une full sync.
+  String? _validCursorFor(SyncDataset dataset) {
+    final String? name = _cursorNames[dataset];
+    if (name == null) return null; // dataset sans curseur (toujours full)
+    final cursor = _store.loadCursor(name);
+    if (cursor == null) return null;
+    if (DateTime.now().toUtc().difference(cursor.fetchedAt.toUtc()) >
+        _cursorMaxAge) {
+      return null; // trop vieux → full sync de sécurité
+    }
+    return cursor.value;
+  }
+
+  /// Persiste le nouveau curseur d'un dataset : max(updated_at) vu moins la
+  /// marge de 5 s. Sans [maxUpdatedAt] (aucune ligne modifiée), on conserve
+  /// la valeur précédente mais on rafraîchit l'horodatage (règle des 24 h).
+  void _saveCursorFor(SyncDataset dataset, DateTime? maxUpdatedAt) {
+    final String? name = _cursorNames[dataset];
+    if (name == null) return;
+    final DateTime now = DateTime.now().toUtc();
+    if (maxUpdatedAt != null) {
+      final DateTime safe = maxUpdatedAt.toUtc().subtract(_cursorSafetyMargin);
+      _store.saveCursor(name, safe.toIso8601String(), now);
+    } else {
+      final existing = _store.loadCursor(name);
+      if (existing != null) {
+        _store.saveCursor(name, existing.value, now);
+      }
+      // Sans valeur préalable ni ligne vue : pas de curseur — la prochaine
+      // sync restera full (cas théorique : table vide).
+    }
+  }
 
   /// Dernier token admin connu (pour éviter les resync inutiles).
   String? _lastToken;
@@ -420,8 +532,13 @@ class StoreController extends ChangeNotifier {
     if (sync == null) return;
     try {
       await sync!.deleteGame(id);
-      // Resync pour garantir la cohérence avec le serveur.
-      await syncFromSupabase();
+      // Resync ciblé : jeux + contenus (le jeu et ses contenus ont disparu).
+      // Full sync des 2 datasets : les suppressions ne sont pas visibles en
+      // incrémental (updated_at ne signale pas les DELETE).
+      await syncFromSupabase(
+        datasets: const {SyncDataset.games, SyncDataset.contents},
+        forceFull: true,
+      );
     } catch (e) {
       // Rollback : le jeu n'a pas pu être supprimé, on le restaure.
       _games = backupGames..sort(_byName);
@@ -636,10 +753,7 @@ class StoreController extends ChangeNotifier {
     _contents = _contents
         .map(
           (c) => c.id == content.id
-              ? c.copyWith(
-                  checkedAt: DateTime.now().toUtc(),
-                  manualCheck: true,
-                )
+              ? c.copyWith(checkedAt: DateTime.now().toUtc(), manualCheck: true)
               : c,
         )
         .toList();
@@ -672,7 +786,12 @@ class StoreController extends ChangeNotifier {
     if (sync == null) return;
     try {
       await sync!.deleteContent(id);
-      await syncFromSupabase();
+      // Resync ciblé contenus, en FULL : un DELETE n'est pas visible via le
+      // curseur updated_at (la ligne a disparu, pas été modifiée).
+      await syncFromSupabase(
+        datasets: const {SyncDataset.contents},
+        forceFull: true,
+      );
     } catch (e) {
       // Rollback.
       _contents = backup;
@@ -730,8 +849,11 @@ class StoreController extends ChangeNotifier {
         isVideo: category == ContentCategory.video,
         publishedAt: _dateForInsertion(suggestion),
       );
-      // Resync pour récupérer le contenu créé côté serveur.
-      await syncFromSupabase();
+      // Resync ciblé : la suggestion quitte « new » + le contenu créé
+      // côté serveur apparaît dans le delta (updated_at bumpé par l'EF).
+      await syncFromSupabase(
+        datasets: const {SyncDataset.suggestionsNew, SyncDataset.contents},
+      );
     } catch (e) {
       // Rollback : la suggestion redevient pending.
       _suggestions = _suggestions
@@ -907,9 +1029,17 @@ class StoreController extends ChangeNotifier {
         isVideo: category == ContentCategory.video,
         publishedAt: _dateForInsertion(suggestion),
       );
-      // Resync pour récupérer le contenu créé côté serveur + le nouveau jeu.
-      // La sync purge aussi le tombstone une fois l'absence confirmée.
-      await syncFromSupabase();
+      // Resync ciblé : la suggestion quitte « analyzed » + contenu créé +
+      // nouveau jeu éventuel (addGame a déjà inséré l'UUID localement, la
+      // sync games confirme). Le tombstone reste actif jusqu'au prochain
+      // full sync des 5 modes (Actualiser ou curseur > 24 h).
+      await syncFromSupabase(
+        datasets: const {
+          SyncDataset.sentinelleAnalyzed,
+          SyncDataset.contents,
+          SyncDataset.games,
+        },
+      );
     } catch (e) {
       // Rollback : remet la suggestion dans Sentinelle + retire le tombstone.
       _pendingRemovalIds.remove(suggestion.id);
@@ -981,8 +1111,9 @@ class StoreController extends ChangeNotifier {
           ? _categoryFromAi(categoryChoice, s.url)
           : _categoryFromAi(ai.suggestedCategory, s.url);
       final override = gameOverrides?[s.id]?.trim();
-      final suggestedName =
-          (override != null && override.isNotEmpty) ? override : ai.suggestedGame;
+      final suggestedName = (override != null && override.isNotEmpty)
+          ? override
+          : ai.suggestedGame;
       if (suggestedName == null || suggestedName.trim().isEmpty) continue;
       final lower = suggestedName.toLowerCase();
       Game? targetGame;
@@ -993,11 +1124,11 @@ class StoreController extends ChangeNotifier {
         }
       }
       targetGame ??= _games.cast<Game?>().firstWhere(
-            (g) =>
-                g!.name.toLowerCase().contains(lower) ||
-                lower.contains(g.name.toLowerCase()),
-            orElse: () => null,
-          );
+        (g) =>
+            g!.name.toLowerCase().contains(lower) ||
+            lower.contains(g.name.toLowerCase()),
+        orElse: () => null,
+      );
       if (targetGame == null) {
         // Crée le jeu (réutilise le chemin existant addGame + resync UUID).
         await addGame(name: suggestedName.trim());
@@ -1020,7 +1151,8 @@ class StoreController extends ChangeNotifier {
       });
     }
     if (payload.isEmpty) {
-      lastActionError = 'Aucune suggestion validable (analyse IA ou jeu manquant).';
+      lastActionError =
+          'Aucune suggestion validable (analyse IA ou jeu manquant).';
       notifyListeners();
       return 0;
     }
@@ -1028,8 +1160,9 @@ class StoreController extends ChangeNotifier {
     // ── Phase 2 : retrait optimiste UNIQUE + tombstones anti-race.
     final ids = payload.map((p) => p['id'] as String).toSet();
     _pendingRemovalIds.addAll(ids);
-    _sentinelleSuggestions =
-        _sentinelleSuggestions.where((s) => !ids.contains(s.id)).toList();
+    _sentinelleSuggestions = _sentinelleSuggestions
+        .where((s) => !ids.contains(s.id))
+        .toList();
     notifyListeners();
 
     // ── Phase 3 : appels EF par chunks de 100 (plafond côté EF).
@@ -1040,7 +1173,9 @@ class StoreController extends ChangeNotifier {
     for (var start = 0; start < payload.length; start += chunkSize) {
       final chunk = payload.sublist(
         start,
-        (start + chunkSize) > payload.length ? payload.length : start + chunkSize,
+        (start + chunkSize) > payload.length
+            ? payload.length
+            : start + chunkSize,
       );
       try {
         final res = await sync!.acceptSuggestionsBatch(chunk);
@@ -1073,7 +1208,17 @@ class StoreController extends ChangeNotifier {
           'Validation en lot : ${failedIds.length} échec(s) — $firstError. '
           'Les lignes concernées ont été restaurées (réessayez).';
     }
-    await syncFromSupabase(); // purge aussi les tombstones confirmés
+    // Resync ciblée : les suggestions validées quittent « analyzed », les
+    // contenus créés apparaissent dans le delta contents, les jeux créés en
+    // phase 1 sont confirmés. Les tombstones restent actifs jusqu'au
+    // prochain full sync des 5 modes (Actualiser ou curseur > 24 h).
+    await syncFromSupabase(
+      datasets: const {
+        SyncDataset.sentinelleAnalyzed,
+        SyncDataset.contents,
+        SyncDataset.games,
+      },
+    );
     notifyListeners();
     return validated;
   }
@@ -1118,7 +1263,10 @@ class StoreController extends ChangeNotifier {
         publishedAt: ai?.youtubePublishedAt, // date du site si trouvée
         videoLanguage: videoLanguage,
       );
-      await syncFromSupabase();
+      // Resync ciblée : la suggestion quitte « scruteur » + contenu créé.
+      await syncFromSupabase(
+        datasets: const {SyncDataset.scruteur, SyncDataset.contents},
+      );
     } catch (e) {
       _pendingRemovalIds.remove(suggestion.id);
       _scruteurSuggestions = [..._scruteurSuggestions, suggestion];
@@ -1144,7 +1292,8 @@ class StoreController extends ChangeNotifier {
     }
     try {
       await sync!.rejectSuggestion(suggestion.id);
-      await syncFromSupabase();
+      // Resync ciblée : la suggestion quitte « scruteur ».
+      await syncFromSupabase(datasets: const {SyncDataset.scruteur});
     } catch (e) {
       _pendingRemovalIds.remove(suggestion.id);
       _scruteurSuggestions = [..._scruteurSuggestions, suggestion];
@@ -1164,7 +1313,15 @@ class StoreController extends ChangeNotifier {
     try {
       final unlocked = await sync!.unlockStuckSuggestions();
       if (unlocked > 0) {
-        await syncFromSupabase();
+        // Resync ciblée : les suggestions débloquées quittent « analyzing »
+        // et redeviennent « new » (changement de mode → couvert par la
+        // fusion multi-modes de la sync incrémentale).
+        await syncFromSupabase(
+          datasets: const {
+            SyncDataset.sentinelleAnalyzing,
+            SyncDataset.suggestionsNew,
+          },
+        );
       }
       return unlocked;
     } catch (e) {
@@ -1255,8 +1412,9 @@ class StoreController extends ChangeNotifier {
     // ── Phase 1 : retrait optimiste UNIQUE + tombstones anti-race.
     final ids = remote.map((s) => s.id).toSet();
     _pendingRemovalIds.addAll(ids);
-    _sentinelleSuggestions =
-        _sentinelleSuggestions.where((s) => !ids.contains(s.id)).toList();
+    _sentinelleSuggestions = _sentinelleSuggestions
+        .where((s) => !ids.contains(s.id))
+        .toList();
     notifyListeners();
 
     // ── Phase 2 : appels EF par chunks de 100 (plafond côté EF).
@@ -1306,7 +1464,9 @@ class StoreController extends ChangeNotifier {
           'Suppression en lot : ${failedIds.length} échec(s) — $firstError. '
           'Les lignes concernées ont été restaurées (réessayez).';
     }
-    await syncFromSupabase(); // purge aussi les tombstones confirmés
+    // Resync ciblée : les suggestions rejetées quittent « analyzed ».
+    // Les tombstones restent actifs jusqu'au prochain full sync des 5 modes.
+    await syncFromSupabase(datasets: const {SyncDataset.sentinelleAnalyzed});
     notifyListeners();
     return rejected + localOnly.length;
   }
@@ -1396,7 +1556,15 @@ class StoreController extends ChangeNotifier {
         isVideo: effectiveCategory == ContentCategory.video,
         publishedAt: _dateForInsertion(suggestion),
       );
-      await syncFromSupabase();
+      // Resync ciblée : la suggestion quitte « Jeux à créer » + contenu
+      // créé + jeu créé/confirmé.
+      await syncFromSupabase(
+        datasets: const {
+          SyncDataset.gamesToCreate,
+          SyncDataset.contents,
+          SyncDataset.games,
+        },
+      );
     } catch (e) {
       _pendingRemovalIds.remove(suggestion.id);
       _gamesToCreate = [..._gamesToCreate, suggestion];
@@ -1831,53 +1999,110 @@ class StoreController extends ChangeNotifier {
   /// Recharge le catalogue depuis la source active.
   ///
   /// - Mode aperçu : relit le localStorage.
-  /// - Mode production : synchronise depuis Supabase puis met à jour le cache.
+  /// - Mode production : full sync de TOUS les datasets (bouton « Actualiser »
+  ///   global — comportement historique conservé, curseurs ignorés).
   Future<void> refresh() async {
     if (sync != null) {
-      await syncFromSupabase();
+      await syncFromSupabase(forceFull: true);
     } else {
       _reload();
       notifyListeners();
     }
   }
 
-  /// Synchronise les données depuis Supabase (lectures PostgREST) et met à
-  /// jour le cache localStorage.
+  /// Datasets nécessaires au dashboard (chargés au login).
+  static const Set<SyncDataset> dashboardDatasets = <SyncDataset>{
+    SyncDataset.games,
+    SyncDataset.contents,
+    SyncDataset.suggestionsNew,
+    SyncDataset.subscriptions,
+    SyncDataset.banned,
+  };
+
+  /// Garantit que les datasets [needed] sont chargés (chargement paresseux).
+  ///
+  /// Ne fetch que ce qui n'est pas déjà chargé dans cette session (ou qui n'a
+  /// jamais réussi). Appelé par chaque écran à son montage.
+  Future<void> ensureDatasets(Set<SyncDataset> needed) async {
+    if (sync == null) return;
+    final Set<SyncDataset> missing = needed.difference(_loadedDatasets);
+    if (missing.isEmpty) return;
+    await syncFromSupabase(datasets: missing, skipAlreadyLoaded: true);
+  }
+
+  /// Synchronise les données depuis Supabase et met à jour le cache
+  /// localStorage.
+  ///
+  /// [datasets] : sous-ensemble à charger (défaut : tous — comportement
+  /// historique). Chaque dataset est fetché indépendamment, EN PARALLÈLE,
+  /// avec isolation d'erreur : un dataset en échec n'annule pas les autres
+  /// et est nommé dans [syncError].
+  ///
+  /// [forceFull] : ignore les curseurs incrémentaux (bouton « Actualiser »).
+  /// [skipAlreadyLoaded] : après attente d'une éventuelle sync en cours,
+  /// ignore les datasets entre-temps chargés (usage interne d'ensureDatasets).
   ///
   /// **Stratégie de fusion** : les données serveur remplacent les données
   /// locales **uniquement pour les entrées déjà synchronisées** (UUID valide).
   /// Les entrées locales en attente (ID temporaire) sont conservées jusqu'à
   /// confirmation de leur écriture.
   ///
+  /// **Sync incrémentale** (migration 0056) : si un curseur valide (< 24 h)
+  /// existe pour un dataset, seules les lignes `updated_at >= curseur` sont
+  /// fetchées puis fusionnées par id. Sinon, full sync du dataset.
+  ///
   /// **Anti-réentrance** : si un sync est déjà en cours, on ATTEND qu'il
   /// termine au lieu de retourner immédiatement (évite le spinner bloqué).
-  /// **Timeout** : si une requête ne répond pas en 15s, on abandonne et on
-  /// débloque l'UI (évite le spinner infini).
-  Future<void> syncFromSupabase() async {
+  /// **Timeouts** : 30 s par requête HTTP (dans [SupabaseSync]) + budget
+  /// global de 120 s (au moins une full sync) ou 45 s (tout en incrémental).
+  Future<void> syncFromSupabase({
+    Set<SyncDataset>? datasets,
+    bool forceFull = false,
+    bool skipAlreadyLoaded = false,
+  }) async {
     if (sync == null) return;
+    Set<SyncDataset> wanted = datasets ?? SyncDataset.values.toSet();
     // Garde anti-réentrance : si un sync est déjà en cours, on attend qu'il
     // termine (au lieu de retourner silencieusement et laisser l'UI croire
-    // qu'un sync est en cours alors qu'il ne se passe rien).
+    // qu'un sync est en cours alors qu'il ne se passe rien). 130 s > budget
+    // global max (120 s) pour ne pas repartir avant la fin réelle.
     if (_syncing) {
-      // Attend que le sync en cours se termine (avec un timeout de sécurité).
       int attempts = 0;
-      while (_syncing && attempts < 150) {
+      while (_syncing && attempts < 1300) {
         await Future<void>.delayed(const Duration(milliseconds: 100));
         attempts++;
       }
-      return;
+    }
+    if (skipAlreadyLoaded) {
+      wanted = wanted.difference(_loadedDatasets);
+      if (wanted.isEmpty) return;
     }
     _syncing = true;
     isSyncing = true;
+    _loadingDatasets.addAll(wanted);
     // ⚠️ On NE remet pas syncError à null ici : cela effacerait une erreur
     // d'action récente. On l'efface seulement si la sync réussit.
     notifyListeners();
     try {
-      // Timeout global de 15s : si une requête pend, on abandonne proprement.
-      await _doSyncFromSupabase().timeout(
-        const Duration(seconds: 15),
+      // Budget global : 45 s si TOUS les datasets à curseur demandés ont un
+      // curseur valide (sync purement incrémentale), 120 s sinon (au moins
+      // une full sync paginée — ex. 10k+ contenus).
+      final bool incrementalOnly =
+          !forceFull &&
+          wanted.every(
+            (SyncDataset d) =>
+                !_cursorNames.containsKey(d) || _validCursorFor(d) != null,
+          );
+      final Duration budget = incrementalOnly
+          ? const Duration(seconds: 45)
+          : const Duration(seconds: 120);
+      await _doSyncFromSupabase(wanted, forceFull: forceFull).timeout(
+        budget,
         onTimeout: () {
-          throw TimeoutException('Synchronisation Supabase expirée (15s).');
+          throw TimeoutException(
+            'Synchronisation Supabase expirée (${budget.inSeconds} s) — '
+            'datasets : ${wanted.map((d) => d.name).join(', ')}.',
+          );
         },
       );
     } catch (e) {
@@ -1891,171 +2116,461 @@ class StoreController extends ChangeNotifier {
     } finally {
       _syncing = false;
       isSyncing = false;
+      _loadingDatasets.clear();
       notifyListeners();
     }
   }
 
   /// Effectue réellement la sync (sans la garde ni le timeout — appelé par
-  /// [syncFromSupabase]).
-  Future<void> _doSyncFromSupabase() async {
-    // Pagination : récupère jusqu'à 100 000 jeux par pages de 1000
-    // (dépasse la limite par défaut de 1000 lignes de PostgREST).
-    const int maxGames = 100000;
-    const int gamesPageSize = 1000;
-    final allGames = <Game>[];
-    for (var page = 0; page * gamesPageSize < maxGames; page++) {
-      final batch = await sync!.fetchGames(page: page, pageSize: gamesPageSize);
-      allGames.addAll(batch);
-      if (batch.length < gamesPageSize) break; // Fin des données.
-    }
-    final games = allGames;
+  /// [syncFromSupabase]). Ne fetch QUE les [datasets] demandés, en parallèle,
+  /// avec isolation d'erreur par dataset.
+  Future<void> _doSyncFromSupabase(
+    Set<SyncDataset> datasets, {
+    required bool forceFull,
+  }) async {
+    final List<String> errors = <String>[];
+    // Modes suggestions ayant bénéficié d'une FULL sync dans cette passe
+    // (condition de purge des tombstones — voir plus bas).
+    final Set<SyncDataset> fullModeSyncs = <SyncDataset>{};
 
-    // Pagination : récupère jusqu'à 500 000 contenus par pages de 1000
-    // (dépasse la limite par défaut de 1000 lignes de PostgREST).
-    const int maxContents = 500000;
-    const int contentsPageSize = 1000;
-    final allContents = <Content>[];
-    for (var page = 0; page * contentsPageSize < maxContents; page++) {
-      final batch = await sync!.fetchContents(
-        page: page,
-        pageSize: contentsPageSize,
-      );
-      allContents.addAll(batch);
-      if (batch.length < contentsPageSize) break; // Fin des données.
-    }
-    final contents = allContents;
-
-    // Pagination : récupère toutes les suggestions par pages de 500.
-    final allSuggestions = <Suggestion>[];
-    final allAnalyzing = <Suggestion>[];
-    final allSentinelle = <Suggestion>[];
-    final allScruteur = <Suggestion>[];
-
-    for (var page = 0; ; page++) {
-      final batch = await sync!.fetchSuggestions(page: page, pageSize: 500);
-      allSuggestions.addAll(batch);
-      if (batch.length < 500) break;
-    }
-    for (var page = 0; ; page++) {
-      final batch = await sync!.fetchSentinelleAnalyzing(
-        page: page,
-        pageSize: 500,
-      );
-      allAnalyzing.addAll(batch);
-      if (batch.length < 500) break;
-    }
-    for (var page = 0; ; page++) {
-      final batch = await sync!.fetchSentinelleSuggestions(
-        page: page,
-        pageSize: 500,
-      );
-      allSentinelle.addAll(batch);
-      if (batch.length < 500) break;
-    }
-    // Récupère les suggestions découvertes par le Scruteur (sites web de guides).
-    for (var page = 0; ; page++) {
-      final batch = await sync!.fetchScruteurSuggestions(
-        page: page,
-        pageSize: 500,
-      );
-      allScruteur.addAll(batch);
-      if (batch.length < 500) break;
+    /// Exécute un job de dataset en isolant son erreur : un dataset en échec
+    /// n'annule pas les autres ; le détail est consolidé et remonté dans
+    /// [syncError] (jamais avalé). Seul le 401 remonte immédiatement
+    /// (logout forcé).
+    Future<void> guard(String label, Future<void> Function() job) async {
+      try {
+        await job();
+      } on AdminAuthException {
+        rethrow;
+      } catch (e) {
+        errors.add('$label : $e');
+      }
     }
 
-    // Récupère les suggestions « Jeux à créer » (needs_game_creation = true).
-    final allGamesToCreate = <Suggestion>[];
-    for (var page = 0; ; page++) {
-      final batch = await sync!.fetchGamesToCreate(page: page, pageSize: 500);
-      allGamesToCreate.addAll(batch);
-      if (batch.length < 500) break;
-    }
+    const Map<SyncDataset, String> labels = <SyncDataset, String>{
+      SyncDataset.games: 'jeux',
+      SyncDataset.contents: 'contenus',
+      SyncDataset.suggestionsNew: 'suggestions (nouvelles)',
+      SyncDataset.sentinelleAnalyzing: 'sentinelle (analyse en cours)',
+      SyncDataset.sentinelleAnalyzed: 'sentinelle (analysées)',
+      SyncDataset.scruteur: 'scruteur',
+      SyncDataset.gamesToCreate: 'jeux à créer',
+      SyncDataset.subscriptions: 'abonnements',
+      SyncDataset.banned: 'comptes à bannir',
+    };
 
-    // ── Tombstones (correctif 27/08/2026) : une ligne tout juste rejetée /
-    //    acceptée / supprimée peut encore figurer dans le snapshot entrant si
-    //    CE fetch a été émis AVANT le commit serveur (sync en vol démarrée
-    //    avant l'action admin). On EXCLUT ces ids des listes entrantes pour
-    //    éviter la « réapparition » quelques secondes après la suppression.
-    //    Puis on purge de l'ensemble les ids confirmés absents du serveur
-    //    (présents dans AUCUNE liste fraîche → suppression bien prise en
-    //    compte, le filtre n'est plus nécessaire).
-    if (_pendingRemovalIds.isNotEmpty) {
-      allSuggestions.removeWhere((s) => _pendingRemovalIds.contains(s.id));
-      allAnalyzing.removeWhere((s) => _pendingRemovalIds.contains(s.id));
-      allSentinelle.removeWhere((s) => _pendingRemovalIds.contains(s.id));
-      allScruteur.removeWhere((s) => _pendingRemovalIds.contains(s.id));
-      allGamesToCreate.removeWhere((s) => _pendingRemovalIds.contains(s.id));
-      // Purge : id absent de TOUTES les listes fraîches = disparition
-      // confirmée côté serveur → on arrête de le filtrer.
-      final stillVisible = <String>{
-        for (final s in allSuggestions) s.id,
-        for (final s in allAnalyzing) s.id,
-        for (final s in allSentinelle) s.id,
-        for (final s in allScruteur) s.id,
-        for (final s in allGamesToCreate) s.id,
+    // Datasets indépendants → fetchés EN PARALLÈLE (Future.wait).
+    await Future.wait(<Future<void>>[
+      if (datasets.contains(SyncDataset.games))
+        guard(
+          labels[SyncDataset.games]!,
+          () => _syncGames(forceFull: forceFull),
+        ),
+      if (datasets.contains(SyncDataset.contents))
+        guard(
+          labels[SyncDataset.contents]!,
+          () => _syncContents(forceFull: forceFull),
+        ),
+      if (datasets.contains(SyncDataset.suggestionsNew))
+        guard(
+          labels[SyncDataset.suggestionsNew]!,
+          () => _syncSuggestionMode(
+            SyncDataset.suggestionsNew,
+            sync!.fetchSuggestions,
+            forceFull: forceFull,
+            fullModeSyncs: fullModeSyncs,
+          ),
+        ),
+      if (datasets.contains(SyncDataset.sentinelleAnalyzing))
+        guard(
+          labels[SyncDataset.sentinelleAnalyzing]!,
+          () => _syncSuggestionMode(
+            SyncDataset.sentinelleAnalyzing,
+            sync!.fetchSentinelleAnalyzing,
+            forceFull: forceFull,
+            fullModeSyncs: fullModeSyncs,
+          ),
+        ),
+      if (datasets.contains(SyncDataset.sentinelleAnalyzed))
+        guard(
+          labels[SyncDataset.sentinelleAnalyzed]!,
+          () => _syncSuggestionMode(
+            SyncDataset.sentinelleAnalyzed,
+            sync!.fetchSentinelleSuggestions,
+            forceFull: forceFull,
+            fullModeSyncs: fullModeSyncs,
+          ),
+        ),
+      if (datasets.contains(SyncDataset.scruteur))
+        guard(
+          labels[SyncDataset.scruteur]!,
+          () => _syncSuggestionMode(
+            SyncDataset.scruteur,
+            sync!.fetchScruteurSuggestions,
+            forceFull: forceFull,
+            fullModeSyncs: fullModeSyncs,
+          ),
+        ),
+      if (datasets.contains(SyncDataset.gamesToCreate))
+        guard(
+          labels[SyncDataset.gamesToCreate]!,
+          () => _syncSuggestionMode(
+            SyncDataset.gamesToCreate,
+            sync!.fetchGamesToCreate,
+            forceFull: forceFull,
+            fullModeSyncs: fullModeSyncs,
+          ),
+        ),
+      if (datasets.contains(SyncDataset.subscriptions))
+        guard(labels[SyncDataset.subscriptions]!, _syncSubscriptions),
+      if (datasets.contains(SyncDataset.banned))
+        guard(labels[SyncDataset.banned]!, _syncBanned),
+    ]);
+
+    // ── Purge des tombstones (correctif 27/08/2026) ──
+    // Un id est retiré de _pendingRemovalIds quand sa disparition serveur est
+    // CONFIRMÉE, c.-à-d. absent de TOUTES les listes fraîches. Cela exige un
+    // snapshot complet des 5 modes en FULL sync : en sync incrémentale ou
+    // partielle, les listes non rafraîchies ne prouvent rien → on conserve
+    // le filtre (le prochain full sync — bouton Actualiser ou curseur > 24 h —
+    // purgera).
+    const Set<SyncDataset> suggestionModes = <SyncDataset>{
+      SyncDataset.suggestionsNew,
+      SyncDataset.sentinelleAnalyzing,
+      SyncDataset.sentinelleAnalyzed,
+      SyncDataset.scruteur,
+      SyncDataset.gamesToCreate,
+    };
+    if (_pendingRemovalIds.isNotEmpty &&
+        suggestionModes.every(datasets.contains) &&
+        suggestionModes.every(fullModeSyncs.contains)) {
+      final Set<String> stillVisible = <String>{
+        for (final s in _suggestions) s.id,
+        for (final s in _sentinelleAnalyzing) s.id,
+        for (final s in _sentinelleSuggestions) s.id,
+        for (final s in _scruteurSuggestions) s.id,
+        for (final s in _gamesToCreate) s.id,
       };
       _pendingRemovalIds.removeWhere((id) => !stillVisible.contains(id));
     }
 
-    final suggestions = allSuggestions;
-    final sentinelleAnalyzing = allAnalyzing;
-    final sentinelleSuggestions = allSentinelle;
-    final scruteurSuggestions = allScruteur;
-    final gamesToCreate = allGamesToCreate;
-
-    // Récupère les abonnements Plus depuis Supabase (table subscriptions).
-    List<Map<String, dynamic>> serverPlus = [];
-    try {
-      serverPlus = await sync!.fetchSubscriptions();
-    } catch (e) {
-      // Non critique : si la récupération échoue, on garde le cache local.
-      debugPrint('fetchSubscriptions échec: $e');
+    if (errors.isNotEmpty) {
+      // Erreurs isolées par dataset, jamais avalées : détail dans syncError.
+      throw Exception('Sync partielle — ${errors.join(' | ')}');
     }
 
-    // Récupère la liste des utilisateurs bannis depuis Supabase pour
-    // synchroniser le statut de bannissement entre tous les menus
-    // (le ban peut être effectué depuis plusieurs endroits : Dashboard,
-    // Abonnements, Comptes à bannir). Sans cette sync, un utilisateur banni
-    // depuis un autre menu n'apparaîtrait pas comme banni ici.
-    List<BannedUser> serverBanned = <BannedUser>[];
-    try {
-      final bannedData = await sync!.fetchBannedUsers();
-      serverBanned = bannedData
-          .map(
-            (b) => BannedUser(
-              id: b['id'] as String,
-              displayName: b['displayName'] as String? ?? 'Inconnu',
-              bannedAt: DateTime.now(),
-              reason: b['reason'] as String?,
-            ),
-          )
-          .toList();
-    } catch (e) {
-      debugPrint('fetchBanned échec: $e');
+    // Sync réussie : on efface l'erreur de sync (pas l'erreur d'action).
+    syncError = null;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Jobs de sync par dataset (appelés en parallèle par _doSyncFromSupabase)
+  // ─────────────────────────────────────────────────────────────────────
+
+  /// Pagination parallèle par chunks de 3 pages (Future.wait).
+  ///
+  /// - Si [totalCount] est fourni (count HEAD `Prefer: count=exact`), le
+  ///   nombre de pages est connu : on les fetch toutes par groupes de 3.
+  /// - Sinon (suggestions via EF : pas de count par mode), chunks
+  ///   SPÉCULATIFS de 3 pages : on s'arrête dès qu'une page du chunk n'est
+  ///   pas pleine (les pages suivantes du chunk, déjà fetchées, sont vides
+  ///   ou partielles au-delà de la fin — les absorber est sans effet).
+  ///
+  /// Retourne toutes les lignes + le max `updated_at` vu (curseur).
+  Future<({List<T> items, DateTime? maxUpdatedAt})> _fetchPaged<T>(
+    Future<({List<T> items, DateTime? maxUpdatedAt})> Function(int page)
+    fetchPage,
+    int pageSize, {
+    int? totalCount,
+    int maxItems = 500000,
+  }) async {
+    final List<T> items = <T>[];
+    DateTime? maxUp;
+    void absorb(({List<T> items, DateTime? maxUpdatedAt}) r) {
+      items.addAll(r.items);
+      final DateTime? m = r.maxUpdatedAt;
+      if (m != null && (maxUp == null || m.isAfter(maxUp!))) maxUp = m;
     }
 
-    // --- Fusion : conserve les entrées locales non encore synchronisées
-    //     (ID temporaire) et ajoute les données serveur. ---
-    final pendingGames = _games.where((g) => !_isUuid(g.id)).toList();
-    _games = [...games, ...pendingGames]..sort(_byName);
+    if (totalCount != null && totalCount >= 0) {
+      final int totalPages = (totalCount + pageSize - 1) ~/ pageSize;
+      for (var start = 0; start < totalPages; start += 3) {
+        final int end = (start + 3 > totalPages) ? totalPages : start + 3;
+        final results = await Future.wait(
+          <Future<({List<T> items, DateTime? maxUpdatedAt})>>[
+            for (var p = start; p < end; p++) fetchPage(p),
+          ],
+        );
+        for (final r in results) {
+          absorb(r);
+        }
+      }
+    } else {
+      for (var start = 0; start * pageSize < maxItems; start += 3) {
+        final results = await Future.wait(
+          <Future<({List<T> items, DateTime? maxUpdatedAt})>>[
+            for (var p = start; p < start + 3; p++) fetchPage(p),
+          ],
+        );
+        var allFull = true;
+        for (final r in results) {
+          absorb(r);
+          if (r.items.length < pageSize) allFull = false;
+        }
+        if (!allFull) break; // fin des données
+      }
+    }
+    return (items: items, maxUpdatedAt: maxUp);
+  }
 
-    final pendingContents = _contents.where((c) => !_isUuid(c.id)).toList();
-    _contents = [...contents, ...pendingContents];
+  /// Dataset `games` : full (count HEAD + pages ∥) ou incrémental
+  /// (`updated_at >= curseur`, upsert par id).
+  Future<void> _syncGames({required bool forceFull}) async {
+    const int pageSize = 1000;
+    final String? cursor = forceFull
+        ? null
+        : _validCursorFor(SyncDataset.games);
+    DateTime? maxUp;
+    if (cursor != null) {
+      final r = await _fetchPaged<Game>(
+        (p) => sync!.fetchGames(page: p, pageSize: pageSize, since: cursor),
+        pageSize,
+        maxItems: 100000,
+      );
+      maxUp = r.maxUpdatedAt;
+      if (r.items.isNotEmpty) {
+        final Map<String, Game> byId = <String, Game>{
+          for (final g in _games) g.id: g,
+        };
+        for (final g in r.items) {
+          byId[g.id] = g; // upsert par id
+        }
+        _games = byId.values.toList()..sort(_byName);
+      }
+    } else {
+      final int count = await sync!.fetchTableCount('games');
+      final r = await _fetchPaged<Game>(
+        (p) => sync!.fetchGames(page: p, pageSize: pageSize),
+        pageSize,
+        totalCount: count,
+        maxItems: 100000,
+      );
+      maxUp = r.maxUpdatedAt;
+      final pendingGames = _games.where((g) => !_isUuid(g.id)).toList();
+      _games = [...r.items, ...pendingGames]..sort(_byName);
+    }
+    _saveCursorFor(SyncDataset.games, maxUp);
+    _loadedDatasets.add(SyncDataset.games);
+    _store.saveGames(_games);
+  }
 
-    final pendingSuggestions = _suggestions
-        .where((s) => !_isUuid(s.id))
+  /// Dataset `contents` : full (count HEAD + pages ∥) ou incrémental
+  /// (`updated_at >= curseur`, upsert par id + retraits via cache_ops).
+  Future<void> _syncContents({required bool forceFull}) async {
+    const int pageSize = 1000;
+    final String? cursor = forceFull
+        ? null
+        : _validCursorFor(SyncDataset.contents);
+    DateTime? maxUp;
+    if (cursor != null) {
+      final r = await _fetchPaged<Content>(
+        (p) => sync!.fetchContents(page: p, pageSize: pageSize, since: cursor),
+        pageSize,
+      );
+      maxUp = r.maxUpdatedAt;
+      if (r.items.isNotEmpty) {
+        final Map<String, Content> byId = <String, Content>{
+          for (final c in _contents) c.id: c,
+        };
+        for (final c in r.items) {
+          byId[c.id] = c; // upsert par id
+        }
+        _contents = byId.values.toList();
+      }
+      // Suppressions serveur : journal cache_ops (op='remove') → retrait des
+      // contenus locaux dont l'URL correspond (comparaison exacte).
+      await _applyCacheOpsRemovals();
+    } else {
+      final int count = await sync!.fetchTableCount('contents');
+      final r = await _fetchPaged<Content>(
+        (p) => sync!.fetchContents(page: p, pageSize: pageSize),
+        pageSize,
+        totalCount: count,
+      );
+      maxUp = r.maxUpdatedAt;
+      final pendingContents = _contents.where((c) => !_isUuid(c.id)).toList();
+      _contents = [...r.items, ...pendingContents];
+      // Le snapshot complet reflète déjà tout le journal cache_ops → on
+      // avance le curseur du journal pour ne pas rejouer d'anciens 'remove'
+      // au prochain passage incrémental (sinon un contenu supprimé puis
+      // recréé à la MÊME URL serait retiré localement à tort — revue I-003).
+      _store.saveCursor(
+        _cacheOpsCursorName,
+        DateTime.now().toUtc().subtract(_cursorSafetyMargin).toIso8601String(),
+        DateTime.now().toUtc(),
+      );
+    }
+    _saveCursorFor(SyncDataset.contents, maxUp);
+    _loadedDatasets.add(SyncDataset.contents);
+    _store.saveContents(_contents);
+  }
+
+  /// Applique les retraits du journal cache_ops aux contenus locaux.
+  /// Non critique : un échec ne bloque pas la sync contenus (le prochain
+  /// passage rattrapera, le curseur cache_ops n'ayant pas avancé).
+  Future<void> _applyCacheOpsRemovals() async {
+    try {
+      final cached = _store.loadCursor(_cacheOpsCursorName);
+      final bool valid =
+          cached != null &&
+          DateTime.now().toUtc().difference(cached.fetchedAt.toUtc()) <=
+              _cursorMaxAge;
+      final r = await sync!.fetchRemovedContentUrls(
+        since: valid ? cached.value : null,
+      );
+      if (r.removedUrls.isNotEmpty) {
+        _contents = _contents
+            .where((c) => !r.removedUrls.contains(c.url))
+            .toList();
+      }
+      if (r.maxCreatedAt != null) {
+        _store.saveCursor(
+          _cacheOpsCursorName,
+          r.maxCreatedAt!
+              .toUtc()
+              .subtract(_cursorSafetyMargin)
+              .toIso8601String(),
+          DateTime.now().toUtc(),
+        );
+      }
+    } on AdminAuthException {
+      rethrow; // 401 → logout forcé
+    } catch (e) {
+      debugPrint('cache-ops/list échec (non critique): $e');
+    }
+  }
+
+  /// Dataset suggestions d'un mode : full (remplacement de la liste) ou
+  /// incrémental (`since` propagé à l'EF v63, fusion multi-modes par id).
+  Future<void> _syncSuggestionMode(
+    SyncDataset dataset,
+    Future<({List<Suggestion> items, DateTime? maxUpdatedAt})> Function({
+      int page,
+      int pageSize,
+      String? since,
+    })
+    fetcher, {
+    required bool forceFull,
+    required Set<SyncDataset> fullModeSyncs,
+  }) async {
+    const int pageSize = 500;
+    final String? cursor = forceFull ? null : _validCursorFor(dataset);
+    final r = await _fetchPaged<Suggestion>(
+      (p) => fetcher(page: p, pageSize: pageSize, since: cursor),
+      pageSize,
+      maxItems: 100000,
+    );
+    // ── Tombstones : une ligne tout juste rejetée/acceptée peut encore
+    //    figurer dans le snapshot entrant (fetch émis AVANT le commit
+    //    serveur). On EXCLUT ces ids des listes entrantes, en full comme en
+    //    incrémental (le filtre reste actif jusqu'à la purge par un full
+    //    sync des 5 modes).
+    final List<Suggestion> items = r.items
+        .where((s) => !_pendingRemovalIds.contains(s.id))
         .toList();
-    _suggestions = [...suggestions, ...pendingSuggestions];
+    if (cursor != null) {
+      _mergeSuggestionsIncremental(dataset, items);
+    } else {
+      _setSuggestionModeList(dataset, items);
+      fullModeSyncs.add(dataset);
+    }
+    _saveCursorFor(dataset, r.maxUpdatedAt);
+    _loadedDatasets.add(dataset);
+    _store.saveSuggestions(_suggestions);
+  }
 
-    // Suggestions Sentinelle : en cours d'analyse + analysées.
-    _sentinelleAnalyzing = sentinelleAnalyzing;
-    _sentinelleSuggestions = sentinelleSuggestions;
-    // Suggestions Scruteur : sites web de guides déjà jugés par l'IA.
-    _scruteurSuggestions = scruteurSuggestions;
-    _gamesToCreate = gamesToCreate;
+  /// Fusion incrémentale d'un delta de suggestions dans la liste du mode
+  /// [dataset].
+  ///
+  /// ⚠️ Piège des changements de mode : une suggestion n'existe que dans UN
+  /// mode à la fois. Une ligne qui CHANGE de mode (ex. Sentinelle la prend
+  /// en charge → quitte « new » pour « analyzing ») apparaît dans le delta
+  /// du NOUVEAU mode : on retire donc son id de TOUTES les autres listes
+  /// avant de l'insérer dans la bonne. Une ligne ayant quitté TOUS les modes
+  /// (acceptée/rejetée ailleurs) n'apparaît dans aucun delta : couverte par
+  /// les tombstones pour les actions locales + par la full sync de sécurité
+  /// (curseur > 24 h ou bouton Actualiser).
+  void _mergeSuggestionsIncremental(
+    SyncDataset dataset,
+    List<Suggestion> changed,
+  ) {
+    if (changed.isEmpty) return;
+    final Set<String> changedIds = changed.map((s) => s.id).toSet();
+    bool notChanged(Suggestion s) => !changedIds.contains(s.id);
+    if (dataset != SyncDataset.suggestionsNew) {
+      _suggestions = _suggestions.where(notChanged).toList();
+    }
+    if (dataset != SyncDataset.sentinelleAnalyzing) {
+      _sentinelleAnalyzing = _sentinelleAnalyzing.where(notChanged).toList();
+    }
+    if (dataset != SyncDataset.sentinelleAnalyzed) {
+      _sentinelleSuggestions = _sentinelleSuggestions
+          .where(notChanged)
+          .toList();
+    }
+    if (dataset != SyncDataset.scruteur) {
+      _scruteurSuggestions = _scruteurSuggestions.where(notChanged).toList();
+    }
+    if (dataset != SyncDataset.gamesToCreate) {
+      _gamesToCreate = _gamesToCreate.where(notChanged).toList();
+    }
+    // Upsert dans la liste cible.
+    final Map<String, Suggestion> byId = <String, Suggestion>{
+      for (final s in _suggestionListFor(dataset)) s.id: s,
+    };
+    for (final s in changed) {
+      byId[s.id] = s;
+    }
+    _setSuggestionModeList(dataset, byId.values.toList());
+  }
 
-    // Abonnés Plus : fusionne serveur + locaux (non UUID = démo).
-    // On remplace les abonnés serveur (UUID) par la dernière version serveur,
-    // et on conserve les abonnés locaux (démo) non synchronisables.
+  /// Liste locale d'un mode de suggestions.
+  List<Suggestion> _suggestionListFor(SyncDataset dataset) => switch (dataset) {
+    SyncDataset.suggestionsNew => _suggestions,
+    SyncDataset.sentinelleAnalyzing => _sentinelleAnalyzing,
+    SyncDataset.sentinelleAnalyzed => _sentinelleSuggestions,
+    SyncDataset.scruteur => _scruteurSuggestions,
+    SyncDataset.gamesToCreate => _gamesToCreate,
+    _ => const <Suggestion>[],
+  };
+
+  /// Remplace la liste d'un mode (full sync). Pour `suggestionsNew`, les
+  /// entrées locales non synchronisées (ID temporaire) sont conservées.
+  void _setSuggestionModeList(SyncDataset dataset, List<Suggestion> items) {
+    switch (dataset) {
+      case SyncDataset.suggestionsNew:
+        final pendingSuggestions = _suggestions
+            .where((s) => !_isUuid(s.id))
+            .toList();
+        _suggestions = [...items, ...pendingSuggestions];
+      case SyncDataset.sentinelleAnalyzing:
+        _sentinelleAnalyzing = items;
+      case SyncDataset.sentinelleAnalyzed:
+        _sentinelleSuggestions = items;
+      case SyncDataset.scruteur:
+        _scruteurSuggestions = items;
+      case SyncDataset.gamesToCreate:
+        _gamesToCreate = items;
+      default:
+        break;
+    }
+  }
+
+  /// Dataset `subscriptions` (Edge Function, pas de curseur : petit volume).
+  /// Fusion serveur + locaux non synchronisables (ID non UUID = démo).
+  Future<void> _syncSubscriptions() async {
+    final List<Map<String, dynamic>> serverPlus = await sync!
+        .fetchSubscriptions();
     final localOnlyPlus = _plus.where((p) => !_isUuid(p.id)).toList();
     _plus = [
       ...serverPlus.map(
@@ -2073,29 +2588,46 @@ class StoreController extends ChangeNotifier {
       ...localOnlyPlus,
     ];
     _store.savePlus(_plus);
+    _loadedDatasets.add(SyncDataset.subscriptions);
+  }
 
-    // Bannis : fusion serveur + locaux (non UUID = démo / manuels non
-    // synchronisables). On remplace les bannis serveur (UUID) par la version
-    // serveur (source de vérité), et on conserve les bannis locaux non UUID.
-    final localOnlyBanned = _banned.where((b) => !_isUuid(b.id)).toList();
-    _banned = [...localOnlyBanned, ...serverBanned];
-    _store.saveBanned(_banned);
-
-    // Met à jour le cache local pour les lectures hors-ligne.
-    _store.saveGames(_games);
-    _store.saveContents(_contents);
-    _store.saveSuggestions(_suggestions);
-
-    // Récupère les mauvais contributeurs (menu « Comptes à bannir »).
-    // Non critique : en cas d'échec, on garde le cache précédent.
+  /// Dataset `banned` : utilisateurs bannis + mauvais contributeurs (menu
+  /// « Comptes à bannir »). Sous-fetchs non critiques : en cas d'échec de
+  /// l'un, on garde le cache précédent de celui-ci sans annuler l'autre.
+  Future<void> _syncBanned() async {
+    // Bannis : la liste serveur (source de vérité) remplace les entrées
+    // synchronisées ; les bannis locaux non UUID (démo / manuels non
+    // synchronisables) sont conservés. Sans cette sync, un utilisateur banni
+    // depuis un autre menu n'apparaîtrait pas comme banni ici.
+    try {
+      final bannedData = await sync!.fetchBannedUsers();
+      final serverBanned = bannedData
+          .map(
+            (b) => BannedUser(
+              id: b['id'] as String,
+              displayName: b['displayName'] as String? ?? 'Inconnu',
+              bannedAt: DateTime.now(),
+              reason: b['reason'] as String?,
+            ),
+          )
+          .toList();
+      final localOnlyBanned = _banned.where((b) => !_isUuid(b.id)).toList();
+      _banned = [...localOnlyBanned, ...serverBanned];
+      _store.saveBanned(_banned);
+    } on AdminAuthException {
+      rethrow;
+    } catch (e) {
+      debugPrint('fetchBanned échec: $e');
+    }
+    // Mauvais contributeurs : non critique, cache conservé en cas d'échec.
     try {
       _badContributors = await sync!.fetchBadContributors();
+    } on AdminAuthException {
+      rethrow;
     } catch (e) {
       debugPrint('fetchBadContributors échec: $e');
     }
-
-    // Sync réussie : on efface l'erreur de sync (pas l'erreur d'action).
-    syncError = null;
+    _loadedDatasets.add(SyncDataset.banned);
   }
 
   /// Vrai UUID Supabase ? (36 caractères, format xxxxxxxx-xxxx-...).
@@ -2126,8 +2658,11 @@ class StoreController extends ChangeNotifier {
       sync!.setAdminToken(token);
       // Resync uniquement au login (hadToken == false). Sur rotation, les
       // données locales sont déjà à jour (updates optimistes des écritures).
+      // Chargement paresseux : au login on ne charge que les datasets du
+      // dashboard ; les menus lourds (Sentinelle, Scruteur…) déclenchent
+      // le leur à l'ouverture via ensureDatasets.
       if (!hadToken) {
-        syncFromSupabase();
+        ensureDatasets(dashboardDatasets);
       }
     } else {
       sync!.setAdminToken('');

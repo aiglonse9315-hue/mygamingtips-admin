@@ -55,6 +55,12 @@ class SupabaseSync {
   /// Vide tant que l'admin n'est pas connecté → les écritures échoueront.
   String adminToken;
 
+  /// Timeout appliqué à CHAQUE requête HTTP (30 s). Remplace l'ancien
+  /// timeout global de 15 s qui tuait toute la sync dès qu'une page
+  /// traînait : ici, seule la requête fautive échoue, et le budget global
+  /// est géré par le StoreController (120 s full / 45 s incrémental).
+  static const Duration requestTimeout = Duration(seconds: 30);
+
   Map<String, String> get _anonHeaders => {
     'apikey': anonKey,
     'Authorization': 'Bearer $anonKey',
@@ -127,46 +133,92 @@ class SupabaseSync {
     return out;
   }
 
-  /// Récupère tous les jeux (actifs ou non).
+  /// Max de la colonne `updated_at` (migration 0056) parmi des lignes brutes
+  /// snake_case. Sert au curseur de sync incrémentale. Null si aucune ligne
+  /// ou colonne absente.
+  static DateTime? _maxUpdatedAt(List<dynamic> rows) {
+    DateTime? max;
+    for (final r in rows) {
+      if (r is! Map) continue;
+      final DateTime? t = DateTime.tryParse(
+        (r as Map<String, dynamic>)['updated_at']?.toString() ?? '',
+      );
+      if (t != null && (max == null || t.isAfter(max))) max = t;
+    }
+    return max;
+  }
+
   /// Récupère les jeux par page.
   ///
   /// [page] : index de la page (0-based).
   /// [pageSize] : nombre de jeux par page (défaut 1000).
-  Future<List<Game>> fetchGames({int page = 0, int pageSize = 1000}) async {
+  /// [since] : curseur incrémental optionnel (ISO 8601) — ne retourne que les
+  /// lignes `updated_at >= since` (migration 0056, filtre PostgREST direct).
+  ///
+  /// Retourne les modèles + le max `updated_at` de la page (curseur).
+  Future<({List<Game> items, DateTime? maxUpdatedAt})> fetchGames({
+    int page = 0,
+    int pageSize = 1000,
+    String? since,
+  }) async {
     final Uri uri = Uri.parse(
       '$supabaseUrl/rest/v1/games?select=*'
+      '${since != null ? '&updated_at=gte.$since' : ''}'
+      // Tri déterministe obligatoire : la pagination par offset SANS ORDER BY
+      // n'est pas stable en Postgres (revue I-002) — une ligne manquée en
+      // full sync ne serait rattrapée qu'au bout de 24 h.
+      '&order=id.asc'
       '&limit=$pageSize&offset=${page * pageSize}',
     );
-    final http.Response res = await http.get(uri, headers: _anonHeaders);
+    final http.Response res = await http
+        .get(uri, headers: _anonHeaders)
+        .timeout(requestTimeout);
     if (res.statusCode != 200) {
       throw Exception('fetchGames échec ${res.statusCode}: ${res.body}');
     }
     final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
-    return rows
-        .map((r) => Game.fromJson(_camelRow(r as Map<String, dynamic>)))
-        .toList();
+    return (
+      items: rows
+          .map((r) => Game.fromJson(_camelRow(r as Map<String, dynamic>)))
+          .toList(),
+      maxUpdatedAt: _maxUpdatedAt(rows),
+    );
   }
 
   /// Récupère les contenus validés par page.
   ///
   /// [page] : index de la page (0-based).
   /// [pageSize] : nombre de contenus par page (défaut 1000 pour la rétrocompatibilité).
-  Future<List<Content>> fetchContents({
+  /// [since] : curseur incrémental optionnel (ISO 8601) — ne retourne que les
+  /// lignes `updated_at >= since` (migration 0056).
+  ///
+  /// Retourne les modèles + le max `updated_at` de la page (curseur).
+  Future<({List<Content> items, DateTime? maxUpdatedAt})> fetchContents({
     int page = 0,
     int pageSize = 1000,
+    String? since,
   }) async {
     final Uri uri = Uri.parse(
-      '$supabaseUrl/rest/v1/contents?select=*&order=published_at.desc'
+      // Tiebreaker id.asc : published_at.desc seul n'est PAS déterministe
+      // (beaucoup de contenus partagent le même timestamp) → risque de lignes
+      // manquées/dupliquées entre pages (revue I-002).
+      '$supabaseUrl/rest/v1/contents?select=*&order=published_at.desc,id.asc'
+      '${since != null ? '&updated_at=gte.$since' : ''}'
       '&limit=$pageSize&offset=${page * pageSize}',
     );
-    final http.Response res = await http.get(uri, headers: _anonHeaders);
+    final http.Response res = await http
+        .get(uri, headers: _anonHeaders)
+        .timeout(requestTimeout);
     if (res.statusCode != 200) {
       throw Exception('fetchContents échec ${res.statusCode}: ${res.body}');
     }
     final List<dynamic> rows = jsonDecode(res.body) as List<dynamic>;
-    return rows
-        .map((r) => Content.fromJson(_camelRow(r as Map<String, dynamic>)))
-        .toList();
+    return (
+      items: rows
+          .map((r) => Content.fromJson(_camelRow(r as Map<String, dynamic>)))
+          .toList(),
+      maxUpdatedAt: _maxUpdatedAt(rows),
+    );
   }
 
   /// Compte les lignes d'une table via une requête HEAD avec
@@ -182,10 +234,9 @@ class SupabaseSync {
         '$supabaseUrl/rest/v1/$table?select=*'
         '${filter != null ? '&$filter' : ''}',
       );
-      final http.Response res = await http.head(uri, headers: {
-        ..._anonHeaders,
-        'Prefer': 'count=exact',
-      });
+      final http.Response res = await http
+          .head(uri, headers: {..._anonHeaders, 'Prefer': 'count=exact'})
+          .timeout(requestTimeout);
       if (res.statusCode >= 300) return -1;
       final String contentRange = res.headers['content-range'] ?? '';
       final int slash = contentRange.indexOf('/');
@@ -229,63 +280,94 @@ class SupabaseSync {
 
   /// Lecture des suggestions par mode via la route service_role
   /// `suggestions/list` (pagination identique : page/pageSize 0-based).
-  Future<List<Suggestion>> _fetchSuggestionsByMode(
+  ///
+  /// [since] : curseur incrémental optionnel (ISO 8601, migration 0056 /
+  /// EF v63) — l'EF ne retourne que les lignes `updated_at >= since`
+  /// EN PLUS du filtre de mode. Rétro-compatible (paramètre ignoré si absent).
+  ///
+  /// Retourne les modèles + le max `updated_at` de la page (curseur).
+  Future<({List<Suggestion> items, DateTime? maxUpdatedAt})>
+  _fetchSuggestionsByMode(
     String mode, {
     int page = 0,
     int pageSize = 500,
+    String? since,
   }) async {
     final Map<String, dynamic> data = await _post('suggestions/list', {
       'mode': mode,
       'page': page,
       'pageSize': pageSize,
+      if (since != null) 'since': since,
     });
-    return _mapSuggestionRows(data['suggestions'] as List? ?? []);
+    final List<dynamic> rows = data['suggestions'] as List? ?? [];
+    return (items: _mapSuggestionRows(rows), maxUpdatedAt: _maxUpdatedAt(rows));
   }
 
   /// Récupère les suggestions VRAIMENT nouvelles : jamais prises en charge
   /// par Sentinelle (`sentinelle_started_at IS NULL` ET pas encore
   /// d'analyse IA). Ces suggestions apparaissent dans le menu "Suggestions".
-  Future<List<Suggestion>> fetchSuggestions({
+  Future<({List<Suggestion> items, DateTime? maxUpdatedAt})> fetchSuggestions({
     int page = 0,
     int pageSize = 500,
-  }) => _fetchSuggestionsByMode('new', page: page, pageSize: pageSize);
+    String? since,
+  }) => _fetchSuggestionsByMode(
+    'new',
+    page: page,
+    pageSize: pageSize,
+    since: since,
+  );
 
   /// Récupère les suggestions EN COURS d'analyse par Sentinelle
   /// (`sentinelle_started_at NOT NULL` MAIS `ai_recommendation IS NULL`).
   /// Ces suggestions apparaissent dans le menu "Sentinelle" → section
   /// "Analyse en cours" (Sentinelle travaille dessus).
-  Future<List<Suggestion>> fetchSentinelleAnalyzing({
-    int page = 0,
-    int pageSize = 500,
-  }) => _fetchSuggestionsByMode('analyzing', page: page, pageSize: pageSize);
+  Future<({List<Suggestion> items, DateTime? maxUpdatedAt})>
+  fetchSentinelleAnalyzing({int page = 0, int pageSize = 500, String? since}) =>
+      _fetchSuggestionsByMode(
+        'analyzing',
+        page: page,
+        pageSize: pageSize,
+        since: since,
+      );
 
   /// Récupère les suggestions DÉJÀ analysées par Sentinelle (avec
   /// `ai_recommendation` non null). Ces suggestions apparaissent dans le menu
   /// "Sentinelle" où l'admin peut les implémenter en 1 clic ou les vérifier.
-  Future<List<Suggestion>> fetchSentinelleSuggestions({
+  Future<({List<Suggestion> items, DateTime? maxUpdatedAt})>
+  fetchSentinelleSuggestions({
     int page = 0,
     int pageSize = 500,
-  }) => _fetchSuggestionsByMode('analyzed', page: page, pageSize: pageSize);
+    String? since,
+  }) => _fetchSuggestionsByMode(
+    'analyzed',
+    page: page,
+    pageSize: pageSize,
+    since: since,
+  );
 
   /// Récupère les suggestions découvertes par le bot Scruteur (sites web de
   /// guides) : source='scruteur', déjà jugées par l'IA (ai_recommendation
   /// présent), en attente de validation. Apparaissent dans le menu "Scruteur".
-  Future<List<Suggestion>> fetchScruteurSuggestions({
-    int page = 0,
-    int pageSize = 500,
-  }) => _fetchSuggestionsByMode('scruteur', page: page, pageSize: pageSize);
+  Future<({List<Suggestion> items, DateTime? maxUpdatedAt})>
+  fetchScruteurSuggestions({int page = 0, int pageSize = 500, String? since}) =>
+      _fetchSuggestionsByMode(
+        'scruteur',
+        page: page,
+        pageSize: pageSize,
+        since: since,
+      );
 
   /// Récupère les suggestions marquées « Jeux à créer » : le flag
   /// `needs_game_creation` est vrai dans `ai_recommendation`, le statut est
   /// pending, et l'auteur n'est pas Vision.
-  Future<List<Suggestion>> fetchGamesToCreate({
-    int page = 0,
-    int pageSize = 500,
-  }) => _fetchSuggestionsByMode(
-    'games-to-create',
-    page: page,
-    pageSize: pageSize,
-  );
+  Future<({List<Suggestion> items, DateTime? maxUpdatedAt})>
+  fetchGamesToCreate({int page = 0, int pageSize = 500, String? since}) =>
+      _fetchSuggestionsByMode(
+        'games-to-create',
+        page: page,
+        pageSize: pageSize,
+        since: since,
+      );
 
   /// Supprime une entrée « Jeux à créer » (marque la suggestion rejected).
   Future<void> deleteGameToCreateEntry(String suggestionId) async {
@@ -310,7 +392,9 @@ class SupabaseSync {
       '&order=accepted_count.desc'
       '&limit=$limit',
     );
-    final http.Response res = await http.get(uri, headers: _anonHeaders);
+    final http.Response res = await http
+        .get(uri, headers: _anonHeaders)
+        .timeout(requestTimeout);
     if (res.statusCode != 200) {
       throw Exception(
         'fetchTopContributors échec ${res.statusCode}: ${res.body}',
@@ -361,10 +445,12 @@ class SupabaseSync {
   Future<int> countSuggestions({String? filter}) async {
     var query = '$supabaseUrl/rest/v1/suggestions?select=id';
     if (filter != null) query += '&$filter';
-    final res = await http.get(
-      Uri.parse(query),
-      headers: {..._anonHeaders, 'Prefer': 'count=exact'},
-    );
+    final res = await http
+        .get(
+          Uri.parse(query),
+          headers: {..._anonHeaders, 'Prefer': 'count=exact'},
+        )
+        .timeout(requestTimeout);
     if (res.statusCode == 200) {
       final range = res.headers['content-range'];
       if (range != null) {
@@ -386,11 +472,13 @@ class SupabaseSync {
     String route,
     Map<String, dynamic> body,
   ) async {
-    final http.Response res = await http.post(
-      Uri.parse('$catalogEndpoint/$route'),
-      headers: _adminHeaders,
-      body: jsonEncode(body),
-    );
+    final http.Response res = await http
+        .post(
+          Uri.parse('$catalogEndpoint/$route'),
+          headers: _adminHeaders,
+          body: jsonEncode(body),
+        )
+        .timeout(requestTimeout);
     final Map<String, dynamic> data =
         jsonDecode(res.body) as Map<String, dynamic>;
     if (res.statusCode >= 400) {
@@ -466,12 +554,14 @@ class SupabaseSync {
   /// limité par la pagination), cette méthode ne récupère que les 12 lignes
   /// max du jeu concerné — aucun cutoff possible.
   Future<Map<String, String>> fetchTranslationsForGame(String gameId) async {
-    final res = await http.get(
-      Uri.parse(
-        '$supabaseUrl/rest/v1/game_translations?select=lang,title&game_id=eq.$gameId',
-      ),
-      headers: {'apikey': anonKey, 'Authorization': 'Bearer $anonKey'},
-    );
+    final res = await http
+        .get(
+          Uri.parse(
+            '$supabaseUrl/rest/v1/game_translations?select=lang,title&game_id=eq.$gameId',
+          ),
+          headers: {'apikey': anonKey, 'Authorization': 'Bearer $anonKey'},
+        )
+        .timeout(requestTimeout);
     if (res.statusCode != 200) return {};
     final List<dynamic> rows = jsonDecode(res.body) as List? ?? [];
     final Map<String, String> result = {};
@@ -553,8 +643,7 @@ class SupabaseSync {
       'id': id,
       if (publishedAt != null)
         'published_at': publishedAt.toUtc().toIso8601String(),
-      if (createdAt != null)
-        'created_at': createdAt.toUtc().toIso8601String(),
+      if (createdAt != null) 'created_at': createdAt.toUtc().toIso8601String(),
       'manual': true,
     });
   }
@@ -746,5 +835,52 @@ class SupabaseSync {
         'is_premium': row['is_premium'] ?? false,
       };
     }).toList();
+  }
+
+  /// Lit le journal `cache_ops` (route EF `cache-ops/list`, migrations
+  /// 0051/0052) et retourne les URLs RETIRÉES (`op='remove'`) depuis
+  /// [since] — sert à la sync incrémentale des contenus : un retrait serveur
+  /// ( suppression de contenu, quel qu'en soit l'outil) doit être répercuté
+  /// localement, faute de quoi la ligne supprimée resterait visible dans le
+  /// cache du panneau.
+  ///
+  /// [since] : curseur ISO 8601 sur `cache_ops.created_at` (indépendant des
+  /// curseurs `updated_at` de games/contents/suggestions).
+  ///
+  /// Retourne les URLs retirées (comparaison exacte côté caller) + le max
+  /// `created_at` vu (prochain curseur).
+  ///
+  /// ⚠️ La route v63 ne sélectionne que `url, op, created_at` (pas la colonne
+  /// `src`) : on filtre donc sur `op='remove'` seul. Un « remove » portant sur
+  /// une URL de suggestion ne matchera aucun contenu local — sans effet.
+  Future<({Set<String> removedUrls, DateTime? maxCreatedAt})>
+  fetchRemovedContentUrls({String? since}) async {
+    final Set<String> urls = <String>{};
+    DateTime? maxCreated;
+    const int pageSize = 1000; // plafond côté EF
+    for (var page = 0; page < 100; page++) {
+      final Map<String, dynamic> data = await _post('cache-ops/list', {
+        'page': page,
+        'pageSize': pageSize,
+        if (since != null) 'since': since,
+      });
+      final List<dynamic> ops = data['ops'] as List? ?? [];
+      for (final o in ops) {
+        if (o is! Map) continue;
+        final row = o as Map<String, dynamic>;
+        if (row['op'] == 'remove') {
+          final String? url = row['url']?.toString();
+          if (url != null && url.isNotEmpty) urls.add(url);
+        }
+        final DateTime? t = DateTime.tryParse(
+          row['created_at']?.toString() ?? '',
+        );
+        if (t != null && (maxCreated == null || t.isAfter(maxCreated))) {
+          maxCreated = t;
+        }
+      }
+      if (ops.length < pageSize) break; // fin du journal
+    }
+    return (removedUrls: urls, maxCreatedAt: maxCreated);
   }
 }

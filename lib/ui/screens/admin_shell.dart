@@ -118,46 +118,85 @@ class _AdminShellState extends State<AdminShell> {
   }
 
   Widget _buildContent() {
+    // Chargement paresseux : chaque écran est enveloppé dans un
+    // [_DatasetGate] qui déclare ses besoins au montage — seuls les
+    // datasets requis et pas encore chargés sont fetchés.
     switch (_route) {
       case '/dashboard':
-        return DashboardScreen(onOpenSuggestions: () => _go('/suggestions'));
+        return _DatasetGate(
+          datasets: StoreController.dashboardDatasets,
+          child: DashboardScreen(onOpenSuggestions: () => _go('/suggestions')),
+        );
       case '/games':
-        return const GamesScreen();
+        return const _DatasetGate(
+          datasets: {SyncDataset.games},
+          child: GamesScreen(),
+        );
       case '/contents':
-        return const ContentsScreen();
+        return const _DatasetGate(
+          datasets: {SyncDataset.contents, SyncDataset.games},
+          child: ContentsScreen(),
+        );
       case '/suggestions':
-        return const SuggestionsScreen();
+        return const _DatasetGate(
+          datasets: {SyncDataset.suggestionsNew, SyncDataset.games},
+          child: SuggestionsScreen(),
+        );
       case '/sentinelle':
-        return const SentinelleScreen();
+        return const _DatasetGate(
+          datasets: {
+            SyncDataset.sentinelleAnalyzing,
+            SyncDataset.sentinelleAnalyzed,
+            SyncDataset.gamesToCreate,
+            SyncDataset.games,
+          },
+          child: SentinelleScreen(),
+        );
       case '/scruteur':
-        return const ScruteurScreen();
+        return const _DatasetGate(
+          datasets: {SyncDataset.scruteur, SyncDataset.games},
+          child: ScruteurScreen(),
+        );
       case '/abonnements':
-        return const AbonnementsScreen();
+        return const _DatasetGate(
+          datasets: {SyncDataset.subscriptions},
+          child: AbonnementsScreen(),
+        );
       case '/contributors':
         return const ContributorsScreen();
       case '/banned':
-        return const BannedScreen();
+        return const _DatasetGate(
+          datasets: {SyncDataset.banned},
+          child: BannedScreen(),
+        );
       case '/limites':
         return const LimitesScreen();
       default:
-        return DashboardScreen(onOpenSuggestions: () => _go('/suggestions'));
+        return _DatasetGate(
+          datasets: StoreController.dashboardDatasets,
+          child: DashboardScreen(onOpenSuggestions: () => _go('/suggestions')),
+        );
     }
   }
 
   void _go(String route) => setState(() => _route = route);
 
-  /// Effectue un refresh complet après login puis masque l'écran de chargement.
+  /// Charge les datasets du dashboard après login puis masque l'écran de
+  /// chargement.
   ///
   /// Garantit que les données locales sont synchronisées avec le serveur AVANT
   /// que l'admin ne voie le dashboard (évite les données obsolètes du cache).
+  /// Chargement paresseux : seuls les datasets du dashboard sont fetchés ici ;
+  /// les autres menus chargent les leurs à l'ouverture.
   Future<void> _doPostLoginRefresh(
     StoreController store,
     AuthController auth,
   ) async {
     // Pousse le token pour autoriser les écritures.
     store.updateAdminToken(auth.token);
-    // Refresh complet (avec timeout interne de 15s).
-    await store.syncFromSupabase();
+    // Charge les datasets du dashboard (paresseux : skip si déjà chargés).
+    // Les menus lourds chargent leurs datasets à l'ouverture.
+    await store.ensureDatasets(StoreController.dashboardDatasets);
     // Masque l'écran de chargement.
     if (mounted) setState(() => _loadingAfterLogin = false);
   }
@@ -277,4 +316,35 @@ class _LoadingScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Déclare les besoins en données d'un écran (chargement paresseux).
+///
+/// Au montage, appelle [StoreController.ensureDatasets] : seuls les datasets
+/// pas encore chargés dans la session sont fetchés depuis Supabase. Le widget
+/// enfant s'affiche immédiatement avec le cache local ; les données fraîches
+/// arrivent via le listener Provider (le spinner global de la topbar indique
+/// la sync en cours).
+class _DatasetGate extends StatefulWidget {
+  const _DatasetGate({required this.datasets, required this.child});
+
+  final Set<SyncDataset> datasets;
+  final Widget child;
+
+  @override
+  State<_DatasetGate> createState() => _DatasetGateState();
+}
+
+class _DatasetGateState extends State<_DatasetGate> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<StoreController>().ensureDatasets(widget.datasets);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
