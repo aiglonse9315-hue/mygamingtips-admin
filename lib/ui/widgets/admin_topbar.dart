@@ -15,11 +15,20 @@ class AdminTopbar extends StatelessWidget {
     this.isSyncing = false,
     this.syncError,
     this.onDismissError,
+    this.titleTrailing,
+    this.statusBadge,
   });
 
   final String title;
   final VoidCallback onReset;
   final VoidCallback onLogout;
+
+  /// Widget discret affiché à côté du titre (badge de fraîcheur des données).
+  final Widget? titleTrailing;
+
+  /// Badge d'état affiché dans le coin haut-droit (ex. mode hors-ligne).
+  /// Inséré AVANT le bouton « Actualiser » ; invisible si null.
+  final Widget? statusBadge;
 
   /// Affiche le bouton "Réinitialiser la démo" uniquement en mode aperçu
   /// local. En production (Supabase connecté), il est masqué car il
@@ -64,7 +73,15 @@ class AdminTopbar extends StatelessWidget {
                   fontWeight: FontWeight.w800,
                 ),
               ),
+              if (titleTrailing != null) ...[
+                const SizedBox(width: 12),
+                titleTrailing!,
+              ],
               const Spacer(),
+              if (statusBadge != null) ...[
+                statusBadge!,
+                const SizedBox(width: 8),
+              ],
               if (onRefresh != null)
                 TextButton.icon(
                   onPressed: isSyncing ? null : onRefresh,

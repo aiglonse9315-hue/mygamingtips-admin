@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/auth/auth_controller.dart';
+import '../../core/theme/colors.dart';
 import '../../state/store_controller.dart';
 import '../widgets/admin_sidebar.dart';
 import '../widgets/admin_topbar.dart';
@@ -116,6 +119,26 @@ class _AdminShellState extends State<AdminShell> {
   String get _title {
     return _items.firstWhere((i) => i.route == _route).label;
   }
+
+  /// Datasets alimentant le menu courant (badge de fraîcheur). Doit refléter
+  /// les besoins déclarés dans [_buildContent]. `null` pour les écrans sans
+  /// dataset synchronisé (Contributeurs, Limite) → pas de badge.
+  static Set<SyncDataset>? _datasetsForRoute(String route) => switch (route) {
+    '/dashboard' => StoreController.dashboardDatasets,
+    '/games' => const {SyncDataset.games},
+    '/contents' => const {SyncDataset.contents, SyncDataset.games},
+    '/suggestions' => const {SyncDataset.suggestionsNew, SyncDataset.games},
+    '/sentinelle' => const {
+      SyncDataset.sentinelleAnalyzing,
+      SyncDataset.sentinelleAnalyzed,
+      SyncDataset.gamesToCreate,
+      SyncDataset.games,
+    },
+    '/scruteur' => const {SyncDataset.scruteur, SyncDataset.games},
+    '/abonnements' => const {SyncDataset.subscriptions},
+    '/banned' => const {SyncDataset.banned},
+    _ => null,
+  };
 
   Widget _buildContent() {
     // Chargement paresseux : chaque écran est enveloppé dans un
@@ -252,6 +275,13 @@ class _AdminShellState extends State<AdminShell> {
                   isSyncing: store.isSyncing,
                   syncError: store.syncError,
                   onDismissError: () => store.clearSyncError(),
+                  titleTrailing:
+                      store.sync != null && _datasetsForRoute(_route) != null
+                      ? _FreshnessBadge(datasets: _datasetsForRoute(_route)!)
+                      : null,
+                  statusBadge: store.sync != null
+                      ? const _OfflineBadge()
+                      : null,
                   onReset: () => showDialog<void>(
                     context: context,
                     builder: (_) => ConfirmDialog(
@@ -347,4 +377,134 @@ class _DatasetGateState extends State<_DatasetGate> {
 
   @override
   Widget build(BuildContext context) => widget.child;
+}
+
+/// Badge de fraîcheur des données du menu courant (point coloré + texte).
+///
+/// - Vert « à jour » si la donnée la moins fraîche du menu a < 15 min.
+/// - Orange « il y a X min / X h » au-delà.
+/// - Gris « jamais » si un dataset du menu n'a pas encore été chargé.
+///
+/// Le texte vieillit tout seul : un [Timer] périodique de 60 s force un
+/// rebuild léger (disposé proprement). Le widget écoute le [StoreController]
+/// via Provider, donc il se met aussi à jour à chaque sync réussie.
+class _FreshnessBadge extends StatefulWidget {
+  const _FreshnessBadge({required this.datasets});
+
+  final Set<SyncDataset> datasets;
+
+  @override
+  State<_FreshnessBadge> createState() => _FreshnessBadgeState();
+}
+
+class _FreshnessBadgeState extends State<_FreshnessBadge> {
+  /// Seuil « à jour » : 15 minutes.
+  static const Duration _freshThreshold = Duration(minutes: 15);
+
+  Timer? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = Timer.periodic(const Duration(seconds: 60), (_) {
+      if (mounted) setState(() {}); // le texte « il y a X min » vieillit
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final StoreController store = context.watch<StoreController>();
+    final DateTime? lastSync = store.lastSyncFor(widget.datasets);
+
+    final Color color;
+    final String label;
+    if (lastSync == null) {
+      color = Theme.of(context).textTheme.bodySmall?.color ?? Colors.grey;
+      label = 'jamais';
+    } else {
+      final Duration age = DateTime.now().difference(lastSync);
+      if (age < _freshThreshold) {
+        color = AppColors.categoryGuide;
+        label = 'à jour';
+      } else {
+        color = Colors.orange.shade700;
+        final int minutes = age.inMinutes;
+        label = minutes < 60
+            ? 'il y a $minutes min'
+            : 'il y a ${age.inHours} h';
+      }
+    }
+
+    return Tooltip(
+      message: 'Fraîcheur des données du menu (dernière synchronisation)',
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Badge « Hors ligne — données du cache » (coin haut-droit de la topbar).
+///
+/// Visible UNIQUEMENT quand [StoreController.isOffline] est vrai (dernière
+/// sync échouée sur erreur réseau). Discret mais visible (ambre).
+class _OfflineBadge extends StatelessWidget {
+  const _OfflineBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isOffline = context.watch<StoreController>().isOffline;
+    if (!isOffline) return const SizedBox.shrink();
+    final Color amber = Colors.orange.shade700;
+    return Tooltip(
+      message:
+          'Connexion au serveur impossible — les données affichées '
+          'proviennent du cache local',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: amber.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: amber.withValues(alpha: 0.5)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.wifi_off_rounded, size: 14, color: amber),
+            const SizedBox(width: 6),
+            Text(
+              'Hors ligne — données du cache',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: amber,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
