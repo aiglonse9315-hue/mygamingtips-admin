@@ -2036,7 +2036,8 @@ class StoreController extends ChangeNotifier {
   /// - limites de mot Unicode des deux côtés → jamais de retrait à
   ///   l'intérieur d'un mot plus long (« la » dans « large »).
   /// Retourne null si la forme est inexploitable (vide).
-  static RegExp? _gameMentionPattern(String normalizedForm) {
+  static RegExp? _gameMentionPattern(String normalizedForm,
+      {bool withPreposition = false}) {
     final words =
         normalizedForm.split(' ').where((w) => w.isNotEmpty).toList();
     if (words.isEmpty) return null;
@@ -2054,8 +2055,10 @@ class StoreController extends ChangeNotifier {
         buffer.write("['’]?");
       }
     }
+    // Préposition de lieu optionnelle AVANT la mention (règle 12/09/2026).
+    final prep = withPreposition ? r'(dans|in|sur|on)[\W_]+' : '';
     return RegExp(
-      '(^|[^\\p{L}\\p{N}])$buffer(?![\\p{L}\\p{N}])',
+      '(^|[^\\p{L}\\p{N}])$prep$buffer(?![\\p{L}\\p{N}])',
       caseSensitive: false,
       unicode: true,
     );
@@ -2105,14 +2108,25 @@ class StoreController extends ChangeNotifier {
     var result = withoutHashtags;
     final sorted = forms.toList()..sort((a, b) => b.length.compareTo(a.length));
     for (final form in sorted) {
+      // Règle prépositions (12/09/2026) : mention PRÉCÉDÉE de « dans »,
+      // « in », « sur », « on » → retirée avec le nom du jeu (« Comment
+      // jouer son nécromancien Dans Albion » → « Comment jouer son
+      // nécromancien »).
+      final prepPattern = _gameMentionPattern(form, withPreposition: true);
       final pattern = _gameMentionPattern(form);
-      if (pattern == null) continue;
-      // Le caractère de limite avant la mention (groupe 1) est réinséré.
-      result = result.replaceAllMapped(pattern, (m) => m.group(1) ?? '');
+      if (prepPattern != null && prepPattern.hasMatch(result)) {
+        result = result.replaceAllMapped(prepPattern, (m) => m.group(1) ?? '');
+      } else if (pattern != null) {
+        // Le caractère de limite avant la mention (groupe 1) est réinséré.
+        result = result.replaceAllMapped(pattern, (m) => m.group(1) ?? '');
+      }
     }
 
     // (c) Nettoyage post-retrait.
     result = result.replaceAll(RegExp(r'\s+'), ' ');
+    // Préposition orpheline en fin de titre (« Astuces Dans » → « Astuces »).
+    result = result.replaceAll(
+        RegExp(r'\s+(dans|in|sur|on)$', caseSensitive: false), '');
     // Séparateurs doublés au milieu (« - - » → « - », « - : » → « - »).
     result = result.replaceAllMapped(
       RegExp(r'\s*([-–:|•])(?:\s*[-–:|•])+\s*'),
