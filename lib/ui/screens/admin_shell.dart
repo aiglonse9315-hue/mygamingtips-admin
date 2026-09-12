@@ -17,6 +17,7 @@ import 'dashboard_screen.dart';
 import 'games_screen.dart';
 import 'limites_screen.dart';
 import 'login_screen.dart';
+import 'logs_screen.dart';
 import 'sentinelle_screen.dart';
 import 'scruteur_screen.dart';
 import 'suggestions_screen.dart';
@@ -48,6 +49,17 @@ class _AdminShellState extends State<AdminShell> {
     NavItem('Comptes à bannir', Icons.block_rounded, '/banned'),
     NavItem('Limite', Icons.data_usage_rounded, '/limites'),
   ];
+
+  /// Menu « Log » — réservé au compte principal (owner). L'entrée n'existe
+  /// pas du tout dans la navigation pour les autres comptes (le serveur
+  /// applique la vraie sécurité : 403 sur `logs/list` sinon).
+  static const NavItem _logsItem =
+      NavItem('Log', Icons.receipt_long_rounded, '/logs');
+
+  /// Items de navigation effectifs : [_items] + « Log » si (et seulement si)
+  /// la session courante est owner.
+  static List<NavItem> _navItems({required bool isOwner}) =>
+      isOwner ? [..._items, _logsItem] : _items;
 
   @override
   void initState() {
@@ -116,8 +128,8 @@ class _AdminShellState extends State<AdminShell> {
     );
   }
 
-  String get _title {
-    return _items.firstWhere((i) => i.route == _route).label;
+  String _titleFor(List<NavItem> items) {
+    return items.firstWhere((i) => i.route == _route).label;
   }
 
   /// Datasets alimentant le menu courant (badge de fraîcheur). Doit refléter
@@ -194,6 +206,8 @@ class _AdminShellState extends State<AdminShell> {
         );
       case '/limites':
         return const LimitesScreen();
+      case '/logs':
+        return const LogsScreen();
       default:
         return _DatasetGate(
           datasets: StoreController.dashboardDatasets,
@@ -260,16 +274,25 @@ class _AdminShellState extends State<AdminShell> {
       });
     }
 
+    // Menu dynamique : « Log » n'existe que pour le compte principal (owner).
+    // Garde-fou : si la route courante n'est plus dans le menu (ex. logout
+    // d'un compte owner puis login d'un compte non owner sur /logs), on
+    // rebascule sur le dashboard.
+    final List<NavItem> items = _navItems(isOwner: auth.isOwner);
+    if (!items.any((i) => i.route == _route)) {
+      _route = '/dashboard';
+    }
+
     return Scaffold(
       body: Row(
         children: [
-          AdminSidebar(items: _items, current: _route, onSelected: _go),
+          AdminSidebar(items: items, current: _route, onSelected: _go),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 AdminTopbar(
-                  title: _title,
+                  title: _titleFor(items),
                   showReset: store.sync == null,
                   onRefresh: store.sync != null ? () => store.refresh() : null,
                   isSyncing: store.isSyncing,

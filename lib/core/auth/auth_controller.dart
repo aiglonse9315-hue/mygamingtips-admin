@@ -32,6 +32,14 @@ class AuthController extends ChangeNotifier {
   /// jeton expiré, même s'il est encore en mémoire).
   String? get token => isAuthenticated ? _service.token : null;
 
+  /// Vrai si la session courante appartient au compte principal (owner).
+  /// Sert à afficher les menus réservés (ex. « Log ») — le serveur reste la
+  /// vraie barrière de sécurité (403 sur les routes owner-only).
+  bool get isOwner => isAuthenticated && _service.isOwner;
+
+  /// Identifiant du compte connecté (claim `username` du JWT), null sinon.
+  String? get currentUsername => isAuthenticated ? _service.username : null;
+
   /// Journal d'audit (consultable côté client pour transparence).
   List<AuthLogEntry> get auditLog => _service.log;
 

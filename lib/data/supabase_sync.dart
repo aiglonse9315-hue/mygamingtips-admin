@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import '../domain/models/category.dart';
 import '../domain/models/content.dart';
 import '../domain/models/game.dart';
+import '../domain/models/log_entry.dart';
 import '../domain/models/suggestion.dart';
 
 /// Exception levée quand le token admin est expiré ou invalide (HTTP 401).
@@ -14,6 +15,17 @@ import '../domain/models/suggestion.dart';
 /// logout automatique, plutôt que d'afficher une simple erreur d'action.
 class AdminAuthException implements Exception {
   const AdminAuthException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+/// Exception levée quand le serveur refuse l'accès (HTTP 403) — compte
+/// authentifié mais privilège insuffisant (ex. route réservée au compte
+/// principal comme `logs/list`). Contrairement au 401, ce n'est PAS une
+/// session expirée : pas de logout forcé, juste un message dédié côté UI.
+class AdminForbiddenException implements Exception {
+  const AdminForbiddenException(this.message);
   final String message;
   @override
   String toString() => message;
@@ -536,6 +548,13 @@ class SupabaseSync {
           data['error']?.toString() ?? 'Session expirée',
         );
       }
+      // 403 = compte authentifié mais privilège insuffisant (ex. logs/list
+      // réservé au compte principal). Pas de logout : message dédié côté UI.
+      if (res.statusCode == 403) {
+        throw AdminForbiddenException(
+          data['error']?.toString() ?? 'Accès refusé (403)',
+        );
+      }
       throw Exception(data['error'] ?? 'Erreur serveur (${res.statusCode})');
     }
     // Sliding session : si la réponse contient un fresh_token, on notifie
@@ -931,5 +950,39 @@ class SupabaseSync {
       if (ops.length < pageSize) break; // fin du journal
     }
     return (removedUrls: urls, maxCreatedAt: maxCreated);
+  }
+
+  // ===========================================================================
+  // JOURNAL D'ACTIVITÉ (route EF `logs/list` — réservée au compte principal)
+  // ===========================================================================
+
+  /// Récupère une page du journal d'activité admin (connexions + actions),
+  /// triée par date DÉCROISSANTE côté serveur.
+  ///
+  /// [page] : index de la page (0-based).
+  /// [pageSize] : lignes par page (≤ 500 côté serveur — borné ici par sécurité).
+  /// [source] : `all` | `auth` (connexions) | `actions`.
+  ///
+  /// Retourne les entrées de la page + le total serveur (pour la pagination).
+  /// Lève [AdminForbiddenException] (403) si le compte n'est pas le compte
+  /// principal, [AdminAuthException] (401) si la session a expiré.
+  Future<({List<LogEntry> items, int total})> fetchLogs({
+    int page = 0,
+    int pageSize = 100,
+    String source = 'all',
+  }) async {
+    final Map<String, dynamic> data = await _post('logs/list', {
+      'page': page,
+      'pageSize': pageSize.clamp(1, 500),
+      'source': source,
+    });
+    final List<dynamic> rows = data['logs'] as List? ?? [];
+    return (
+      items: rows
+          .whereType<Map<String, dynamic>>()
+          .map(LogEntry.fromJson)
+          .toList(),
+      total: (data['total'] as num?)?.toInt() ?? rows.length,
+    );
   }
 }

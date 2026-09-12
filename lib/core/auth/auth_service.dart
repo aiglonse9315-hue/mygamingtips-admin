@@ -74,6 +74,17 @@ class AuthService {
   String? _token;
   String? get token => _token;
 
+  /// Vrai si la session courante appartient au compte principal (owner).
+  /// Capturé depuis la réponse de login (`is_owner`) ET confirmé/relu depuis
+  /// le payload JWT à chaque rotation de token (sliding session) — reste
+  /// donc vrai après un fresh_token. En mode aperçu : toujours vrai (démo).
+  bool get isOwner => previewMode ? true : _isOwner;
+  bool _isOwner = false;
+
+  /// Identifiant du compte connecté (claim `username` du JWT / login).
+  String? get username => previewMode ? 'aperçu' : _username;
+  String? _username;
+
   /// Timer d'auto-logout : déconnecte automatiquement quand le JWT expire.
   Timer? _expiryTimer;
 
@@ -124,6 +135,8 @@ class AuthService {
       return;
     }
     _token = stored;
+    // Relit les claims (is_owner, username) depuis le JWT restauré.
+    _applyClaimsFromToken(stored);
     _scheduleAutoLogout(stored);
   }
 
@@ -186,6 +199,12 @@ class AuthService {
         if (token != null && token.isNotEmpty) {
           _token = token;
           html.window.localStorage[_kToken] = token;
+          // Capture le privilège owner : 1) depuis la réponse de login
+          // (`is_owner`), 2) confirmé depuis le payload JWT (source de
+          // vérité partagée avec les fresh_token de la sliding session).
+          _isOwner = body['is_owner'] == true;
+          _username = username;
+          _applyClaimsFromToken(token);
           // Réinitialise le compteur d'échecs après succès.
           _failedAttempts = 0;
           _lockedUntil = null;
@@ -239,6 +258,8 @@ class AuthService {
 
   void logout() {
     _token = null;
+    _isOwner = false;
+    _username = null;
     _expiryTimer?.cancel();
     _expiryTimer = null;
     html.window.localStorage.remove(_kToken);
@@ -254,6 +275,9 @@ class AuthService {
   void refreshToken(String freshToken) {
     _token = freshToken;
     html.window.localStorage[_kToken] = freshToken;
+    // Les fresh_token portent aussi username/is_owner : on relit les claims
+    // pour que le privilège owner reste exact après chaque rotation.
+    _applyClaimsFromToken(freshToken);
     _scheduleAutoLogout(freshToken);
   }
 
@@ -286,6 +310,24 @@ class AuthService {
     final padded = b64url.replaceAll('-', '+').replaceAll('_', '=');
     final normalized = padded.padRight((padded.length + 3) ~/ 4 * 4, '=');
     return utf8.decode(base64.decode(normalized));
+  }
+
+  /// Relit les claims de session (`is_owner`, `username`) depuis le payload
+  /// JWT (segment du milieu, base64url). Tolérant aux jetons malformés : en
+  /// cas d'échec de décodage, les valeurs connues sont conservées.
+  void _applyClaimsFromToken(String jwt) {
+    try {
+      final parts = jwt.split('.');
+      if (parts.length != 3) return;
+      final claims =
+          jsonDecode(_decodeBase64Url(parts[1])) as Map<String, dynamic>;
+      final owner = claims['is_owner'];
+      if (owner is bool) _isOwner = owner;
+      final user = claims['username'];
+      if (user is String && user.isNotEmpty) _username = user;
+    } catch (_) {
+      // Jeton malformé → on conserve les claims déjà connus.
+    }
   }
 
   /// Programme un timer qui déconnecte automatiquement à l'expiration du JWT.

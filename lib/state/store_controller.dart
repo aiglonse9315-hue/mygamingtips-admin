@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -256,6 +257,45 @@ class StoreController extends ChangeNotifier {
 
   /// Dernier token admin connu (pour éviter les resync inutiles).
   String? _lastToken;
+
+  /// Claims de session décodés du JWT admin courant (payload base64url).
+  /// Relus à CHAQUE [updateAdminToken] — donc aussi après chaque fresh_token
+  /// de la sliding session (qui porte les mêmes claims username/is_owner).
+  bool _isOwner = false;
+  String? _currentUsername;
+
+  /// Vrai si la session courante appartient au compte principal (owner).
+  /// Sert à conditionner les menus réservés (ex. « Log ») — le serveur reste
+  /// la vraie barrière de sécurité (403 sur les routes owner-only).
+  bool get isOwner => _isOwner;
+
+  /// Identifiant du compte connecté (claim `username` du JWT), null sinon.
+  String? get currentUsername => _currentUsername;
+
+  /// Décode le payload JWT (segment du milieu, base64url + padding) et met
+  /// à jour [_isOwner] / [_currentUsername]. Tolérant aux jetons malformés
+  /// (mode aperçu, jeton factice) : les claims connus sont conservés.
+  void _applySessionClaims(String? token) {
+    if (token == null || token.isEmpty) {
+      _isOwner = false;
+      _currentUsername = null;
+      return;
+    }
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return;
+      final b64 = parts[1].replaceAll('-', '+').replaceAll('_', '/');
+      final padded = b64.padRight((b64.length + 3) ~/ 4 * 4, '=');
+      final claims = jsonDecode(utf8.decode(base64.decode(padded)))
+          as Map<String, dynamic>;
+      final owner = claims['is_owner'];
+      if (owner is bool) _isOwner = owner;
+      final user = claims['username'];
+      if (user is String && user.isNotEmpty) _currentUsername = user;
+    } catch (_) {
+      // Jeton malformé → on conserve les claims déjà connus.
+    }
+  }
 
   /// Callback invoqué quand une écriture reçoit un 401 (token expiré/invalide).
   /// Le `admin_shell` s'y branche pour forcer le logout automatique.
@@ -1901,6 +1941,11 @@ class StoreController extends ChangeNotifier {
     r'(^|[^a-z0-9])(viii|vii|xii|iii|xi|ix|vi|iv|ii|x|v)(?![a-z0-9])',
   );
 
+  /// Jeux pour lesquels les HASHTAGS sont conservés dans les titres
+  /// (12/09/2026 — Roblox : les hashtags différencient ses jeux/modes
+  /// internes ; même règle côté bots, voir passation §56).
+  static const Set<String> _keepHashtagsGames = {'roblox'};
+
   /// Normalise un nom de jeu pour la comparaison (copie fidèle de
   /// GameMatcher.normalize : minuscules, accents, romains → arabes,
   /// suffixes d'édition, apostrophes, ponctuation, puis résolution d'alias).
@@ -2027,13 +2072,19 @@ class StoreController extends ChangeNotifier {
   /// (d) garde-fou : si le résultat fait moins de 3 caractères ou est vide,
   ///     retourne le titre seulement dé-hashtagué (jamais de titre vide).
   static String _cleanTitleForInsertion(String title, {String? gameName}) {
-    // (a) Hashtags.
-    final withoutHashtags = title
-        .replaceAll(RegExp(r'#\S+'), '')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-
+    // (a) Hashtags — SAUF pour les jeux d'exception (12/09/2026 : Roblox
+    // contient de nombreux jeux/modes en son sein, les hashtags les
+    // différencient — même règle que les bots, cf. _keepHashtagsGames).
     final game = gameName?.trim();
+    final keepHashtags = game != null &&
+        _keepHashtagsGames.contains(_normalizeGameName(game));
+    final withoutHashtags = keepHashtags
+        ? title.replaceAll(RegExp(r'\s+'), ' ').trim()
+        : title
+            .replaceAll(RegExp(r'#\S+'), '')
+            .replaceAll(RegExp(r'\s+'), ' ')
+            .trim();
+
     if (game == null || game.isEmpty) return withoutHashtags;
 
     // (b) Formes à retirer : nom canonique normalisé + alias connus dont la
@@ -3078,6 +3129,9 @@ class StoreController extends ChangeNotifier {
     final hadToken = _lastToken != null && _lastToken!.isNotEmpty;
     final hasToken = token != null && token.isNotEmpty;
     _lastToken = token;
+    // Relit is_owner / username depuis le JWT (login ET fresh_token : la
+    // route /logs affichée côté owner doit rester exacte après rotation).
+    _applySessionClaims(token);
     if (hasToken) {
       sync!.setAdminToken(token);
       // Resync uniquement au login (hadToken == false). Sur rotation, les
