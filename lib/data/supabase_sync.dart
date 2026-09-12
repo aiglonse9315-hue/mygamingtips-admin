@@ -985,4 +985,44 @@ class SupabaseSync {
       total: (data['total'] as num?)?.toInt() ?? rows.length,
     );
   }
+
+  // ===========================================================================
+  // ARCHIVES MENSUELLES DU JOURNAL (routes EF logs/archives/* — owner-only)
+  // ===========================================================================
+  // En fin de mois, le serveur déplace les logs du mois écoulé dans une table
+  // d'archive. Ces routes (réservées au compte principal, comme logs/list)
+  // permettent de lister, télécharger et supprimer ces archives.
+
+  /// Liste les archives mensuelles du journal d'activité.
+  ///
+  /// Retourne une liste de maps brutes : `table_name`, `period_label`,
+  /// `rows_count`, `created_at`. Lève [AdminForbiddenException] (403) si le
+  /// compte n'est pas owner, [AdminAuthException] (401) si session expirée.
+  Future<List<Map<String, dynamic>>> fetchLogArchives() async {
+    final Map<String, dynamic> data = await _post(
+      'logs/archives/list',
+      <String, dynamic>{},
+    );
+    final List<dynamic> rows = data['archives'] as List? ?? [];
+    return rows.whereType<Map<String, dynamic>>().toList();
+  }
+
+  /// Télécharge le contenu COMPLET d'une archive (toutes ses lignes,
+  /// sous forme de [LogEntry] — même shape que `logs/list`).
+  Future<List<LogEntry>> downloadLogArchive(String table) async {
+    final Map<String, dynamic> data = await _post('logs/archive/download', {
+      'table': table,
+    });
+    final List<dynamic> rows = data['logs'] as List? ?? [];
+    return rows
+        .whereType<Map<String, dynamic>>()
+        .map(LogEntry.fromJson)
+        .toList();
+  }
+
+  /// Supprime DÉFINITIVEMENT une archive (action IRRÉVERSIBLE côté serveur).
+  /// L'UI doit exiger une confirmation explicite avant cet appel.
+  Future<void> deleteLogArchive(String table) async {
+    await _post('logs/archive/delete', {'table': table});
+  }
 }

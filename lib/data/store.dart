@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:html' as html;
 
+import 'package:flutter/foundation.dart';
+
 import '../../domain/models/banned_user.dart';
 import '../../domain/models/content.dart';
 import '../../domain/models/game.dart';
@@ -62,8 +64,38 @@ class Store {
 
   // ---------- Contenus ----------
   List<Content> loadContents() => _loadList(_kContents, Content.fromJson);
-  void saveContents(List<Content> contents) =>
-      _saveList(_kContents, contents.map((c) => c.toJson()).toList());
+
+  /// Seuil au-delà duquel le cache contenus n'est PAS persisté (~3,5 Mo).
+  ///
+  /// Le catalogue complet (~10 600 lignes JSON) dépasse le quota localStorage
+  /// du navigateur (~5 Mo) : l'écriture levait une QuotaExceededError qui
+  /// remontait jusqu'à `syncError` (« Sync partielle — contenus »). Le cache
+  /// est un simple accélérateur : ne pas le persister n'empêche pas la sync
+  /// (la prochaine session refera une full sync).
+  static const int _maxContentsCacheBytes = 3500000;
+
+  /// Persiste le catalogue contenus, de façon TOLÉRANTE : si la sérialisation
+  /// dépasse ~3,5 Mo, on n'écrit rien ; si le navigateur refuse l'écriture
+  /// (QuotaExceededError ou autre), on avale l'erreur. Ne lève JAMAIS.
+  void saveContents(List<Content> contents) {
+    final String json =
+        jsonEncode(contents.map((c) => c.toJson()).toList());
+    if (json.length > _maxContentsCacheBytes) {
+      debugPrint(
+        '[Store] cache contenus non persisté (trop volumineux : '
+        '${json.length} caractères > $_maxContentsCacheBytes) — la prochaine '
+        'session refera une synchronisation complète.',
+      );
+      return;
+    }
+    try {
+      html.window.localStorage[_kContents] = json;
+    } catch (e) {
+      // QuotaExceededError (localStorage plein) ou refus du navigateur :
+      // non bloquant, le cache sera simplement absent au prochain démarrage.
+      debugPrint('[Store] cache contenus non persisté (quota) : $e');
+    }
+  }
 
   // ---------- Suggestions ----------
   List<Suggestion> loadSuggestions() =>

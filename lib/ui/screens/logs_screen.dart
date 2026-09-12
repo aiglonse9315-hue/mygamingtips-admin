@@ -46,10 +46,22 @@ class _LogsScreenState extends State<LogsScreen> {
   bool _forbidden = false;
   String? _error;
 
+  // ── Archives mensuelles ──
+  List<_LogArchive> _archives = <_LogArchive>[];
+  bool _archivesLoading = false;
+  String? _archivesError;
+
+  /// Nom de table de l'archive en cours de téléchargement / suppression
+  /// (un seul traitement à la fois, indicateur par ligne).
+  String? _archiveBusy;
+
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _load(0));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _load(0);
+      _loadArchives();
+    });
   }
 
   int get _totalPages => (_total / _pageSize).ceil().clamp(1, 1 << 30);
@@ -207,6 +219,140 @@ class _LogsScreenState extends State<LogsScreen> {
       );
     } finally {
       if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Archives mensuelles
+  // ---------------------------------------------------------------------------
+
+  /// Charge la liste des archives (route EF `logs/archives/list`).
+  Future<void> _loadArchives() async {
+    final sync = context.read<StoreController>().sync;
+    if (sync == null) return;
+    setState(() {
+      _archivesLoading = true;
+      _archivesError = null;
+    });
+    try {
+      final List<Map<String, dynamic>> rows = await sync.fetchLogArchives();
+      if (!mounted) return;
+      setState(() {
+        _archives = rows.map(_LogArchive.fromJson).toList();
+        _archivesLoading = false;
+      });
+    } on AdminForbiddenException {
+      // 403 : l'écran principal affiche déjà l'état « réservé au compte
+      // principal » — la section archives reste simplement vide.
+      if (!mounted) return;
+      setState(() {
+        _archives = <_LogArchive>[];
+        _archivesLoading = false;
+      });
+    } on AdminAuthException {
+      if (!mounted) return;
+      context.read<StoreController>().onAuthError?.call();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _archivesError = e.toString();
+        _archivesLoading = false;
+      });
+    }
+  }
+
+  /// Télécharge l'archive et l'exporte en CSV (même format que l'export
+  /// de l'écran : BOM UTF-8, en-tête `at;username;type;action;detail`).
+  Future<void> _downloadArchive(_LogArchive archive) async {
+    final sync = context.read<StoreController>().sync;
+    if (sync == null || _archiveBusy != null) return;
+    setState(() => _archiveBusy = archive.tableName);
+    try {
+      final List<LogEntry> logs = await sync.downloadLogArchive(
+        archive.tableName,
+      );
+      if (!mounted) return;
+      _downloadCsv(
+        _toCsv(logs),
+        'logs_archive_${archive.tableName}_${_fileStamp()}.csv',
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Archive « ${archive.periodLabel} » exportée : '
+            '${logs.length} lignes.',
+          ),
+        ),
+      );
+    } on AdminAuthException {
+      if (!mounted) return;
+      context.read<StoreController>().onAuthError?.call();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Téléchargement impossible : $e'),
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _archiveBusy = null);
+    }
+  }
+
+  /// Suppression DÉFINITIVE d'une archive : dialog de confirmation
+  /// explicite obligatoire (action irréversible côté serveur).
+  Future<void> _confirmDeleteArchive(_LogArchive archive) async {
+    final sync = context.read<StoreController>().sync;
+    if (sync == null || _archiveBusy != null) return;
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('Supprimer l\'archive ?'),
+        content: Text(
+          'Supprimer définitivement l\'archive « ${archive.periodLabel} » '
+          '(${archive.rowsCount} lignes) ?\n\n'
+          'Cette action est irréversible.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Annuler'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.red.shade700,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Supprimer'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _archiveBusy = archive.tableName);
+    try {
+      await sync.deleteLogArchive(archive.tableName);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Archive « ${archive.periodLabel} » supprimée.'),
+        ),
+      );
+      await _loadArchives();
+    } on AdminAuthException {
+      if (!mounted) return;
+      context.read<StoreController>().onAuthError?.call();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Suppression impossible : $e'),
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _archiveBusy = null);
     }
   }
 
@@ -415,6 +561,182 @@ class _LogsScreenState extends State<LogsScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Section « Archives mensuelles »
+  // ---------------------------------------------------------------------------
+
+  Widget _buildArchivesSection(ThemeData theme) {
+    final Color? dim = theme.textTheme.bodySmall?.color;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 32),
+        Divider(color: dim?.withValues(alpha: 0.25)),
+        const SizedBox(height: 20),
+        Row(
+          children: [
+            Text('Archives mensuelles', style: theme.textTheme.titleMedium),
+            const Spacer(),
+            if (_archivesLoading)
+              const SizedBox(
+                width: 32,
+                height: 32,
+                child: Center(
+                  child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              )
+            else
+              IconButton(
+                onPressed: _loadArchives,
+                icon: const Icon(Icons.refresh_rounded, size: 20),
+                tooltip: 'Rafraîchir les archives',
+              ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Le journal du mois écoulé est archivé automatiquement en fin de '
+          'mois. Chaque archive est téléchargeable en CSV.',
+          style: theme.textTheme.bodySmall,
+        ),
+        const SizedBox(height: 16),
+        if (_archivesError != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.orange.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+              border:
+                  Border.all(color: Colors.orange.withValues(alpha: 0.5)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.error_outline_rounded,
+                    size: 18, color: Colors.orange.shade300),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _archivesError!,
+                    style: TextStyle(color: Colors.orange.shade300),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _loadArchives,
+                  child: const Text('Réessayer'),
+                ),
+              ],
+            ),
+          )
+        else if (_archivesLoading && _archives.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 24),
+            child: Center(
+              child: CircularProgressIndicator(strokeWidth: 3),
+            ),
+          )
+        else if (_archives.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Column(
+              children: [
+                Icon(Icons.inventory_2_outlined, size: 36, color: dim),
+                const SizedBox(height: 10),
+                Text(
+                  'Aucune archive pour l\'instant — le premier archivage '
+                  'automatique a lieu en fin de mois.',
+                  style: theme.textTheme.bodySmall,
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          )
+        else
+          ..._archives.map((a) => _archiveRow(a, theme)),
+      ],
+    );
+  }
+
+  Widget _archiveRow(_LogArchive archive, ThemeData theme) {
+    final bool busy = _archiveBusy == archive.tableName;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.neonViolet.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border:
+            Border.all(color: AppColors.neonViolet.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.archive_outlined,
+              size: 20, color: AppColors.neonViolet.withValues(alpha: 0.9)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  archive.periodLabel,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${archive.rowsCount} lignes · archivée le '
+                  '${_fmtDate(archive.createdAt)}',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: theme.textTheme.bodySmall?.color,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (busy)
+            const SizedBox(
+              width: 40,
+              height: 40,
+              child: Center(
+                child: SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            )
+          else ...[
+            IconButton(
+              onPressed: _archiveBusy == null
+                  ? () => _downloadArchive(archive)
+                  : null,
+              icon: const Icon(Icons.download_rounded, size: 20),
+              tooltip: 'Télécharger (CSV)',
+            ),
+            IconButton(
+              onPressed: _archiveBusy == null
+                  ? () => _confirmDeleteArchive(archive)
+                  : null,
+              icon: Icon(
+                Icons.delete_outline_rounded,
+                size: 20,
+                color: Colors.red.shade300,
+              ),
+              tooltip: 'Supprimer définitivement',
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -521,8 +843,43 @@ class _LogsScreenState extends State<LogsScreen> {
           ),
           const SizedBox(height: 20),
           _buildBody(theme),
+          if (!_forbidden) _buildArchivesSection(theme),
         ],
       ),
+    );
+  }
+}
+
+/// Archive mensuelle du journal d'activité (route EF `logs/archives/list`).
+///
+/// Une archive est une table serveur contenant les logs d'un mois écoulé.
+/// La suppression (`logs/archive/delete`) est définitive et irréversible.
+class _LogArchive {
+  const _LogArchive({
+    required this.tableName,
+    required this.periodLabel,
+    required this.rowsCount,
+    required this.createdAt,
+  });
+
+  /// Nom technique de la table d'archive (passé tel quel aux routes EF).
+  final String tableName;
+
+  /// Libellé de période affichable (ex. « Juin 2026 »).
+  final String periodLabel;
+
+  /// Nombre de lignes contenues dans l'archive.
+  final int rowsCount;
+
+  /// Date de création de l'archive (null si absente/invalide).
+  final DateTime? createdAt;
+
+  factory _LogArchive.fromJson(Map<String, dynamic> json) {
+    return _LogArchive(
+      tableName: json['table_name']?.toString() ?? '',
+      periodLabel: json['period_label']?.toString() ?? 'Archive',
+      rowsCount: (json['rows_count'] as num?)?.toInt() ?? 0,
+      createdAt: DateTime.tryParse(json['created_at']?.toString() ?? ''),
     );
   }
 }
