@@ -21,6 +21,12 @@ class AdminDataTable extends StatelessWidget {
     this.onSort,
     /// Index des colonnes non triables (ex: Actions). Ignorés si onSort est null.
     this.nonSortableColumns,
+    /// Rendus d'en-tête personnalisés par index de colonne. Quand un index
+    /// est présent, le widget fourni remplace le [Text] (ou l'en-tête
+    /// triable) — utile pour les colonnes interactives (ex: case « tout
+    /// sélectionner la page »). Le libellé String reste requis dans
+    /// [columns] (il sert notamment à [nonSortableColumns]).
+    this.headerWidgets,
   });
 
   final List<String> columns;
@@ -38,6 +44,10 @@ class AdminDataTable extends StatelessWidget {
 
   /// Noms des colonnes qui ne doivent pas être triables.
   final List<String>? nonSortableColumns;
+
+  /// Widgets d'en-tête personnalisés, keyed par index de colonne.
+  /// Prioritaire sur le rendu texte/tri par défaut.
+  final Map<int, Widget>? headerWidgets;
 
   @override
   Widget build(BuildContext context) {
@@ -68,29 +78,31 @@ class AdminDataTable extends StatelessWidget {
                   .map((entry) {
                     final int idx = entry.key;
                     final String c = entry.value;
+                    final Widget? headerOverride = headerWidgets?[idx];
                     final bool isSortable = onSort != null &&
                         !(nonSortableColumns?.contains(c) ?? false);
                     final bool isActive = sortColumnIndex == idx;
 
                     return Expanded(
                       flex: c == 'Actions' ? 0 : 1,
-                      child: isSortable
-                          ? _SortableHeader(
-                              label: c,
-                              active: isActive,
-                              ascending: sortAscending,
-                              mutedColor: mutedColor,
-                              onTap: () => onSort!(idx),
-                            )
-                          : Text(
-                              c,
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: 0.5,
-                                color: mutedColor,
-                              ),
-                            ),
+                      child: headerOverride ??
+                          (isSortable
+                              ? _SortableHeader(
+                                  label: c,
+                                  active: isActive,
+                                  ascending: sortAscending,
+                                  mutedColor: mutedColor,
+                                  onTap: () => onSort!(idx),
+                                )
+                              : Text(
+                                  c,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: 0.5,
+                                    color: mutedColor,
+                                  ),
+                                )),
                     );
                   })
                   .toList(),

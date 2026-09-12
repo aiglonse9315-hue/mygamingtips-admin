@@ -172,6 +172,20 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     });
   }
 
+  /// Sélectionne / désélectionne UNIQUEMENT les lignes de la page affichée
+  /// du board « 99% sûr » (case d'en-tête de la colonne de sélection dans
+  /// [_TrustedTable]). Contrairement à [_selectAll] qui couvre toutes les
+  /// pages, les sélections faites sur les autres pages sont conservées.
+  void _toggleSelectPage(List<String> pageIds, bool selectAll) {
+    setState(() {
+      if (selectAll) {
+        _selected.addAll(pageIds);
+      } else {
+        _selected.removeAll(pageIds);
+      }
+    });
+  }
+
   void _toggleVerifySelect(String id) {
     setState(() {
       if (_toVerifySelected.contains(id)) {
@@ -600,6 +614,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                 suggestions: trusted,
                 selectedIds: _selected,
                 onToggle: _toggleSelect,
+                onTogglePageSelection: _toggleSelectPage,
                 onSelectAll: () => _selectAll(trusted),
                 editedGames: _editedGames,
                 onGameChanged: _setEditedGame,
@@ -1056,6 +1071,7 @@ class _TrustedTable extends StatefulWidget {
     required this.suggestions,
     required this.selectedIds,
     required this.onToggle,
+    required this.onTogglePageSelection,
     required this.onSelectAll,
     required this.editedGames,
     required this.onGameChanged,
@@ -1067,6 +1083,15 @@ class _TrustedTable extends StatefulWidget {
   final List<Suggestion> suggestions;
   final Set<String> selectedIds;
   final ValueChanged<String> onToggle;
+
+  /// Callback de la case d'en-tête de la colonne de sélection : bascule la
+  /// sélection des lignes de la PAGE AFFICHÉE uniquement. [pageIds] = ids de
+  /// [_paged], [selectAll] = true pour sélectionner la page, false pour la
+  /// désélectionner. Les sélections des autres pages sont conservées
+  /// (contrairement à [onSelectAll] qui couvre toutes les pages).
+  final void Function(List<String> pageIds, bool selectAll)
+      onTogglePageSelection;
+
   final VoidCallback onSelectAll;
 
   /// Jeux modifiés par l'admin dans la colonne « Jeu IA »
@@ -1373,6 +1398,19 @@ class _TrustedTableState extends State<_TrustedTable> {
     // On ne construit que les lignes de la page courante (100 max) pour éviter
     // de matérialiser toute la liste et ralentir l'interface admin.
     final pageItems = _paged;
+    // ── Case d'en-tête de la colonne de sélection (colonne 0) ──
+    // Scopée à la PAGE AFFICHÉE : sélectionne / désélectionne uniquement les
+    // lignes de [pageItems] (contrairement au bouton « Tout sélectionner »
+    // du parent qui couvre toutes les pages). État tristate : cochée si
+    // toute la page est sélectionnée, indéterminée (tiret) si une partie
+    // seulement, décochée sinon.
+    final List<String> pageIds = pageItems.map((s) => s.id).toList();
+    final int selectedOnPage = pageItems
+        .where((s) => widget.selectedIds.contains(s.id))
+        .length;
+    final bool allPageSelected =
+        pageIds.isNotEmpty && selectedOnPage == pageIds.length;
+    final bool somePageSelected = selectedOnPage > 0 && !allPageSelected;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1390,6 +1428,35 @@ class _TrustedTableState extends State<_TrustedTable> {
             'Vues',
             'Actions',
           ],
+          // En-tête interactif pour la colonne 0 : case « toute la page ».
+          headerWidgets: {
+            0: Tooltip(
+              message: 'Sélectionner toute la page affichée',
+              child: InkWell(
+                onTap: pageIds.isEmpty
+                    ? null
+                    : () => widget.onTogglePageSelection(
+                          pageIds,
+                          !allPageSelected,
+                        ),
+                borderRadius: BorderRadius.circular(4),
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(
+                    allPageSelected
+                        ? Icons.check_box_rounded
+                        : somePageSelected
+                            ? Icons.indeterminate_check_box_rounded
+                            : Icons.check_box_outline_blank_rounded,
+                    size: 18,
+                    color: (allPageSelected || somePageSelected)
+                        ? AppColors.neonGreen
+                        : Theme.of(context).textTheme.bodySmall?.color,
+                  ),
+                ),
+              ),
+            ),
+          },
           sortColumnIndex: _sortColumnIndex,
           sortAscending: _sortAscending,
           onSort: _onSort,
