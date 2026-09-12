@@ -1080,7 +1080,8 @@ class StoreController extends ChangeNotifier {
         suggestionId: suggestion.id,
         gameId: targetGame.id,
         category: category,
-        titleAdmin: _effectiveTitle(suggestion, titleOverride),
+        titleAdmin: _effectiveTitle(suggestion, titleOverride,
+            gameName: suggestedName),
         isVideo: category == ContentCategory.video,
         publishedAt: _dateForInsertion(suggestion),
       );
@@ -1199,7 +1200,8 @@ class StoreController extends ChangeNotifier {
         'id': s.id,
         'game_id': targetGame.id,
         'category': category.name,
-        'title_admin': _effectiveTitle(s, titleOverrides?[s.id]),
+        'title_admin': _effectiveTitle(s, titleOverrides?[s.id],
+            gameName: suggestedName),
         'is_video': category == ContentCategory.video,
         if (_dateForInsertion(s) != null)
           'published_at': _dateForInsertion(s)!.toIso8601String(),
@@ -1607,7 +1609,8 @@ class StoreController extends ChangeNotifier {
         suggestionId: suggestion.id,
         gameId: targetGame.id,
         category: effectiveCategory,
-        titleAdmin: _effectiveTitle(suggestion, titleOverride),
+        titleAdmin: _effectiveTitle(suggestion, titleOverride,
+            gameName: trimmed),
         isVideo: effectiveCategory == ContentCategory.video,
         publishedAt: _dateForInsertion(suggestion),
       );
@@ -1750,30 +1753,329 @@ class StoreController extends ChangeNotifier {
   /// 1. Titre réel YouTube (récupéré par Sentinelle via l'API YouTube)
   /// 2. Texte partagé nettoyé (sans URL)
   /// 3. URL brute
-  static String _titleForInsertion(Suggestion s) {
+  ///
+  /// Si [gameName] est fourni (flux Sentinelle : jeu effectif = override
+  /// admin ?? suggestedGame de l'IA), le titre est nettoyé via
+  /// [_cleanTitleForInsertion] (hashtags + mentions du jeu — règle
+  /// 12/09/2026). Sans [gameName], comportement historique inchangé.
+  static String _titleForInsertion(Suggestion s, {String? gameName}) {
     // 1. Titre YouTube réel (le plus fiable).
     final ytTitle = s.aiRecommendation?.youtubeTitle;
-    if (ytTitle != null && ytTitle.trim().isNotEmpty) {
-      return ytTitle.trim();
-    }
-    // 2. Fallback : texte partagé nettoyé.
-    return _cleanTitle(s);
+    final base = (ytTitle != null && ytTitle.trim().isNotEmpty)
+        ? ytTitle.trim()
+        // 2. Fallback : texte partagé nettoyé.
+        : _cleanTitle(s);
+    final game = gameName?.trim();
+    if (game == null || game.isEmpty) return base;
+    return _cleanTitleForInsertion(base, gameName: game);
   }
 
   /// Titre d'insertion effectif : l'override saisi par l'admin (colonne
   /// « Titre pour insertion » des tableaux Sentinelle) prime sur le titre
   /// calculé, sauf s'il est vide après trim (champ effacé = titre calculé).
-  static String _effectiveTitle(Suggestion s, String? titleOverride) {
+  /// [gameName] = jeu effectif (override admin ?? suggestedGame IA), utilisé
+  /// pour retirer les mentions du jeu du titre calculé (règle 12/09/2026).
+  static String _effectiveTitle(Suggestion s, String? titleOverride,
+      {String? gameName}) {
     final override = titleOverride?.trim();
     return (override != null && override.isNotEmpty)
         ? override
-        : _titleForInsertion(s);
+        : _titleForInsertion(s, gameName: gameName);
   }
 
   /// Titre calculé pour l'insertion d'un contenu (titre YouTube IA sinon
   /// texte partagé nettoyé). Exposé à l'UI Sentinelle pour pré-remplir les
   /// champs « Titre pour insertion » éditables des 3 tableaux.
-  String titleForInsertion(Suggestion s) => _titleForInsertion(s);
+  /// [gameName] = jeu effectif : ses mentions sont retirées du titre
+  /// (règle 12/09/2026).
+  String titleForInsertion(Suggestion s, {String? gameName}) =>
+      _titleForInsertion(s, gameName: gameName);
+
+  // ── Nettoyage des titres d'insertion (règles 11/09 + 12/09/2026) ──
+  // COPIE AUTONOME de SentinelleRunner.cleanTitleForInsertion (tools/vision)
+  // et de GameMatcher (normalize + alias) : l'admin ne peut pas importer
+  // tools/vision. ⚠️ Toute évolution de GameMatcher._aliases doit être
+  // reportée ici (et dans tools/sentinelle/lib/game_matcher.dart).
+  //
+  // ⚠️ Les titres DÉJÀ en base avec le nom du jeu ne sont PAS rétro-
+  // modifiés : l'admin les édite à la main via le champ « Titre pour
+  // insertion ».
+
+  /// Variantes accentuées par lettre ASCII, pour la comparaison insensible
+  /// aux accents de [_cleanTitleForInsertion].
+  static const Map<String, String> _accentVariants = {
+    'a': 'àâäãåā',
+    'e': 'éèêëē',
+    'i': 'îïíìī',
+    'o': 'ôöõòóōø',
+    'u': 'ùûüúū',
+    'y': 'ýÿ',
+    'c': 'ç',
+    'n': 'ñ',
+  };
+
+  /// Alias connus → nom canonique normalisé. Copie de GameMatcher._aliases
+  /// (tools/vision/lib/game_matcher.dart) — clés et valeurs déjà normalisées.
+  static const Map<String, String> _gameAliases = {
+    'd4': 'diablo 4',
+    'diablo iv': 'diablo 4',
+    'diablo 4': 'diablo 4',
+    'poe': 'path of exile',
+    'poe 2': 'path of exile 2',
+    'poe2': 'path of exile 2',
+    'path of exile 2': 'path of exile 2',
+    'lol': 'league of legends',
+    'league of legends': 'league of legends',
+    'tft': 'league of legends teamfight tactics',
+    'teamfight tactics': 'league of legends teamfight tactics',
+    'tft set': 'league of legends teamfight tactics',
+    'lol tft': 'league of legends teamfight tactics',
+    'league of legends tft': 'league of legends teamfight tactics',
+    'league of legends teamfight tactics': 'league of legends teamfight tactics',
+    'bo7': 'call of duty black ops 7',
+    'black ops 7': 'call of duty black ops 7',
+    'cod bo7': 'call of duty black ops 7',
+    'call of duty black ops 7': 'call of duty black ops 7',
+    'oni': 'oxygen not included',
+    'oxygen not included': 'oxygen not included',
+    'oxygene not included': 'oxygen not included',
+    'oxygène not included': 'oxygen not included',
+    'sc': 'star citizen',
+    'wf': 'warframe',
+    'la': 'lost ark',
+    'drg': 'deep rock galactic',
+    'total war warhammer 3': 'total war warhammer 3',
+    'warhammer 3': 'total war warhammer 3',
+    'mortal shell 2': 'mortal shell 2',
+    'mortal shell ii': 'mortal shell 2',
+    'dc universe online': 'dc universe online',
+    'dcuo': 'dc universe online',
+    'the blood of dawnwalker': 'the blood of dawnwalker',
+    'the blood of dawnwalker eclipse edition': 'the blood of dawnwalker',
+    'the legend of zelda breath of the wild':
+        'the legend of zelda breath of the wild',
+    'botw': 'the legend of zelda breath of the wild',
+    'breath of the wild': 'the legend of zelda breath of the wild',
+    'the legend of zelda tears of the kingdom':
+        'the legend of zelda tears of the kingdom',
+    'totk': 'the legend of zelda tears of the kingdom',
+    'tears of the kingdom': 'the legend of zelda tears of the kingdom',
+    'metal gear solid 5 the phantom pain':
+        'metal gear solid 5 the phantom pain',
+    'mgsv': 'metal gear solid 5 the phantom pain',
+    'resident evil requiem': 'resident evil requiem',
+    'resident evil 9 requiem': 'resident evil requiem',
+    'reanimal': 'reanimal',
+    's t a l k e r 2': 's t a l k e r 2',
+    'stalker 2': 's t a l k e r 2',
+    'stalker 2 heart of chornobyl': 's t a l k e r 2',
+    'call of duty b o 7': 'call of duty black ops 7',
+    'senuas saga hellblade 2': 'senuas saga hellblade 2',
+    'hellblade 2': 'senuas saga hellblade 2',
+    'hellblade 2 senuas saga': 'senuas saga hellblade 2',
+    'death stranding 2 on the beach': 'death stranding 2 on the beach',
+    'death stranding 2': 'death stranding 2 on the beach',
+    'assassins creed black flag resynced':
+        'assassins creed black flag resynced',
+    'ac black flag resynced': 'assassins creed black flag resynced',
+  };
+
+  /// Conversion des chiffres romains courants en chiffres arabes (copie de
+  /// GameMatcher._romanToArabic). « I » seul est volontairement exclu.
+  static const Map<String, String> _romanToArabic = {
+    'ii': '2',
+    'iii': '3',
+    'iv': '4',
+    'v': '5',
+    'vi': '6',
+    'vii': '7',
+    'viii': '8',
+    'ix': '9',
+    'x': '10',
+    'xi': '11',
+    'xii': '12',
+  };
+
+  /// Chiffre romain en limite de mot (copie de GameMatcher._romanPattern).
+  static final RegExp _romanPattern = RegExp(
+    r'(^|[^a-z0-9])(viii|vii|xii|iii|xi|ix|vi|iv|ii|x|v)(?![a-z0-9])',
+  );
+
+  /// Normalise un nom de jeu pour la comparaison (copie fidèle de
+  /// GameMatcher.normalize : minuscules, accents, romains → arabes,
+  /// suffixes d'édition, apostrophes, ponctuation, puis résolution d'alias).
+  static String _normalizeGameName(String name) {
+    var n = name.toLowerCase().trim();
+
+    // Suppression des accents.
+    n = n.replaceAll('é', 'e');
+    n = n.replaceAll('è', 'e');
+    n = n.replaceAll('ê', 'e');
+    n = n.replaceAll('ë', 'e');
+    n = n.replaceAll('à', 'a');
+    n = n.replaceAll('â', 'a');
+    n = n.replaceAll('ä', 'a');
+    n = n.replaceAll('ã', 'a');
+    n = n.replaceAll('å', 'a');
+    n = n.replaceAll('î', 'i');
+    n = n.replaceAll('ï', 'i');
+    n = n.replaceAll('í', 'i');
+    n = n.replaceAll('ì', 'i');
+    n = n.replaceAll('ô', 'o');
+    n = n.replaceAll('ö', 'o');
+    n = n.replaceAll('õ', 'o');
+    n = n.replaceAll('ò', 'o');
+    n = n.replaceAll('ó', 'o');
+    n = n.replaceAll('ù', 'u');
+    n = n.replaceAll('û', 'u');
+    n = n.replaceAll('ü', 'u');
+    n = n.replaceAll('ú', 'u');
+    n = n.replaceAll('ý', 'y');
+    n = n.replaceAll('ÿ', 'y');
+    n = n.replaceAll('ā', 'a');
+    n = n.replaceAll('ē', 'e');
+    n = n.replaceAll('ī', 'i');
+    n = n.replaceAll('ō', 'o');
+    n = n.replaceAll('ū', 'u');
+    n = n.replaceAll('ç', 'c');
+    n = n.replaceAll('ñ', 'n');
+    n = n.replaceAll('æ', 'ae');
+    n = n.replaceAll('œ', 'oe');
+    n = n.replaceAll('ø', 'o');
+    n = n.replaceAll('ð', 'd');
+    n = n.replaceAll('þ', 'th');
+
+    // Chiffres romains → arabes (en limite de mot).
+    n = n.replaceAllMapped(
+      _romanPattern,
+      (m) => '${m.group(1)}${_romanToArabic[m.group(2)]!}',
+    );
+
+    // Suffixes d'édition courants.
+    const suffixesToRemove = [
+      ': wild hunt',
+      ': enhanced edition',
+      ' game of the year edition',
+      ' goty edition',
+      ' definitive edition',
+      ' complete edition',
+      ' standard edition',
+      ' deluxe edition',
+      ' ultimate edition',
+    ];
+    for (final suffix in suffixesToRemove) {
+      if (n.endsWith(suffix)) {
+        n = n.substring(0, n.length - suffix.length).trim();
+      }
+    }
+
+    // Apostrophes → RIEN (pas d'espace) : « Assassin's » → « assassins ».
+    n = n.replaceAll("'", '');
+    n = n.replaceAll('’', '');
+
+    // Ponctuation → espaces, puis espaces multiples → un seul.
+    n = n.replaceAll(RegExp(r'[^a-z0-9 ]'), ' ');
+    n = n.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+    // Résolution d'alias.
+    return _gameAliases[n] ?? n;
+  }
+
+  /// Construit la regex de détection d'une forme NORMALISÉE de nom de jeu
+  /// (cf. [_cleanTitleForInsertion]) dans un titre brut :
+  /// - mots joints par `[\W_]+` → « Prince of Persia The Lost Crown »
+  ///   matche « Prince of Persia: The Lost Crown » ou « ... - The ... » ;
+  /// - chaque lettre matche ses variantes accentuées ([_accentVariants]) ;
+  /// - une apostrophe optionnelle est admise entre les lettres →
+  ///   « Assassin's » matche la forme normalisée « assassins » ;
+  /// - limites de mot Unicode des deux côtés → jamais de retrait à
+  ///   l'intérieur d'un mot plus long (« la » dans « large »).
+  /// Retourne null si la forme est inexploitable (vide).
+  static RegExp? _gameMentionPattern(String normalizedForm) {
+    final words =
+        normalizedForm.split(' ').where((w) => w.isNotEmpty).toList();
+    if (words.isEmpty) return null;
+    final buffer = StringBuffer();
+    var first = true;
+    for (final word in words) {
+      if (!first) buffer.write(r'[\W_]+');
+      first = false;
+      for (final unit in word.codeUnits) {
+        final ch = String.fromCharCode(unit);
+        final variants = _accentVariants[ch];
+        final escaped = RegExp.escape(ch);
+        buffer.write(variants != null ? '[$escaped$variants]' : escaped);
+        // Apostrophe optionnelle (droite U+0027 ou typographique U+2019).
+        buffer.write("['’]?");
+      }
+    }
+    return RegExp(
+      '(^|[^\\p{L}\\p{N}])$buffer(?![\\p{L}\\p{N}])',
+      caseSensitive: false,
+      unicode: true,
+    );
+  }
+
+  /// Nettoie un titre avant insertion (copie autonome de
+  /// SentinelleRunner.cleanTitleForInsertion, tools/vision) :
+  /// (a) retire les hashtags (règle 11/09/2026) ;
+  /// (b) retire TOUTES les mentions du jeu [gameName] — nom canonique ET
+  ///     chaque alias connu pointant vers lui (règle 12/09/2026 : le contenu
+  ///     est déjà associé au jeu dans l'app, répéter le nom est inutile) ;
+  /// (c) nettoie les artefacts du retrait (espaces multiples, séparateurs
+  ///     orphelins en bordure, séparateurs doublés au milieu) ;
+  /// (d) garde-fou : si le résultat fait moins de 3 caractères ou est vide,
+  ///     retourne le titre seulement dé-hashtagué (jamais de titre vide).
+  static String _cleanTitleForInsertion(String title, {String? gameName}) {
+    // (a) Hashtags.
+    final withoutHashtags = title
+        .replaceAll(RegExp(r'#\S+'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+
+    final game = gameName?.trim();
+    if (game == null || game.isEmpty) return withoutHashtags;
+
+    // (b) Formes à retirer : nom canonique normalisé + alias connus dont la
+    //     cible == ce canonique. Alias < 3 caractères exclus (« sc », « la »,
+    //     « wf », « d4 ») : trop courts, risque de découper un mot courant.
+    final canonical = _normalizeGameName(game);
+    if (canonical.isEmpty) return withoutHashtags;
+    final forms = <String>{canonical};
+    for (final entry in _gameAliases.entries) {
+      if (entry.value == canonical && entry.key.length >= 3) {
+        forms.add(entry.key);
+      }
+    }
+
+    // Retrait sur le titre dé-hashtagué (accents conservés), insensible à
+    // la casse, aux accents et à la ponctuation. Formes les plus longues
+    // d'abord pour éviter les retraits partiels.
+    var result = withoutHashtags;
+    final sorted = forms.toList()..sort((a, b) => b.length.compareTo(a.length));
+    for (final form in sorted) {
+      final pattern = _gameMentionPattern(form);
+      if (pattern == null) continue;
+      // Le caractère de limite avant la mention (groupe 1) est réinséré.
+      result = result.replaceAllMapped(pattern, (m) => m.group(1) ?? '');
+    }
+
+    // (c) Nettoyage post-retrait.
+    result = result.replaceAll(RegExp(r'\s+'), ' ');
+    // Séparateurs doublés au milieu (« - - » → « - », « - : » → « - »).
+    result = result.replaceAllMapped(
+      RegExp(r'\s*([-–:|•])(?:\s*[-–:|•])+\s*'),
+      (m) => ' ${m.group(1)} ',
+    );
+    // Séparateurs orphelins en bordure (« - Ep 1 » → « Ep 1 »).
+    result = result.replaceAll(RegExp(r'^[\s\-–:|•]+'), '');
+    result = result.replaceAll(RegExp(r'[\s\-–:|•]+$'), '');
+    result = result.trim();
+
+    // (d) Garde-fou : jamais de titre vide ou quasi vide en base.
+    if (result.length < 3) return withoutHashtags;
+    return result;
+  }
 
   /// Détermine la date de publication pour l'insertion d'un contenu.
   ///

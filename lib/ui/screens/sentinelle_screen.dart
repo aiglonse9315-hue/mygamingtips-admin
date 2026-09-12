@@ -1141,7 +1141,15 @@ class _TrustedTableState extends State<_TrustedTable> {
   TextEditingController _titleControllerFor(Suggestion s, StoreController store) {
     return _titleControllers.putIfAbsent(
       s.id,
-      () => TextEditingController(text: store.titleForInsertion(s)),
+      // Règle 12/09/2026 : le jeu effectif (choix admin ?? proposition IA)
+      // est passé pour que ses mentions soient retirées du titre pré-rempli.
+      () => TextEditingController(
+        text: store.titleForInsertion(
+          s,
+          gameName:
+              widget.editedGames[s.id] ?? s.aiRecommendation?.suggestedGame,
+        ),
+      ),
     );
   }
 
@@ -1649,7 +1657,14 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
   TextEditingController _titleControllerFor(Suggestion s, StoreController store) {
     return _titleControllers.putIfAbsent(
       s.id,
-      () => TextEditingController(text: store.titleForInsertion(s)),
+      // Règle 12/09/2026 : le jeu proposé par l'IA (pas d'override dans ce
+      // tableau) est passé pour retirer ses mentions du titre pré-rempli.
+      () => TextEditingController(
+        text: store.titleForInsertion(
+          s,
+          gameName: s.aiRecommendation?.suggestedGame,
+        ),
+      ),
     );
   }
 
@@ -2148,7 +2163,19 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
   TextEditingController _titleControllerFor(Suggestion s, StoreController store) {
     return _titleControllers.putIfAbsent(
       s.id,
-      () => TextEditingController(text: store.titleForInsertion(s)),
+      // Règle 12/09/2026 : le nom de jeu effectif (champ éditable, pré-rempli
+      // par l'IA) est passé pour retirer ses mentions du titre pré-rempli.
+      () {
+        final gameText = _controllerFor(s).text.trim();
+        return TextEditingController(
+          text: store.titleForInsertion(
+            s,
+            gameName: gameText.isNotEmpty
+                ? gameText
+                : s.aiRecommendation?.suggestedGame,
+          ),
+        );
+      },
     );
   }
 
