@@ -19,8 +19,9 @@ bool _isAuthError(Object e) => e is AdminAuthException;
 /// Datasets synchronisables indépendamment (chargement paresseux par menu).
 ///
 /// Chaque écran déclare ses besoins via [StoreController.ensureDatasets] ;
-/// seuls les datasets demandés (et pas encore chargés) sont fetchés. Les
-/// resyncs post-action ne rechargent que les datasets impactés.
+/// seuls les datasets demandés (manquants OU périmés — chargés depuis plus
+/// de 2 min) sont fetchés. Les resyncs post-action ne rechargent que les
+/// datasets impactés.
 ///
 /// - [games] : catalogue des jeux (PostgREST anon).
 /// - [contents] : contenus validés (PostgREST anon, le plus volumineux).
@@ -121,6 +122,22 @@ class StoreController extends ChangeNotifier {
   /// (full ou incrémentale) via [_markDatasetLoaded].
   final Map<SyncDataset, DateTime> _datasetLoadedAt = <SyncDataset, DateTime>{};
 
+  /// Seuil de fraîcheur d'un dataset (auto-refresh à l'arrivée sur un menu) :
+  /// un dataset chargé depuis moins longtemps que cette durée est considéré
+  /// frais et n'est PAS refetch (pas de tempête de requêtes en navigation
+  /// rapide) ; au-delà, il est inclus dans la passe (sync incrémentale via
+  /// curseurs — coût minime).
+  static const Duration _datasetFreshness = Duration(minutes: 2);
+
+  /// Ce dataset est-il chargé ET frais (< [_datasetFreshness]) ?
+  /// Un dataset jamais chargé, ou sans horodatage, n'est jamais frais.
+  bool _isFresh(SyncDataset dataset) {
+    if (!_loadedDatasets.contains(dataset)) return false;
+    final DateTime? t = _datasetLoadedAt[dataset];
+    if (t == null) return false;
+    return DateTime.now().difference(t) < _datasetFreshness;
+  }
+
   /// Mode hors-ligne gracieux : passé à `true` quand une sync échoue sur une
   /// erreur de type réseau ([http.ClientException] — qui couvre le fetch
   /// navigateur ET les erreurs socket natives, déjà wrappées par package:http —
@@ -177,11 +194,17 @@ class StoreController extends ChangeNotifier {
 
   /// Datasets chargés avec succès dans cette session (chargement paresseux).
   /// Un dataset y figure dès que sa première sync (full ou incrémentale) a
-  /// réussi ; [ensureDatasets] ne recharge pas ce qui y figure déjà.
+  /// réussi ; [ensureDatasets] ne recharge pas ce qui y figure déjà ET est
+  /// encore frais (< [_datasetFreshness]).
   final Set<SyncDataset> _loadedDatasets = <SyncDataset>{};
 
   /// Datasets en cours de chargement (pour l'indicateur par écran).
   final Set<SyncDataset> _loadingDatasets = <SyncDataset>{};
+
+  /// Datasets dont le fetch est EN VOL dans la passe courante (diagnostic du
+  /// watchdog anti-spinner-infini : ce sont eux qui pendent si la passe ne
+  /// finit pas). Alimenté par le `guard` de [_doSyncFromSupabase].
+  final Set<SyncDataset> _inFlightDatasets = <SyncDataset>{};
 
   /// Datasets chargés avec succès dans cette session (lecture seule).
   Set<SyncDataset> get loadedDatasets =>
@@ -2467,20 +2490,29 @@ class StoreController extends ChangeNotifier {
     return wanted;
   }
 
-  /// Garantit que les datasets [needed] sont chargés (chargement paresseux).
+  /// Garantit que les datasets [needed] sont chargés (chargement paresseux)
+  /// ET raisonnablement frais (auto-refresh à l'arrivée sur un menu).
   ///
-  /// Ne fetch que ce qui n'est pas déjà chargé dans cette session (ou qui n'a
-  /// jamais réussi). Appelé par chaque écran à son montage.
+  /// Fetch ce qui est manquant dans cette session (ou n'a jamais réussi) OU
+  /// périmé (chargé depuis plus de [_datasetFreshness]). Un dataset chargé
+  /// depuis moins de [_datasetFreshness] n'est pas refetch (pas de tempête de
+  /// requêtes en navigation rapide). Comportement : l'écran affiche
+  /// immédiatement le cache local ; la sync incrémentale part en fond et
+  /// l'UI se met à jour dès qu'elle arrive. Appelé par chaque écran à son
+  /// montage.
   ///
   /// Si [needed] contient un dataset de suggestions, la demande est élargie
-  /// aux 5 modes AVANT le calcul du manquant (correctif I-001) : les modes
-  /// déjà chargés restent ignorés (skipAlreadyLoaded conserve son sens).
+  /// aux 5 modes AVANT le calcul du manquant/périmé (correctif I-001) : les
+  /// modes frais restent ignorés (skipAlreadyLoaded conserve son sens, devenu
+  /// « skip si chargé ET frais »).
   Future<void> ensureDatasets(Set<SyncDataset> needed) async {
     if (sync == null) return;
     final Set<SyncDataset> wanted = _expandSuggestionModes(needed);
-    final Set<SyncDataset> missing = wanted.difference(_loadedDatasets);
-    if (missing.isEmpty) return;
-    await syncFromSupabase(datasets: missing, skipAlreadyLoaded: true);
+    final Set<SyncDataset> toFetch = wanted
+        .where((SyncDataset d) => !_isFresh(d))
+        .toSet();
+    if (toFetch.isEmpty) return;
+    await syncFromSupabase(datasets: toFetch, skipAlreadyLoaded: true);
   }
 
   /// Synchronise les données depuis Supabase et met à jour le cache
@@ -2495,8 +2527,9 @@ class StoreController extends ChangeNotifier {
   ///
   /// [forceFull] : ignore les curseurs incrémentaux (bouton « Actualiser »).
   /// [skipAlreadyLoaded] : au moment où la passe DÉMARRE (après l'éventuelle
-  /// sync précédente), ignore les datasets entre-temps chargés — seul ce qui
-  /// manque encore est rechargé (usage interne d'ensureDatasets).
+  /// sync précédente), ignore les datasets entre-temps chargés ET frais
+  /// (< 2 min) — seul ce qui manque encore ou est périmé est rechargé
+  /// (usage interne d'ensureDatasets).
   ///
   /// **Stratégie de fusion** : les données serveur remplacent les données
   /// locales **uniquement pour les entrées déjà synchronisées** (UUID valide).
@@ -2562,7 +2595,9 @@ class StoreController extends ChangeNotifier {
     required bool skipAlreadyLoaded,
   }) async {
     if (skipAlreadyLoaded) {
-      wanted = wanted.difference(_loadedDatasets);
+      // « Skip si chargé ET frais » : un dataset périmé (> 2 min) reste dans
+      // la passe (auto-refresh à l'arrivée sur un menu).
+      wanted = wanted.where((SyncDataset d) => !_isFresh(d)).toSet();
       if (wanted.isEmpty) return;
     }
     isSyncing = true;
@@ -2570,19 +2605,48 @@ class StoreController extends ChangeNotifier {
     // ⚠️ On NE remet pas syncError à null ici : cela effacerait une erreur
     // d'action récente. On l'efface seulement si la sync réussit.
     notifyListeners();
+    // Budget global : 45 s si TOUS les datasets à curseur demandés ont un
+    // curseur valide (sync purement incrémentale), 120 s sinon (au moins
+    // une full sync paginée — ex. 10k+ contenus).
+    final bool incrementalOnly =
+        !forceFull &&
+        wanted.every(
+          (SyncDataset d) =>
+              !_cursorNames.containsKey(d) || _validCursorFor(d) != null,
+        );
+    final Duration budget = incrementalOnly
+        ? const Duration(seconds: 45)
+        : const Duration(seconds: 120);
+    // ── Watchdog anti-spinner-infini ──
+    // Une Future Dart n'est pas annulable : si un fetch de dataset pend côté
+    // réseau/base, le timeout global ne fait échouer que l'await EXTÉRIEUR et
+    // le finally ci-dessous devrait quand même libérer isSyncing. Si, malgré
+    // tout, la passe n'est pas terminée budget + 60 s après son démarrage, ce
+    // Timer force la libération de l'UI (spinner, indicateurs par écran),
+    // nomme les datasets encore en vol et bascule en mode hors-ligne.
+    bool passFinished = false;
+    final Duration watchdogDelay = budget + const Duration(seconds: 60);
+    final Timer watchdog = Timer(watchdogDelay, () {
+      if (passFinished) return;
+      final List<String> pending = _inFlightDatasets.isNotEmpty
+          ? _inFlightDatasets.map((SyncDataset d) => d.name).toList()
+          : wanted.map((SyncDataset d) => d.name).toList();
+      isSyncing = false;
+      _loadingDatasets.clear();
+      syncError =
+          'Synchronisation bloquée (watchdog ${watchdogDelay.inSeconds} s) — '
+          'datasets sans réponse : ${pending.join(', ')}. '
+          'Données affichées = cache local ; réessayez avec Actualiser.';
+      // Des requêtes encore en vol = blocage de type réseau → badge hors-ligne.
+      if (_inFlightDatasets.isNotEmpty) _setOffline(true);
+      notifyListeners();
+      debugPrint(
+        '[sync] WATCHDOG déclenché après ${watchdogDelay.inSeconds} s — '
+        'passe non terminée. Datasets en vol : ${pending.join(', ')} '
+        '(wanted: ${wanted.map((SyncDataset d) => d.name).join(', ')}).',
+      );
+    });
     try {
-      // Budget global : 45 s si TOUS les datasets à curseur demandés ont un
-      // curseur valide (sync purement incrémentale), 120 s sinon (au moins
-      // une full sync paginée — ex. 10k+ contenus).
-      final bool incrementalOnly =
-          !forceFull &&
-          wanted.every(
-            (SyncDataset d) =>
-                !_cursorNames.containsKey(d) || _validCursorFor(d) != null,
-          );
-      final Duration budget = incrementalOnly
-          ? const Duration(seconds: 45)
-          : const Duration(seconds: 120);
       await _doSyncFromSupabase(wanted, forceFull: forceFull).timeout(
         budget,
         onTimeout: () {
@@ -2603,6 +2667,8 @@ class StoreController extends ChangeNotifier {
         syncError = e.toString();
       }
     } finally {
+      passFinished = true;
+      watchdog.cancel(); // fin normale de la passe → watchdog désarmé
       isSyncing = false;
       _loadingDatasets.clear();
       notifyListeners();
@@ -2621,26 +2687,6 @@ class StoreController extends ChangeNotifier {
     // (condition de purge des tombstones — voir plus bas).
     final Set<SyncDataset> fullModeSyncs = <SyncDataset>{};
 
-    /// Exécute un job de dataset en isolant son erreur : un dataset en échec
-    /// n'annule pas les autres ; le détail est consolidé et remonté dans
-    /// [syncError] (jamais avalé). Seul le 401 remonte immédiatement
-    /// (logout forcé).
-    ///
-    /// Pilote aussi le mode hors-ligne gracieux : un job réussi repasse
-    /// [isOffline] à false ; un job en échec sur erreur réseau le passe à
-    /// true (détection par les résultats des requêtes, sans connectivity_plus).
-    Future<void> guard(String label, Future<void> Function() job) async {
-      try {
-        await job();
-        _setOffline(false); // au moins une requête a abouti → en ligne
-      } on AdminAuthException {
-        rethrow;
-      } catch (e) {
-        if (_isNetworkError(e)) _setOffline(true);
-        errors.add('$label : $e');
-      }
-    }
-
     const Map<SyncDataset, String> labels = <SyncDataset, String>{
       SyncDataset.games: 'jeux',
       SyncDataset.contents: 'contenus',
@@ -2653,21 +2699,54 @@ class StoreController extends ChangeNotifier {
       SyncDataset.banned: 'comptes à bannir',
     };
 
+    /// Exécute un job de dataset en isolant son erreur : un dataset en échec
+    /// n'annule pas les autres ; le détail est consolidé et remonté dans
+    /// [syncError] (jamais avalé). Seul le 401 remonte immédiatement
+    /// (logout forcé).
+    ///
+    /// Pilote aussi le mode hors-ligne gracieux : un job réussi repasse
+    /// [isOffline] à false ; un job en échec sur erreur réseau le passe à
+    /// true (détection par les résultats des requêtes, sans connectivity_plus).
+    ///
+    /// Diagnostic (watchdog anti-spinner-infini) : trace le début/fin de
+    /// chaque fetch dans la console et maintient [_inFlightDatasets] — si une
+    /// passe pend, ces logs révèlent exactement quel dataset est bloqué.
+    Future<void> guard(SyncDataset dataset, Future<void> Function() job) async {
+      final String label = labels[dataset]!;
+      final Stopwatch chrono = Stopwatch()..start();
+      _inFlightDatasets.add(dataset);
+      debugPrint('[sync] début $label');
+      try {
+        await job();
+        _setOffline(false); // au moins une requête a abouti → en ligne
+      } on AdminAuthException {
+        rethrow;
+      } catch (e) {
+        if (_isNetworkError(e)) _setOffline(true);
+        errors.add('$label : $e');
+      } finally {
+        chrono.stop();
+        _inFlightDatasets.remove(dataset);
+        final double secs = chrono.elapsedMilliseconds / 1000;
+        debugPrint('[sync] fin $label (${secs.toStringAsFixed(1)} s)');
+      }
+    }
+
     // Datasets indépendants → fetchés EN PARALLÈLE (Future.wait).
     await Future.wait(<Future<void>>[
       if (datasets.contains(SyncDataset.games))
         guard(
-          labels[SyncDataset.games]!,
+          SyncDataset.games,
           () => _syncGames(forceFull: forceFull),
         ),
       if (datasets.contains(SyncDataset.contents))
         guard(
-          labels[SyncDataset.contents]!,
+          SyncDataset.contents,
           () => _syncContents(forceFull: forceFull),
         ),
       if (datasets.contains(SyncDataset.suggestionsNew))
         guard(
-          labels[SyncDataset.suggestionsNew]!,
+          SyncDataset.suggestionsNew,
           () => _syncSuggestionMode(
             SyncDataset.suggestionsNew,
             sync!.fetchSuggestions,
@@ -2677,7 +2756,7 @@ class StoreController extends ChangeNotifier {
         ),
       if (datasets.contains(SyncDataset.sentinelleAnalyzing))
         guard(
-          labels[SyncDataset.sentinelleAnalyzing]!,
+          SyncDataset.sentinelleAnalyzing,
           () => _syncSuggestionMode(
             SyncDataset.sentinelleAnalyzing,
             sync!.fetchSentinelleAnalyzing,
@@ -2687,7 +2766,7 @@ class StoreController extends ChangeNotifier {
         ),
       if (datasets.contains(SyncDataset.sentinelleAnalyzed))
         guard(
-          labels[SyncDataset.sentinelleAnalyzed]!,
+          SyncDataset.sentinelleAnalyzed,
           () => _syncSuggestionMode(
             SyncDataset.sentinelleAnalyzed,
             sync!.fetchSentinelleSuggestions,
@@ -2697,7 +2776,7 @@ class StoreController extends ChangeNotifier {
         ),
       if (datasets.contains(SyncDataset.scruteur))
         guard(
-          labels[SyncDataset.scruteur]!,
+          SyncDataset.scruteur,
           () => _syncSuggestionMode(
             SyncDataset.scruteur,
             sync!.fetchScruteurSuggestions,
@@ -2707,7 +2786,7 @@ class StoreController extends ChangeNotifier {
         ),
       if (datasets.contains(SyncDataset.gamesToCreate))
         guard(
-          labels[SyncDataset.gamesToCreate]!,
+          SyncDataset.gamesToCreate,
           () => _syncSuggestionMode(
             SyncDataset.gamesToCreate,
             sync!.fetchGamesToCreate,
@@ -2716,9 +2795,9 @@ class StoreController extends ChangeNotifier {
           ),
         ),
       if (datasets.contains(SyncDataset.subscriptions))
-        guard(labels[SyncDataset.subscriptions]!, _syncSubscriptions),
+        guard(SyncDataset.subscriptions, _syncSubscriptions),
       if (datasets.contains(SyncDataset.banned))
-        guard(labels[SyncDataset.banned]!, _syncBanned),
+        guard(SyncDataset.banned, _syncBanned),
     ]);
 
     // ── Purge des tombstones (correctif 27/08/2026) ──
