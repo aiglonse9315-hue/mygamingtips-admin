@@ -22,6 +22,7 @@ import 'logs_screen.dart';
 import 'sentinelle_screen.dart';
 import 'scruteur_screen.dart';
 import 'suggestions_screen.dart';
+import 'trusted_channels_screen.dart';
 
 /// Shell du panneau admin : sidebar + topbar + contenu (route courante).
 ///
@@ -41,6 +42,7 @@ class _AdminShellState extends State<AdminShell> {
   static const List<NavItem> _items = [
     NavItem('Dashboard', Icons.dashboard_rounded, '/dashboard'),
     NavItem('Jeux', Icons.sports_esports_rounded, '/games'),
+    NavItem('Chaînes YT', Icons.video_library_outlined, '/channels'),
     NavItem('Contenus', Icons.collections_bookmark_rounded, '/contents'),
     NavItem('Suggestions', Icons.inbox_rounded, '/suggestions'),
     NavItem('Sentinelle', Icons.smart_toy_rounded, '/sentinelle'),
@@ -174,6 +176,10 @@ class _AdminShellState extends State<AdminShell> {
           datasets: {SyncDataset.games},
           child: GamesScreen(),
         );
+      case '/channels':
+        // Fetch direct (pattern Contributeurs) : pas de _DatasetGate, pas de
+        // dataset synchronisé → pas de badge de fraîcheur pour cette route.
+        return const TrustedChannelsScreen();
       case '/contents':
         return const _DatasetGate(
           datasets: {SyncDataset.contents, SyncDataset.games},

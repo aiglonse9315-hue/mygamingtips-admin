@@ -2049,6 +2049,32 @@ class StoreController extends ChangeNotifier {
     return _gameAliases[n] ?? n;
   }
 
+  /// Normalise un alias de jeu pour la persistance (colonne `alias_norm` de
+  /// `game_aliases`). Réutilise [_normalizeGameName] : la forme stockée est
+  /// ainsi strictement identique à celle comparée par Vision/Sentinelle
+  /// (GameMatcher.normalize). Utilisé par le dialog d'alias du menu Jeux.
+  static String normalizeGameAlias(String alias) => _normalizeGameName(alias);
+
+  /// Alias connus en dur ([_gameAliases]) dont la cible canonique correspond
+  /// au jeu [gameName] (ex. « Diablo 4 » → « d4 », « diablo iv »).
+  ///
+  /// Même logique de correspondance que [_cleanTitleForInsertion] (comparaison
+  /// sur la valeur canonique normalisée), SANS son filtre de longueur : les
+  /// acronymes courts (« d4 », « wf », « la », « sc ») sont justement des
+  /// alias utiles en base. Les entrées d'identité (clé == canonique, ex.
+  /// « diablo 4 » → « diablo 4 ») sont exclues : le nom canonique est déjà
+  /// matché directement, l'enregistrer comme alias n'ajouterait rien.
+  ///
+  /// Sert au bouton « Importer les alias connus » du dialog d'alias.
+  static List<String> knownAliasesFor(String gameName) {
+    final canonical = _normalizeGameName(gameName);
+    if (canonical.isEmpty) return const <String>[];
+    return [
+      for (final entry in _gameAliases.entries)
+        if (entry.value == canonical && entry.key != canonical) entry.key,
+    ];
+  }
+
   /// Construit la regex de détection d'une forme NORMALISÉE de nom de jeu
   /// (cf. [_cleanTitleForInsertion]) dans un titre brut :
   /// - mots joints par `[\W_]+` → « Prince of Persia The Lost Crown »

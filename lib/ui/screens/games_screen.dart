@@ -3,7 +3,9 @@ import 'package:provider/provider.dart';
 
 import '../../core/i18n/app_languages.dart';
 import '../../core/theme/colors.dart';
+import '../../data/supabase_sync.dart';
 import '../../domain/models/game.dart';
+import '../../domain/models/game_alias.dart';
 import '../../state/store_controller.dart';
 import '../widgets/admin_data_table.dart';
 import '../widgets/confirm_dialog.dart';
@@ -225,6 +227,12 @@ class _GamesScreenState extends State<GamesScreen> {
                             onPressed: () => _showTranslationsDialog(context, g),
                           ),
                           IconButton(
+                            tooltip: 'Alias',
+                            icon: const Icon(Icons.alternate_email_rounded,
+                                size: 20),
+                            onPressed: () => _showAliasesDialog(context, g),
+                          ),
+                          IconButton(
                             tooltip: 'Supprimer',
                             icon: const Icon(Icons.delete_outline_rounded,
                                 size: 20),
@@ -252,6 +260,13 @@ class _GamesScreenState extends State<GamesScreen> {
     showDialog<void>(
       context: context,
       builder: (_) => GameTranslationsDialog(game: game),
+    );
+  }
+
+  void _showAliasesDialog(BuildContext context, Game game) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => GameAliasesDialog(game: game),
     );
   }
 
@@ -641,6 +656,426 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
             onPressed: () {
               Navigator.pop(ctx); // Ferme la confirmation.
               Navigator.pop(context); // Ferme le dialog de traductions.
+            },
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.categoryVideo,
+            ),
+            child: const Text('Fermer sans sauvegarder'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+
+/// Dialog d'édition des alias d'un jeu (table `game_aliases`).
+///
+/// Les alias (noms raccourcis, acronymes, noms communautaires — ex. « D4 »
+/// pour Diablo 4) servent au matching des titres YouTube par Vision et
+/// Sentinelle. À l'ouverture, les alias existants sont chargés via la route
+/// EF `games/aliases/list` ; le bouton « Importer les alias connus » ajoute
+/// EN MÉMOIRE les alias en dur du panneau ([StoreController.knownAliasesFor])
+/// correspondant à ce jeu (pas de sauvegarde automatique). La sauvegarde
+/// REMPLACE toute la liste côté serveur (`games/aliases/set`), avec la forme
+/// normalisée calculée par [StoreController.normalizeGameAlias] — strictement
+/// identique au matching des bots.
+class GameAliasesDialog extends StatefulWidget {
+  const GameAliasesDialog({super.key, required this.game});
+  final Game game;
+
+  @override
+  State<GameAliasesDialog> createState() => _GameAliasesDialogState();
+}
+
+class _GameAliasesDialogState extends State<GameAliasesDialog> {
+  /// Alias en mémoire, tels que saisis (la normalisation est calculée à la
+  /// sauvegarde).
+  List<String> _aliases = <String>[];
+
+  final TextEditingController _addCtrl = TextEditingController();
+
+  /// État de chargement des alias existants.
+  bool _loading = true;
+
+  /// Indique qu'une sauvegarde est en cours (désactive le bouton).
+  bool _saving = false;
+
+  /// Vrai si la liste a été modifiée sans sauvegarde (anti-fermeture).
+  bool _dirty = false;
+
+  /// Message de statut (succès, erreur ou information).
+  String? _statusMessage;
+  bool _statusError = false;
+
+  /// Alias connus en dur importables pour ce jeu (calculé une fois — la map
+  /// [_gameAliases] du StoreController est constante).
+  late final List<String> _knownImportable =
+      StoreController.knownAliasesFor(widget.game.name);
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAliases();
+  }
+
+  @override
+  void dispose() {
+    _addCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadAliases() async {
+    final sync = context.read<StoreController>().sync;
+    if (sync == null) {
+      setState(() {
+        _loading = false;
+        _statusMessage = 'Mode aperçu : alias non disponibles.';
+        _statusError = true;
+      });
+      return;
+    }
+    try {
+      final List<GameAlias> existing =
+          await sync.fetchGameAliases(widget.game.id);
+      if (!mounted) return;
+      setState(() {
+        _aliases = [for (final a in existing) a.alias];
+        _loading = false;
+      });
+    } on AdminAuthException {
+      // 401 : session expirée → logout forcé (même règle que les écritures).
+      if (!mounted) return;
+      Navigator.pop(context);
+      context.read<StoreController>().onAuthError?.call();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _statusMessage = 'Alias existants indisponibles : $e';
+        _statusError = true;
+      });
+    }
+  }
+
+  /// Extrait un message d'erreur lisible : retire le préfixe « Exception: »
+  /// produit par le `toString()` des exceptions Dart.
+  static String _errorMessage(Object e) {
+    const prefix = 'Exception: ';
+    final String msg = e.toString();
+    return msg.startsWith(prefix) ? msg.substring(prefix.length) : msg;
+  }
+
+  /// Formes normalisées déjà présentes (déduplication à l'ajout/import).
+  Set<String> get _existingNorms =>
+      _aliases.map(StoreController.normalizeGameAlias).toSet();
+
+  /// Ajoute un alias saisi à la liste en mémoire (dédupliqué sur la forme
+  /// normalisée).
+  void _addAlias(String raw) {
+    final String alias = raw.trim();
+    if (alias.isEmpty) return;
+    final String norm = StoreController.normalizeGameAlias(alias);
+    if (norm.isEmpty) {
+      setState(() {
+        _statusMessage = '« $alias » est inexploitable après normalisation.';
+        _statusError = true;
+      });
+      return;
+    }
+    if (_existingNorms.contains(norm)) {
+      setState(() {
+        _statusMessage = '« $alias » existe déjà (forme normalisée : $norm).';
+        _statusError = true;
+      });
+      return;
+    }
+    setState(() {
+      _aliases = [..._aliases, alias];
+      _dirty = true;
+      _statusMessage = null;
+    });
+    _addCtrl.clear();
+  }
+
+  /// Ajoute en mémoire les alias en dur connus pour ce jeu (pas de
+  /// sauvegarde automatique — l'admin valide avec « Sauvegarder »).
+  void _importKnownAliases() {
+    final Set<String> norms = _existingNorms;
+    final List<String> toAdd = [
+      for (final alias in _knownImportable)
+        if (!norms.contains(StoreController.normalizeGameAlias(alias))) alias,
+    ];
+    if (toAdd.isEmpty) {
+      setState(() {
+        _statusMessage = 'Tous les alias connus sont déjà dans la liste.';
+        _statusError = false;
+      });
+      return;
+    }
+    setState(() {
+      _aliases = [..._aliases, ...toAdd];
+      _dirty = true;
+      _statusMessage =
+          '${toAdd.length} alias importé(s) — pensez à sauvegarder.';
+      _statusError = false;
+    });
+  }
+
+  void _removeAlias(String alias) {
+    setState(() {
+      _aliases = _aliases.where((a) => a != alias).toList();
+      _dirty = true;
+    });
+  }
+
+  Future<void> _save() async {
+    final StoreController store = context.read<StoreController>();
+    final sync = store.sync;
+    if (sync == null) {
+      setState(() {
+        _statusMessage = 'Mode aperçu : alias non persistés.';
+        _statusError = true;
+      });
+      return;
+    }
+    // Déduplication finale sur la forme normalisée (première occurrence
+    // conservée) + calcul de `alias_norm` avec le normaliseur du panneau
+    // (identique à GameMatcher.normalize côté bots).
+    final Set<String> seen = <String>{};
+    final List<Map<String, String>> payload = [
+      for (final alias in _aliases)
+        if (alias.trim().isNotEmpty &&
+            seen.add(StoreController.normalizeGameAlias(alias)))
+          {
+            'alias': alias.trim(),
+            'alias_norm': StoreController.normalizeGameAlias(alias),
+          },
+    ];
+    setState(() {
+      _saving = true;
+      _statusMessage = null;
+    });
+    try {
+      final int count = await sync.setGameAliases(widget.game.id, payload);
+      if (!mounted) return;
+      // Ferme le dialog automatiquement après une sauvegarde réussie.
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text('Alias enregistrés ($count) pour ${widget.game.name}.'),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } on AdminAuthException {
+      if (!mounted) return;
+      Navigator.pop(context);
+      store.onAuthError?.call();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _statusMessage = _errorMessage(e);
+        _statusError = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Alias connus en dur pas encore dans la liste (compteur du bouton
+    // d'import).
+    final int knownRemaining = _knownImportable
+        .where((a) =>
+            !_existingNorms.contains(StoreController.normalizeGameAlias(a)))
+        .length;
+
+    return PopScope(
+      // Empêche la fermeture accidentelle (Échap / clic hors dialog) si
+      // la liste a été modifiée sans sauvegarde.
+      canPop: !_dirty || _saving,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _dirty && !_saving) {
+          _confirmDiscardChanges();
+        }
+      },
+      child: AlertDialog(
+        title: Text('Alias — ${widget.game.name}'),
+        content: SizedBox(
+          width: 480,
+          // Hauteur bornée pour forcer le scroll interne si beaucoup d'alias.
+          height: MediaQuery.of(context).size.height * 0.6,
+          child: _loading
+              ? const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 12),
+                      Text('Chargement des alias…'),
+                    ],
+                  ),
+                )
+              : SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Texte d'aide.
+                      Text(
+                        'Noms raccourcis, acronymes, noms communautaires. '
+                        'Les alias normalisés servent au matching des titres '
+                        'par Vision/Sentinelle.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color:
+                              Theme.of(context).textTheme.bodySmall?.color,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      // Champ d'ajout + bouton « + ».
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _addCtrl,
+                              decoration: const InputDecoration(
+                                labelText: 'Nouvel alias',
+                                hintText: 'Ex. D4, BotW, Star Citizen…',
+                                isDense: true,
+                              ),
+                              onSubmitted: _saving ? null : _addAlias,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            tooltip: 'Ajouter',
+                            icon: const Icon(
+                                Icons.add_circle_outline_rounded),
+                            onPressed: _saving
+                                ? null
+                                : () => _addAlias(_addCtrl.text),
+                          ),
+                        ],
+                      ),
+                      // Bouton d'import des alias en dur connus.
+                      if (_knownImportable.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        TextButton.icon(
+                          onPressed: _saving || knownRemaining == 0
+                              ? null
+                              : _importKnownAliases,
+                          icon: const Icon(Icons.download_rounded, size: 18),
+                          label: Text(
+                            'Importer les alias connus ($knownRemaining)',
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 8),
+                      // Compteur.
+                      Text(
+                        '${_aliases.length} alias',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      // Liste des alias en chips avec suppression.
+                      if (_aliases.isEmpty)
+                        Text(
+                          'Aucun alias pour ce jeu.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color:
+                                Theme.of(context).textTheme.bodySmall?.color,
+                          ),
+                        )
+                      else
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (final alias in _aliases)
+                              Tooltip(
+                                message:
+                                    'Forme normalisée : ${StoreController.normalizeGameAlias(alias)}',
+                                child: InputChip(
+                                  label: Text(alias),
+                                  onDeleted: _saving
+                                      ? null
+                                      : () => _removeAlias(alias),
+                                ),
+                              ),
+                          ],
+                        ),
+                      if (_statusMessage != null) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          _statusMessage!,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: _statusError
+                                ? AppColors.categoryVideo
+                                : AppColors.neonGreen,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: _saving
+                ? null
+                : () {
+                    // Annuler : si modifs non sauvegardées, confirme.
+                    if (_dirty) {
+                      _confirmDiscardChanges();
+                    } else {
+                      Navigator.pop(context);
+                    }
+                  },
+            child: const Text('Annuler'),
+          ),
+          FilledButton.icon(
+            onPressed: _loading || _saving ? null : _save,
+            icon: _saving
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save_rounded, size: 18),
+            label: const Text('Sauvegarder'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Demande confirmation avant de fermer le dialog avec des changements
+  /// non sauvegardés. Évite de perdre les modifications accidentellement
+  /// (Échap, clic "Annuler", clic hors dialog).
+  void _confirmDiscardChanges() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Modifications non sauvegardées'),
+        content: const Text(
+            'Vous avez modifié la liste des alias sans sauvegarder.\n'
+            'Voulez-vous vraiment fermer ?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Rester'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx); // Ferme la confirmation.
+              Navigator.pop(context); // Ferme le dialog d'alias.
             },
             style: FilledButton.styleFrom(
               backgroundColor: AppColors.categoryVideo,

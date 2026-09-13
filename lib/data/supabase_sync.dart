@@ -7,8 +7,10 @@ import '../domain/models/admin_user_account.dart';
 import '../domain/models/category.dart';
 import '../domain/models/content.dart';
 import '../domain/models/game.dart';
+import '../domain/models/game_alias.dart';
 import '../domain/models/log_entry.dart';
 import '../domain/models/suggestion.dart';
+import '../domain/models/trusted_channel.dart';
 
 /// Exception levée quand le token admin est expiré ou invalide (HTTP 401).
 ///
@@ -1056,5 +1058,95 @@ class SupabaseSync {
       'username': username,
       'active': active,
     });
+  }
+
+  // ===========================================================================
+  // CHAÎNES YOUTUBE DE CONFIANCE (routes EF trusted-channels/*)
+  // ===========================================================================
+
+  /// Liste toutes les chaînes YouTube de confiance (tous jeux confondus),
+  /// avec le nom du jeu dénormalisé (`game_name`) par le serveur.
+  Future<List<TrustedChannel>> fetchTrustedChannels() async {
+    final Map<String, dynamic> data = await _post(
+      'trusted-channels/list',
+      <String, dynamic>{},
+    );
+    final List<dynamic> rows = data['channels'] as List? ?? [];
+    return rows
+        .whereType<Map<String, dynamic>>()
+        .map(TrustedChannel.fromJson)
+        .toList();
+  }
+
+  /// Crée ou met à jour une chaîne de confiance. Sans [id], le serveur crée
+  /// une nouvelle ligne (c'est ainsi qu'une même chaîne est liée à un autre
+  /// jeu) ; avec [id], la ligne existante est mise à jour.
+  ///
+  /// Retourne la ligne serveur à jour ([TrustedChannel]).
+  Future<TrustedChannel> upsertTrustedChannel({
+    String? id,
+    required String gameId,
+    required String channelHandle,
+    String? channelName,
+    String? channelId,
+    List<String>? langs,
+    bool? active,
+    String? source,
+  }) async {
+    final Map<String, dynamic> data = await _post('trusted-channels/upsert', {
+      // Valeurs null-aware : l'entrée est omise quand la valeur est null
+      // (le serveur conserve alors la valeur existante de la colonne).
+      'id': ?id,
+      'game_id': gameId,
+      'channel_handle': channelHandle,
+      'channel_name': ?channelName,
+      'channel_id': ?channelId,
+      'langs': ?langs,
+      'active': ?active,
+      'source': ?source,
+    });
+    return TrustedChannel.fromJson(data['channel'] as Map<String, dynamic>);
+  }
+
+  /// Supprime une chaîne de confiance (la ligne seule : la chaîne YouTube
+  /// et le jeu ne sont pas touchés).
+  Future<void> deleteTrustedChannel(String id) async {
+    await _post('trusted-channels/delete', {'id': id});
+  }
+
+  // ===========================================================================
+  // ALIAS DE NOMS DE JEUX (routes EF games/aliases/*)
+  // ===========================================================================
+
+  /// Liste les alias d'un jeu (noms raccourcis, acronymes, noms
+  /// communautaires) utilisés par Vision/Sentinelle pour le matching des
+  /// titres YouTube.
+  Future<List<GameAlias>> fetchGameAliases(String gameId) async {
+    final Map<String, dynamic> data = await _post('games/aliases/list', {
+      'game_id': gameId,
+    });
+    final List<dynamic> rows = data['aliases'] as List? ?? [];
+    return rows
+        .whereType<Map<String, dynamic>>()
+        .map(GameAlias.fromJson)
+        .toList();
+  }
+
+  /// Remplace TOUTE la liste des alias d'un jeu (les alias absents de
+  /// [aliases] sont supprimés côté serveur). Chaque entrée est un map
+  /// `{alias: <saisi>, alias_norm: <forme normalisée>}` — la normalisation
+  /// est calculée côté panneau (StoreController.normalizeGameAlias) pour
+  /// rester identique au matching des bots.
+  ///
+  /// Retourne le nombre d'alias enregistrés (`count` du serveur).
+  Future<int> setGameAliases(
+    String gameId,
+    List<Map<String, String>> aliases,
+  ) async {
+    final Map<String, dynamic> data = await _post('games/aliases/set', {
+      'game_id': gameId,
+      'aliases': aliases,
+    });
+    return (data['count'] as num?)?.toInt() ?? aliases.length;
   }
 }
