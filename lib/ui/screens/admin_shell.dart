@@ -10,6 +10,7 @@ import '../widgets/admin_sidebar.dart';
 import '../widgets/admin_topbar.dart';
 import '../widgets/confirm_dialog.dart';
 import 'abonnements_screen.dart';
+import 'admin_users_screen.dart';
 import 'banned_screen.dart';
 import 'contents_screen.dart';
 import 'contributors_screen.dart';
@@ -56,10 +57,16 @@ class _AdminShellState extends State<AdminShell> {
   static const NavItem _logsItem =
       NavItem('Log', Icons.receipt_long_rounded, '/logs');
 
-  /// Items de navigation effectifs : [_items] + « Log » si (et seulement si)
-  /// la session courante est owner.
+  /// Menu « Comptes » — réservé au compte principal (owner), même règle que
+  /// [_logsItem] (le serveur applique la vraie sécurité : 403 sur
+  /// `admin-users/*` sinon). Gestion de la révocation « téléphone perdu ».
+  static const NavItem _comptesItem =
+      NavItem('Comptes', Icons.manage_accounts_rounded, '/comptes');
+
+  /// Items de navigation effectifs : [_items] + « Log » et « Comptes » si (et
+  /// seulement si) la session courante est owner.
   static List<NavItem> _navItems({required bool isOwner}) =>
-      isOwner ? [..._items, _logsItem] : _items;
+      isOwner ? [..._items, _logsItem, _comptesItem] : _items;
 
   @override
   void initState() {
@@ -208,6 +215,8 @@ class _AdminShellState extends State<AdminShell> {
         return const LimitesScreen();
       case '/logs':
         return const LogsScreen();
+      case '/comptes':
+        return const AdminUsersScreen();
       default:
         return _DatasetGate(
           datasets: StoreController.dashboardDatasets,
@@ -274,10 +283,10 @@ class _AdminShellState extends State<AdminShell> {
       });
     }
 
-    // Menu dynamique : « Log » n'existe que pour le compte principal (owner).
-    // Garde-fou : si la route courante n'est plus dans le menu (ex. logout
-    // d'un compte owner puis login d'un compte non owner sur /logs), on
-    // rebascule sur le dashboard.
+    // Menu dynamique : « Log » et « Comptes » n'existent que pour le compte
+    // principal (owner). Garde-fou : si la route courante n'est plus dans le
+    // menu (ex. logout d'un compte owner puis login d'un compte non owner
+    // sur /logs ou /comptes), on rebascule sur le dashboard.
     final List<NavItem> items = _navItems(isOwner: auth.isOwner);
     if (!items.any((i) => i.route == _route)) {
       _route = '/dashboard';

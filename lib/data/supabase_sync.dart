@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../domain/models/admin_user_account.dart';
 import '../domain/models/category.dart';
 import '../domain/models/content.dart';
 import '../domain/models/game.dart';
@@ -1024,5 +1025,36 @@ class SupabaseSync {
   /// L'UI doit exiger une confirmation explicite avant cet appel.
   Future<void> deleteLogArchive(String table) async {
     await _post('logs/archive/delete', {'table': table});
+  }
+
+  // ===========================================================================
+  // COMPTES ADMIN (routes EF admin-users/* — owner-only)
+  // ===========================================================================
+
+  /// Liste les comptes administrateurs — **réservé au compte principal
+  /// (owner)**. Ne contient JAMAIS de hash de mot de passe (le serveur ne
+  /// l'envoie pas). Lève [AdminForbiddenException] (403) si le compte n'est
+  /// pas owner, [AdminAuthException] (401) si la session a expiré.
+  Future<List<AdminUserAccount>> fetchAdminUsers() async {
+    final Map<String, dynamic> data = await _post(
+      'admin-users/list',
+      <String, dynamic>{},
+    );
+    final List<dynamic> rows = data['users'] as List? ?? [];
+    return rows
+        .whereType<Map<String, dynamic>>()
+        .map(AdminUserAccount.fromJson)
+        .toList();
+  }
+
+  /// Active ou désactive un compte administrateur (révocation immédiate :
+  /// le serveur re-vérifie `active=true` à chaque appel). Le serveur refuse
+  /// l'auto-désactivation du compte courant et la désactivation du dernier
+  /// compte principal actif (erreur 400 avec message explicite).
+  Future<void> setAdminUserActive(String username, bool active) async {
+    await _post('admin-users/set-active', {
+      'username': username,
+      'active': active,
+    });
   }
 }
