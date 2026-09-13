@@ -1979,9 +1979,53 @@ class StoreController extends ChangeNotifier {
   /// GameMatcher.normalize : minuscules, accents, romains → arabes,
   /// suffixes d'édition, apostrophes, ponctuation, puis résolution d'alias).
   static String _normalizeGameName(String name) {
-    var n = name.toLowerCase().trim();
+    final n = _normalizeGameNameNoAlias(name);
+    // Résolution d'alias.
+    return _gameAliases[n] ?? n;
+  }
 
-    // Suppression des accents.
+  /// Normalisation SANS résolution d'alias (équivalent du
+  /// `_normalizeCore` de GameMatcher côté bots) : la forme CLÉ d'un nom
+  /// ou d'un alias. Base de [_normalizeGameName] et de
+  /// [normalizeGameAlias] (B-001 : l'alias_norm persisté doit être la
+  /// forme clé, JAMAIS la forme canonique résolue — sinon la ligne est
+  /// inerte pour les bots).
+  static String _normalizeGameNameNoAlias(String name) {
+    var n = _stripAccentsForNorm(name);
+    // Chiffres romains → arabes (en limite de mot).
+    n = n.replaceAllMapped(
+      _romanPattern,
+      (m) => '${m.group(1)}${_romanToArabic[m.group(2)]!}',
+    );
+    // Suffixes d'édition courants.
+    const suffixesToRemove = [
+      ': wild hunt',
+      ': enhanced edition',
+      ' game of the year edition',
+      ' goty edition',
+      ' definitive edition',
+      ' complete edition',
+      ' standard edition',
+      ' deluxe edition',
+      ' ultimate edition',
+    ];
+    for (final suffix in suffixesToRemove) {
+      if (n.endsWith(suffix)) {
+        n = n.substring(0, n.length - suffix.length).trim();
+      }
+    }
+    // Apostrophes → RIEN (pas d'espace) : « Assassin's » → « assassins ».
+    n = n.replaceAll("'", '');
+    n = n.replaceAll('’', '');
+    // Ponctuation → espaces, puis espaces multiples → un seul.
+    n = n.replaceAll(RegExp(r'[^a-z0-9 ]'), ' ');
+    n = n.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return n;
+  }
+
+  /// Strip accents + minuscules (étape commune des normalisations).
+  static String _stripAccentsForNorm(String name) {
+    var n = name.toLowerCase().trim();
     n = n.replaceAll('é', 'e');
     n = n.replaceAll('è', 'e');
     n = n.replaceAll('ê', 'e');
@@ -2018,48 +2062,18 @@ class StoreController extends ChangeNotifier {
     n = n.replaceAll('ø', 'o');
     n = n.replaceAll('ð', 'd');
     n = n.replaceAll('þ', 'th');
-
-    // Chiffres romains → arabes (en limite de mot).
-    n = n.replaceAllMapped(
-      _romanPattern,
-      (m) => '${m.group(1)}${_romanToArabic[m.group(2)]!}',
-    );
-
-    // Suffixes d'édition courants.
-    const suffixesToRemove = [
-      ': wild hunt',
-      ': enhanced edition',
-      ' game of the year edition',
-      ' goty edition',
-      ' definitive edition',
-      ' complete edition',
-      ' standard edition',
-      ' deluxe edition',
-      ' ultimate edition',
-    ];
-    for (final suffix in suffixesToRemove) {
-      if (n.endsWith(suffix)) {
-        n = n.substring(0, n.length - suffix.length).trim();
-      }
-    }
-
-    // Apostrophes → RIEN (pas d'espace) : « Assassin's » → « assassins ».
-    n = n.replaceAll("'", '');
-    n = n.replaceAll('’', '');
-
-    // Ponctuation → espaces, puis espaces multiples → un seul.
-    n = n.replaceAll(RegExp(r'[^a-z0-9 ]'), ' ');
-    n = n.replaceAll(RegExp(r'\s+'), ' ').trim();
-
-    // Résolution d'alias.
-    return _gameAliases[n] ?? n;
+    return n;
   }
 
   /// Normalise un alias de jeu pour la persistance (colonne `alias_norm` de
-  /// `game_aliases`). Réutilise [_normalizeGameName] : la forme stockée est
-  /// ainsi strictement identique à celle comparée par Vision/Sentinelle
-  /// (GameMatcher.normalize). Utilisé par le dialog d'alias du menu Jeux.
-  static String normalizeGameAlias(String alias) => _normalizeGameName(alias);
+  /// `game_aliases`) : forme CLÉ de l'alias, SANS résolution vers le nom
+  /// canonique (révision B-001 — `normalizeGameAlias('d4')` doit donner
+  /// `'d4'`, PAS `'diablo 4'` : les bots comparent les titres normalisés
+  /// à ces CLÉS, une alias_norm canonique serait une ligne inerte).
+  /// Utilisé par le dialog d'alias du menu Jeux et le bouton
+  /// « Synchroniser les alias connus ».
+  static String normalizeGameAlias(String alias) =>
+      _normalizeGameNameNoAlias(alias);
 
   /// Alias connus en dur ([_gameAliases]) dont la cible canonique correspond
   /// au jeu [gameName] (ex. « Diablo 4 » → « d4 », « diablo iv »).
