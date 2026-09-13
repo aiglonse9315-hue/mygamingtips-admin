@@ -1,12 +1,19 @@
 // ============================================================================
 // MyGamingTips — Edge Function Supabase "admin-catalog" (v62)
 // ============================================================================
+// ⚠️⚠️⚠️ COPIE DE RÉFÉNCE FIGÉE — NE PAS DÉPLOYER CE FICHIER ⚠️⚠️⚠️
+// Ce fichier est resté à la v62 (12/09/2026). La source de vérité déployable
+// est UNIQUEMENT : supabase/functions/admin-catalog/index.ts (v71+).
+// Déployer cette copie annulerait les correctifs v63 → v71 (dont le fix
+// Sentinelle §66). Conservé ici pour l'historique/archéologie uniquement.
+//
 // Opérations d'écriture administrateur sur le catalogue (jeux, contenus,
 // suggestions, profils bannis, abonnements). Contourne la RLS via
 // service_role. L'accès est protégé par vérification du JWT admin émis par
 // la fonction "admin-login".
 //
 // Déploiement : supabase functions deploy admin-catalog
+//   → DEPUIS supabase/functions/admin-catalog/index.ts, PAS ce fichier.
 // Secrets requis (fournis automatiquement par Supabase) :
 //   - SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 //   - MGT_ADMIN_JWT_SECRET (SEUL secret jetons admin — Phase 4.4 Phase B :

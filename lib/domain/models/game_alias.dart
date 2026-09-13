@@ -32,3 +32,24 @@ class GameAlias {
     );
   }
 }
+
+/// Une ligne de la route EF `games/aliases/list-all` (v72) : un alias avec
+/// son jeu (id + nom via jointure). Sert au bouton « Synchroniser les
+/// alias connus » du menu Jeux (diff base ↔ alias en dur).
+@immutable
+class AliasAllEntry {
+  const AliasAllEntry({
+    required this.gameId,
+    required this.gameName,
+    required this.alias,
+  });
+
+  /// UUID du jeu propriétaire de l'alias.
+  final String gameId;
+
+  /// Nom du jeu (jointure games(name)) — null si le jeu a été supprimé.
+  final String? gameName;
+
+  /// L'alias lui-même.
+  final GameAlias alias;
+}

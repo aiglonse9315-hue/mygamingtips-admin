@@ -10,6 +10,7 @@ import '../domain/models/banned_user.dart';
 import '../domain/models/category.dart';
 import '../domain/models/content.dart';
 import '../domain/models/game.dart';
+import '../domain/models/game_alias.dart';
 import '../domain/models/plus_user.dart';
 import '../domain/models/suggestion.dart';
 
@@ -1941,6 +1942,11 @@ class StoreController extends ChangeNotifier {
     'assassins creed black flag resynced':
         'assassins creed black flag resynced',
     'ac black flag resynced': 'assassins creed black flag resynced',
+    // Hogwarts Legacy : L'Héritage de Poudlard — titre FR officiel du même
+    // jeu (12/09/2026, §60 — rattrapage de synchro avec les copies bots).
+    'hogwarts legacy': 'hogwarts legacy',
+    'hogwarts legacy lheritage de poudlard': 'hogwarts legacy',
+    'lheritage de poudlard': 'hogwarts legacy',
   };
 
   /// Conversion des chiffres romains courants en chiffres arabes (copie de
@@ -2073,6 +2079,78 @@ class StoreController extends ChangeNotifier {
       for (final entry in _gameAliases.entries)
         if (entry.value == canonical && entry.key != canonical) entry.key,
     ];
+  }
+
+  /// Synchronise les alias connus en dur ([_gameAliases]) vers la base
+  /// (`game_aliases`) pour TOUS les jeux du catalogue — bouton
+  /// « Synchroniser les alias connus » du menu Jeux (v72, passation §67).
+  ///
+  /// Sémantique UNION (ajout seul, JAMAIS de suppression) : pour chaque jeu,
+  /// les alias locaux manquants en base sont AJOUTÉS aux alias existants
+  /// (qu'ils soient manuels ou déjà synchronisés). Les alias supprimés de
+  /// la map locale restent donc en base — la maintenance fine (ajout/retrait
+  /// unitaire) se fait par le dialog Alias du jeu concerné, la base étant
+  /// désormais la source de vérité des bots.
+  ///
+  /// [onProgress] reçoit un message par étape (jeu traité) pour l'UI.
+  /// Retourne le résumé : nombre de jeux poussés, d'alias ajoutés, de jeux
+  /// déjà à jour et d'alias locaux orphelins (canonical sans jeu en base).
+  Future<KnownAliasesSyncReport> syncKnownGameAliases({
+    void Function(String message)? onProgress,
+  }) async {
+    if (sync == null) {
+      throw Exception('Mode aperçu : synchronisation indisponible.');
+    }
+    // 1) État actuel de la base en UNE requête (game_id → alias).
+    final remote = await sync!.fetchGameAliasesAll();
+    final remoteByGame = <String, List<GameAlias>>{};
+    for (final e in remote) {
+      remoteByGame.putIfAbsent(e.gameId, () => []).add(e.alias);
+    }
+    // 2) Parcourt le catalogue ; pousse les jeux dont des alias locaux
+    //    manquent en base (comparaison sur alias_norm).
+    var pushed = 0, added = 0, upToDate = 0;
+    final orphanCanonicals = <String>{};
+    final coveredCanonicals = <String>{};
+    for (final game in games) {
+      final known = knownAliasesFor(game.name);
+      if (known.isEmpty) continue;
+      coveredCanonicals.add(_normalizeGameName(game.name));
+      final existingNorms = {
+        for (final a in remoteByGame[game.id] ?? const <GameAlias>[]) a.aliasNorm,
+      };
+      final missing = known
+          .map((a) => (display: a, norm: normalizeGameAlias(a)))
+          .where((e) => !existingNorms.contains(e.norm))
+          .toList();
+      if (missing.isEmpty) {
+        upToDate++;
+        continue;
+      }
+      // Union : conservés (forme affichée d'origine) + manquants (forme
+      // normalisée locale comme affichage — même comportement que le
+      // bouton « Importer les alias connus » du dialog).
+      final payload = <Map<String, String>>[
+        for (final a in remoteByGame[game.id] ?? const <GameAlias>[])
+          {'alias': a.alias, 'alias_norm': a.aliasNorm},
+        for (final m in missing) {'alias': m.display, 'alias_norm': m.norm},
+      ];
+      onProgress?.call('${game.name} : +${missing.length} alias');
+      await sync!.setGameAliases(game.id, payload);
+      pushed++;
+      added += missing.length;
+    }
+    // 3) Alias locaux dont le jeu canonical n'est pas au catalogue
+    //    (ex. « stalker 2 » pas encore ajouté) — signalés, ignorés.
+    for (final canonical in _gameAliases.values.toSet()) {
+      if (!coveredCanonicals.contains(canonical)) orphanCanonicals.add(canonical);
+    }
+    return KnownAliasesSyncReport(
+      gamesPushed: pushed,
+      aliasesAdded: added,
+      gamesUpToDate: upToDate,
+      orphanCanonicals: orphanCanonicals.toList()..sort(),
+    );
   }
 
   /// Construit la regex de détection d'une forme NORMALISÉE de nom de jeu
@@ -3268,4 +3346,29 @@ class StoreController extends ChangeNotifier {
 
   static int _byName(Game a, Game b) =>
       a.name.toLowerCase().compareTo(b.name.toLowerCase());
+}
+
+/// Résumé d'une synchronisation des alias connus vers la base (bouton
+/// « Synchroniser les alias connus » du menu Jeux — v72, passation §67).
+@immutable
+class KnownAliasesSyncReport {
+  const KnownAliasesSyncReport({
+    required this.gamesPushed,
+    required this.aliasesAdded,
+    required this.gamesUpToDate,
+    required this.orphanCanonicals,
+  });
+
+  /// Jeux pour lesquels des alias ont été poussés.
+  final int gamesPushed;
+
+  /// Nombre total d'alias ajoutés en base.
+  final int aliasesAdded;
+
+  /// Jeux avec alias locaux déjà tous présents en base (rien à faire).
+  final int gamesUpToDate;
+
+  /// Noms canoniques locaux dont AUCUN jeu du catalogue ne correspond
+  /// (alias ignorés — ex. jeu pas encore ajouté au catalogue).
+  final List<String> orphanCanonicals;
 }

@@ -1132,6 +1132,24 @@ class SupabaseSync {
         .toList();
   }
 
+  /// TOUS les alias de TOUS les jeux (route EF `games/aliases/list-all`,
+  /// v72), avec le nom du jeu — sert au bouton « Synchroniser les alias
+  /// connus » (diff base ↔ alias en dur du panneau) : une seule requête
+  /// au lieu d'une par jeu.
+  Future<List<AliasAllEntry>> fetchGameAliasesAll() async {
+    final Map<String, dynamic> data =
+        await _post('games/aliases/list-all', {});
+    final List<dynamic> rows = data['aliases'] as List? ?? [];
+    return [
+      for (final r in rows.whereType<Map<String, dynamic>>())
+        AliasAllEntry(
+          gameId: r['game_id'] as String,
+          gameName: r['game_name'] as String?,
+          alias: GameAlias.fromJson(r),
+        ),
+    ];
+  }
+
   /// Remplace TOUTE la liste des alias d'un jeu (les alias absents de
   /// [aliases] sont supprimés côté serveur). Chaque entrée est un map
   /// `{alias: <saisi>, alias_norm: <forme normalisée>}` — la normalisation

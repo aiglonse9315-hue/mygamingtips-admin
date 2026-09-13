@@ -26,10 +26,122 @@ class _GamesScreenState extends State<GamesScreen> {
   int _currentPage = 0;
   static const int _pageSize = 200;
 
+  /// Synchronisation des alias connus en cours (désactive le bouton).
+  bool _aliasesSyncRunning = false;
+
   @override
   void dispose() {
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  /// Confirmation avant la synchronisation globale des alias connus
+  /// (v72, passation §67). Sémantique documentée : AJOUT SEUL.
+  Future<void> _confirmSyncKnownAliases(
+      BuildContext context, StoreController store) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Synchroniser les alias connus ?'),
+        content: const Text(
+          'Pour chaque jeu du catalogue, les alias connus du panneau '
+          '(acronymes, noms alternatifs — ex. « D4 » pour Diablo 4) '
+          'manquants en base seront AJOUTÉS.\n\n'
+          'Aucun alias existant n\'est supprimé : la synchronisation ne '
+          'fait qu\'enrichir la base, qui alimente les bots Vision et '
+          'Sentinelle (source de vérité).',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Annuler'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Synchroniser'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _runSyncKnownAliases(store);
+  }
+
+  /// Exécute la synchronisation puis affiche le rapport.
+  Future<void> _runSyncKnownAliases(StoreController store) async {
+    setState(() => _aliasesSyncRunning = true);
+    final log = <String>[];
+    try {
+      final report = await store.syncKnownGameAliases(
+        onProgress: (m) {
+          log.add(m);
+          if (mounted) setState(() {});
+        },
+      );
+      if (!mounted) return;
+      showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Alias synchronisés'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('${report.gamesPushed} jeu(x) mis à jour — '
+                    '${report.aliasesAdded} alias ajouté(s).'),
+                if (report.gamesUpToDate > 0)
+                  Text('${report.gamesUpToDate} jeu(x) déjà à jour.'),
+                if (report.orphanCanonicals.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Alias ignorés (jeu absent du catalogue) : '
+                    '${report.orphanCanonicals.join(', ')}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(dialogContext).hintColor,
+                    ),
+                  ),
+                ],
+                if (log.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    log.take(50).join('\n'),
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Fermer'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Échec de la synchronisation'),
+          content: Text(
+            e.toString().replaceFirst('Exception: ', ''),
+            style: const TextStyle(fontSize: 13),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Fermer'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _aliasesSyncRunning = false);
+    }
   }
 
   @override
@@ -71,10 +183,36 @@ class _GamesScreenState extends State<GamesScreen> {
                 'Jeux du catalogue',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
               ),
-              FilledButton.icon(
-                onPressed: () => _showGameDialog(context, null),
-                icon: const Icon(Icons.add_rounded),
-                label: const Text('Ajouter un jeu'),
+              Row(
+                children: [
+                  Tooltip(
+                    message:
+                        'Pousse les alias connus (acronymes, noms alternatifs)\n'
+                        'vers la base pour TOUS les jeux du catalogue.\n'
+                        'Ajout seul — jamais de suppression ; la base est la\n'
+                        'source qui alimente les bots (Vision/Sentinelle).',
+                    child: OutlinedButton.icon(
+                      onPressed: _aliasesSyncRunning
+                          ? null
+                          : () => _confirmSyncKnownAliases(context, store),
+                      icon: _aliasesSyncRunning
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2),
+                            )
+                          : const Icon(Icons.sync_rounded),
+                      label: const Text('Synchroniser alias connus'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: () => _showGameDialog(context, null),
+                    icon: const Icon(Icons.add_rounded),
+                    label: const Text('Ajouter un jeu'),
+                  ),
+                ],
               ),
             ],
           ),
