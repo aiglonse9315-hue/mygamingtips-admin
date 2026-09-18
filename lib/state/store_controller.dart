@@ -13,6 +13,7 @@ import '../domain/models/game.dart';
 import '../domain/models/game_alias.dart';
 import '../domain/models/plus_user.dart';
 import '../domain/models/suggestion.dart';
+import '../domain/models/sync_status.dart';
 
 /// Détecte si une erreur provient d'un token admin expiré/invalide (HTTP 401).
 bool _isAuthError(Object e) => e is AdminAuthException;
@@ -2953,11 +2954,132 @@ class StoreController extends ChangeNotifier {
     _analyzingPollingTimer = null;
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Sync totale BDD → Local (chantier C — migration 0063, décision §70.1)
+  // ─────────────────────────────────────────────────────────────────────
+
+  /// Dernière demande de sync totale connue + ses acquittements par machine
+  /// (alimente le badge de la topbar). Null tant qu'aucune demande n'a été
+  /// posée ni lue dans cette session.
+  SyncStatusResult? syncRequestPending;
+
+  /// true pendant l'appel EF `sync/request` (spinner bref du bouton — l'EF
+  /// est quasi instantanée ; le bouton reste cliquable).
+  bool syncTotalRequesting = false;
+
+  /// Timer du polling `sync/status` (60 s) — actif SEULEMENT tant qu'une
+  /// demande « chaude » (< 24 h) n'a reçu AUCUN acquittement. Null sinon.
+  Timer? _syncStatusPollingTimer;
+
+  /// Garde anti-recouvrement du tick (un appel EF en vol en bloque un autre).
+  bool _syncStatusPollInFlight = false;
+
+  /// Demande une sync TOTALE BDD→local (bouton « 🔄 Sync totale » de la
+  /// topbar) : pose/ré-horodate la demande côté serveur (anti-pile-up géré
+  /// par l'EF), rafraîchit le statut, puis démarre le polling 60 s tant
+  /// qu'aucune machine n'a acquitté. Erreur → [syncError] (bannière topbar).
+  Future<void> requestTotalSync() async {
+    if (sync == null || syncTotalRequesting) return;
+    syncTotalRequesting = true;
+    notifyListeners();
+    try {
+      await sync!.requestTotalSync();
+      // Rafraîchit immédiatement le statut : la demande vient d'être posée,
+      // elle est forcément « chaude » et sans ack → badge 🟠 + polling.
+      syncRequestPending = await sync!.fetchSyncStatus();
+      _startSyncStatusPolling();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      syncError = 'La demande de sync totale a échoué : $e';
+    } finally {
+      syncTotalRequesting = false;
+      notifyListeners();
+    }
+  }
+
+  /// Lecture ONE-SHOT de `sync/status` au login (fix revue I-002) : sans
+  /// elle, [syncRequestPending] n'était alimenté qu'au clic sur le bouton
+  /// ou à un tick de polling — une demande « chaude » sans ack posée dans
+  /// une session PRÉCÉDENTE restait invisible à l'ouverture du panneau.
+  /// Best-effort : ne bloque pas le login ; 401 → [onAuthError] ; toute
+  /// autre erreur → console seulement. Démarre ensuite le polling 60 s
+  /// si la demande est « chaude » et sans ack (gardes existantes de
+  /// [_startSyncStatusPolling]).
+  Future<void> _initSyncStatusBadge() async {
+    if (sync == null) return;
+    try {
+      syncRequestPending = await sync!.fetchSyncStatus();
+      notifyListeners();
+      _startSyncStatusPolling();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      debugPrint('[sync] lecture initiale sync/status échouée : $e');
+    }
+  }
+
+  /// Démarre le polling `sync/status` (toutes les 60 s) — UNIQUEMENT si une
+  /// demande « chaude » (< 24 h) est en attente sans AUCUN ack (en pratique :
+  /// au moins une machine Vision manquante). Idempotent : jamais de doublon
+  /// (même garde que [startAnalyzingPolling]).
+  void _startSyncStatusPolling() {
+    if (_syncStatusPollingTimer != null) return; // déjà actif
+    final req = syncRequestPending?.request;
+    final awaitingAck = req != null &&
+        (syncRequestPending?.acks.isEmpty ?? true) &&
+        DateTime.now().difference(req.createdAt) <= const Duration(hours: 24);
+    if (!awaitingAck) return;
+    _syncStatusPollingTimer = Timer.periodic(
+      const Duration(seconds: 60),
+      (_) => _syncStatusPollingTick(),
+    );
+  }
+
+  /// Arrête le polling `sync/status`. Idempotent : sans timer actif, ne
+  /// fait rien. Jamais de fuite : appelé dès ack reçu, demande expirée,
+  /// 401, ou dispose du store.
+  void _stopSyncStatusPolling() {
+    _syncStatusPollingTimer?.cancel();
+    _syncStatusPollingTimer = null;
+  }
+
+  /// Un tick de polling : relit `sync/status`, met à jour [syncRequestPending]
+  /// et ARRÊTE le timer dès qu'au moins une machine a acquitté ou que la
+  /// demande a plus de 24 h. Ne lève JAMAIS d'exception : un échec réseau/EF
+  /// est tracé en console seulement (retry au prochain tick — pas de spam
+  /// [syncError] pour un rafraîchissement de fond).
+  Future<void> _syncStatusPollingTick() async {
+    if (sync == null || _syncStatusPollInFlight) return;
+    _syncStatusPollInFlight = true;
+    try {
+      final status = await sync!.fetchSyncStatus();
+      syncRequestPending = status;
+      notifyListeners();
+      final req = status.request;
+      final expired = req == null ||
+          DateTime.now().difference(req.createdAt) > const Duration(hours: 24);
+      if (status.acks.isNotEmpty || expired) {
+        _stopSyncStatusPolling();
+      }
+    } on AdminAuthException {
+      _stopSyncStatusPolling();
+      onAuthError?.call();
+    } catch (e) {
+      debugPrint(
+        '[sync] polling sync/status échoué (retry au prochain tick) : $e',
+      );
+    } finally {
+      _syncStatusPollInFlight = false;
+    }
+  }
+
   @override
   void dispose() {
     // Filet de sécurité : le store vit racine de l'app (jamais disposé en
-    // pratique), mais si cela arrivait, le timer ne doit pas survivre.
+    // pratique), mais si cela arrivait, les timers ne doivent pas survivre.
     stopAnalyzingPolling();
+    _stopSyncStatusPolling();
     super.dispose();
   }
 
@@ -3598,6 +3720,10 @@ class StoreController extends ChangeNotifier {
       // le leur à l'ouverture via ensureDatasets.
       if (!hadToken) {
         ensureDatasets(dashboardDatasets);
+        // Badge de sync totale (I-002) : une demande « chaude » sans ack
+        // d'une session précédente doit être visible dès l'ouverture du
+        // panneau — one-shot best-effort, ne bloque pas le login.
+        unawaited(_initSyncStatusBadge());
       }
     } else {
       sync!.setAdminToken('');

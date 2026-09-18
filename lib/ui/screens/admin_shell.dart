@@ -320,6 +320,13 @@ class _AdminShellState extends State<AdminShell> {
                   statusBadge: store.sync != null
                       ? const _OfflineBadge()
                       : null,
+                  onSyncTotal: store.sync != null
+                      ? () => store.requestTotalSync()
+                      : null,
+                  syncTotalBusy: store.syncTotalRequesting,
+                  syncTotalBadge: store.sync != null
+                      ? const _SyncTotalBadge()
+                      : null,
                   onReset: () => showDialog<void>(
                     context: context,
                     builder: (_) => ConfirmDialog(
@@ -538,6 +545,167 @@ class _OfflineBadge extends StatelessWidget {
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
                 color: amber,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Badge « Sync totale » de la topbar (chantier C — migration 0063) :
+///  - 🟠 « Sync demandée à HH:MM — en attente de Vision » tant que la
+///    demande « chaude » (< 24 h) n'a reçu AUCUN acquittement ;
+///  - 🟢 « Sync effectuée (machine-id, HH:MM) » dès le premier ack —
+///    masqué ~1 h après ;
+///  - invisible sinon (aucune demande, ou demande expirée > 24 h).
+/// Tooltip : machine complète + rapport (compteurs) si disponible.
+///
+/// Un [Timer] de 60 s force un rebuild léger (le masquage ~1 h / expiration
+/// 24 h vieillit sans nouvel événement store) — disposé proprement.
+class _SyncTotalBadge extends StatefulWidget {
+  const _SyncTotalBadge();
+
+  @override
+  State<_SyncTotalBadge> createState() => _SyncTotalBadgeState();
+}
+
+class _SyncTotalBadgeState extends State<_SyncTotalBadge> {
+  Timer? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = Timer.periodic(const Duration(seconds: 60), (_) {
+      if (mounted) setState(() {}); // masquage ~1 h / 24 h vieillit seul
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  static String _hhmm(DateTime dt) {
+    final local = dt.toLocal();
+    return '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+  }
+
+  /// Résumé compact du rapport posté par le bot (compteurs), pour tooltip.
+  static String? _reportSummary(Map<String, dynamic>? report) {
+    if (report == null) return null;
+    int? asInt(Map<String, dynamic>? m, String key) {
+      final v = m?[key];
+      return v is num ? v.toInt() : null;
+    }
+
+    final aliases = report['aliases'];
+    final channels = report['channels'];
+    final translations = report['translations'];
+    final errors = report['errors'];
+    final a = aliases is Map<String, dynamic> ? aliases : null;
+    final c = channels is Map<String, dynamic> ? channels : null;
+    final t = translations is Map<String, dynamic> ? translations : null;
+    final errCount = errors is List ? errors.length : 0;
+    final parts = <String>[
+      if (a != null)
+        'alias : ${asInt(a, 'remote_loaded') ?? '?'} distants'
+            ', +${asInt(a, 'const_added') ?? 0} const poussés',
+      if (c != null)
+        'chaînes : ${asInt(c, 'remote_loaded') ?? '?'} distantes'
+            ', +${asInt(c, 'extras_pushed') ?? 0} extras poussés',
+      if (t != null) 'traductions : ${asInt(t, 'games') ?? '?'} jeux',
+      'erreurs : $errCount',
+    ];
+    return parts.join('\n');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final store = context.watch<StoreController>();
+    final status = store.syncRequestPending;
+    final req = status?.request;
+    if (req == null) return const SizedBox.shrink();
+    final acks = status!.acks;
+
+    if (acks.isNotEmpty) {
+      // 🟢 Ack reçu — affiché ~1 h puis masqué. (acks triés par acked_at
+      // ascendant côté EF → le dernier est le plus récent.)
+      final last = acks.last;
+      if (DateTime.now().difference(last.ackedAt) >
+          const Duration(hours: 1)) {
+        return const SizedBox.shrink();
+      }
+      const color = AppColors.categoryGuide; // vert du thème
+      final shortId = last.machineId.length > 8
+          ? last.machineId.substring(0, 8)
+          : last.machineId;
+      final summary = _reportSummary(last.report);
+      return Tooltip(
+        message: 'Machine ${last.machineId}\n'
+            'Acquittée à ${_hhmm(last.ackedAt)}'
+            '${acks.length > 1 ? ' — ${acks.length} machine(s)' : ''}'
+            '${summary != null ? '\n\nRapport :\n$summary' : ''}',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.14),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: color.withValues(alpha: 0.5)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.check_circle_rounded, size: 14, color: color),
+              const SizedBox(width: 6),
+              Text(
+                'Sync effectuée ($shortId, ${_hhmm(last.ackedAt)})',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // 🟠 En attente : demande « chaude » (< 24 h) sans aucun ack.
+    if (DateTime.now().difference(req.createdAt) >
+        const Duration(hours: 24)) {
+      return const SizedBox.shrink();
+    }
+    final color = Colors.orange.shade700;
+    return Tooltip(
+      message: 'Demande posée'
+          '${req.requestedBy != null ? ' par ${req.requestedBy}' : ''} '
+          'à ${_hhmm(req.createdAt)} — exécutée par Vision.exe au démarrage '
+          '/ au prochain cycle (ou via son bouton « 🔄 Sync »), puis '
+          'acquittée ici. Statut relu toutes les 60 s tant qu\'elle est '
+          'sans ack.',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.5)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.hourglass_top_rounded, size: 14, color: color),
+            const SizedBox(width: 6),
+            Text(
+              'Sync demandée à ${_hhmm(req.createdAt)} — en attente de Vision',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: color,
               ),
             ),
           ],

@@ -17,6 +17,9 @@ class AdminTopbar extends StatelessWidget {
     this.onDismissError,
     this.titleTrailing,
     this.statusBadge,
+    this.onSyncTotal,
+    this.syncTotalBusy = false,
+    this.syncTotalBadge,
   });
 
   final String title;
@@ -47,6 +50,19 @@ class AdminTopbar extends StatelessWidget {
 
   /// Callback pour fermer la bannière d'erreur.
   final VoidCallback? onDismissError;
+
+  /// Callback « 🔄 Sync totale » (chantier C) : demande une synchronisation
+  /// BDD → local aux machines Vision. Si null, le bouton n'apparaît pas.
+  /// Le bouton reste CLIQUABLE pendant l'appel (l'EF est quasi instantanée) —
+  /// [syncTotalBusy] ne sert qu'au spinner bref.
+  final VoidCallback? onSyncTotal;
+
+  /// true pendant l'appel EF `sync/request` (petit spinner dans le bouton).
+  final bool syncTotalBusy;
+
+  /// Badge d'état de la sync totale (🟠 en attente / 🟢 effectuée), affiché
+  /// juste après le bouton « Sync totale » ; invisible si null.
+  final Widget? syncTotalBadge;
 
   @override
   Widget build(BuildContext context) {
@@ -95,6 +111,30 @@ class AdminTopbar extends StatelessWidget {
                   label: const Text('Actualiser'),
                 ),
               if (onRefresh != null) const SizedBox(width: 8),
+              if (onSyncTotal != null)
+                Tooltip(
+                  message: 'Demande une synchronisation totale BDD → local '
+                      'aux machines Vision : alias, chaînes de confiance et '
+                      'traductions rechargés, extras locaux poussés vers la '
+                      'base. Exécutée par Vision.exe au démarrage / au '
+                      'prochain cycle (ou via son bouton « 🔄 Sync »).',
+                  child: TextButton.icon(
+                    onPressed: onSyncTotal,
+                    icon: syncTotalBusy
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('🔄', style: TextStyle(fontSize: 15)),
+                    label: const Text('Sync totale'),
+                  ),
+                ),
+              if (onSyncTotal != null) const SizedBox(width: 8),
+              if (syncTotalBadge != null) ...[
+                syncTotalBadge!,
+                const SizedBox(width: 8),
+              ],
               if (showReset)
                 TextButton.icon(
                   onPressed: onReset,

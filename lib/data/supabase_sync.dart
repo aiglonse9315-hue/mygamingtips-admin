@@ -10,6 +10,7 @@ import '../domain/models/game.dart';
 import '../domain/models/game_alias.dart';
 import '../domain/models/log_entry.dart';
 import '../domain/models/suggestion.dart';
+import '../domain/models/sync_status.dart';
 import '../domain/models/trusted_channel.dart';
 
 /// Exception levée quand le token admin est expiré ou invalide (HTTP 401).
@@ -1175,5 +1176,38 @@ class SupabaseSync {
       'aliases': aliases,
     });
     return (data['count'] as num?)?.toInt() ?? aliases.length;
+  }
+
+  // ===========================================================================
+  // SYNC TOTALE BDD → LOCAL (routes EF sync/*, migration 0063 — chantier C)
+  // ===========================================================================
+
+  /// Pose (ou ré-horodate) LA demande de sync totale « chaude » (route EF
+  /// `sync/request`) — sémantique anti-pile-up côté serveur : une demande de
+  /// moins de 24 h est ré-horodatée, sinon nouvelle ligne. Retourne la
+  /// demande résultante.
+  Future<SyncRequestInfo> requestTotalSync() async {
+    final Map<String, dynamic> data = await _post('sync/request', {});
+    return SyncRequestInfo.fromJson(
+      (data['request'] as Map?)?.cast<String, dynamic>() ?? const {},
+    );
+  }
+
+  /// Lit la dernière demande de sync et TOUS ses acquittements par machine
+  /// (route EF `sync/status`) — alimente le badge d'attente de la topbar et
+  /// le polling 60 s (actif uniquement tant qu'une demande reste sans ack).
+  Future<SyncStatusResult> fetchSyncStatus() async {
+    final Map<String, dynamic> data = await _post('sync/status', {});
+    final rawRequest = data['request'];
+    final List<dynamic> rawAcks = data['acks'] as List? ?? const [];
+    return SyncStatusResult(
+      request: rawRequest is Map<String, dynamic>
+          ? SyncRequestInfo.fromJson(rawRequest)
+          : null,
+      acks: [
+        for (final a in rawAcks.whereType<Map<String, dynamic>>())
+          SyncAckInfo.fromJson(a),
+      ],
+    );
   }
 }
