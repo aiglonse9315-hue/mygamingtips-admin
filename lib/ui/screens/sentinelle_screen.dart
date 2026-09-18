@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart' as ul;
 
 import '../../core/theme/colors.dart';
+import '../../domain/models/game.dart';
 import '../../domain/models/suggestion.dart';
 import '../../state/store_controller.dart';
 import '../widgets/admin_data_table.dart';
@@ -27,6 +28,34 @@ class SentinelleScreen extends StatefulWidget {
 class _SentinelleScreenState extends State<SentinelleScreen> {
   /// IDs des suggestions sélectionnées (section 99% sûr).
   final Set<String> _selected = <String>{};
+
+  /// Référence au store capturée SANS écoute au premier frame — nécessaire
+  /// pour arrêter le polling dans [dispose] (où context.read n'est plus
+  /// valide).
+  StoreController? _storeRef;
+
+  @override
+  void initState() {
+    super.initState();
+    // F2 / AC3-AC4 (chantier Sentinelle) : démarre le polling léger du
+    // board « Analyses en cours » tant que ce menu est ouvert (le shell
+    // reconstruit l'écran à chaque changement de route → dispose garanti
+    // à la sortie). Post-frame : context.read exige un arbre monté.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _storeRef = context.read<StoreController>();
+      _storeRef!.startAnalyzingPolling();
+    });
+  }
+
+  @override
+  void dispose() {
+    // Symétrique du start : si le post-frame n'a pas encore couru (dispose
+    // immédiat), _storeRef est null et le polling n'a jamais démarré —
+    // stopAnalyzingPolling est de toute façon idempotent.
+    _storeRef?.stopAnalyzingPolling();
+    super.dispose();
+  }
 
   /// Validation EN LOT en cours (correctif 27/08/2026, appel EF groupé
   /// `suggestions/accept-batch`) : boutons « Tout valider » / « Valider
@@ -103,6 +132,20 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   /// rebuild complet de l'écran à chaque frappe).
   void _setEditedTitle(String suggestionId, String title) {
     _editedTitles[suggestionId] = title;
+  }
+
+  /// Titres pour insertion modifiés par l'admin dans la section
+  /// « À vérifier » (I-003 / R3, revue chantier Sentinelle). Key = ID de
+  /// suggestion, value = titre saisi. Source de vérité remontée par
+  /// [_ToVerifyTable] : la saisie survit à la purge des contrôleurs
+  /// orphelins (I-002) et le texte affiché reste celui transmis au dialogue
+  /// « Ajouter manuellement ».
+  final Map<String, String> _toVerifyEditedTitles = <String, String>{};
+
+  /// Enregistre le titre saisi par l'admin pour une suggestion
+  /// « À vérifier ». Pas de setState : le TextField gère son propre état.
+  void _setToVerifyEditedTitle(String suggestionId, String title) {
+    _toVerifyEditedTitles[suggestionId] = title;
   }
 
   /// Titres pour insertion modifiés par l'admin (section « Jeux à créer »).
@@ -377,11 +420,19 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
       );
     } finally {
       if (mounted) {
+        // Ids encore présents après la sync finale = échecs restaurés :
+        // leurs overrides de titre sont CONSERVÉS (le texte affiché reste
+        // celui qui sera transmis au dialogue) ; ceux des lignes disparues
+        // sont purgés — miroir de [_runBatch] (I-003).
+        final remaining = store.sentinelleToVerify.map((s) => s.id).toSet();
         setState(() {
           _batchRejecting = false;
           _batchRejectDone = 0;
           _batchRejectTotal = 0;
           _toVerifySelected.clear();
+          _toVerifyEditedTitles.removeWhere(
+            (id, _) => !remaining.contains(id),
+          );
         });
       }
     }
@@ -620,6 +671,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                 onGameChanged: _setEditedGame,
                 editedCategories: _editedCategories,
                 onCategoryChanged: _setEditedCategory,
+                editedTitles: _editedTitles,
                 onTitleChanged: _setEditedTitle,
               ),
             ),
@@ -763,6 +815,8 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
             RepaintBoundary(
               child: _ToVerifyTable(
                 suggestions: toVerify,
+                editedTitles: _toVerifyEditedTitles,
+                onTitleChanged: _setToVerifyEditedTitle,
                 selectedIds: _toVerifySelected,
                 onToggle: _toggleVerifySelect,
               ),
@@ -985,6 +1039,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                 editedCategories: _gtcEditedCategories,
                 onCategoryChanged: _setGtcEditedCategory,
                 onGameNameChanged: _setGtcEditedGame,
+                editedTitles: _gtcEditedTitles,
                 onTitleChanged: _setGtcEditedTitle,
               ),
             ),
@@ -1077,6 +1132,7 @@ class _TrustedTable extends StatefulWidget {
     required this.onGameChanged,
     required this.editedCategories,
     required this.onCategoryChanged,
+    required this.editedTitles,
     required this.onTitleChanged,
   });
 
@@ -1114,6 +1170,14 @@ class _TrustedTable extends StatefulWidget {
   /// Callback appelé quand l'admin change la catégorie d'une suggestion.
   final void Function(String suggestionId, String category) onCategoryChanged;
 
+  /// Titres pour insertion modifiés par l'admin (key = suggestion ID).
+  /// Source de vérité : [_SentinelleScreenState._editedTitles]. Sert à
+  /// AMORCER un contrôleur recréé après purge (I-003 / R3) : sans cela, la
+  /// ligne restaurée d'un échec partiel de lot affichait le titre CALCULÉ
+  /// alors que l'ANCIEN override — conservé par le parent — aurait été
+  /// appliqué à la validation.
+  final Map<String, String> editedTitles;
+
   /// Callback appelé à chaque frappe dans le champ « Titre pour insertion »
   /// — remonte la saisie au parent ([_SentinelleScreenState._editedTitles])
   /// pour que « Valider sélection » et « Tout valider » utilisent le titre
@@ -1143,12 +1207,17 @@ class _TrustedTableState extends State<_TrustedTable> {
       s.id,
       // Règle 12/09/2026 : le jeu effectif (choix admin ?? proposition IA)
       // est passé pour que ses mentions soient retirées du titre pré-rempli.
+      // I-003 / R3 : un override de titre CONSERVÉ par le parent (restauration
+      // d'un échec partiel de lot) prime sur le pré-rempli calculé — sinon la
+      // ligne afficherait le titre calculé alors que l'ancien override serait
+      // appliqué à la validation (texte affiché == texte appliqué).
       () => TextEditingController(
-        text: store.titleForInsertion(
-          s,
-          gameName:
-              widget.editedGames[s.id] ?? s.aiRecommendation?.suggestedGame,
-        ),
+        text: widget.editedTitles[s.id] ??
+            store.titleForInsertion(
+              s,
+              gameName: widget.editedGames[s.id] ??
+                  s.aiRecommendation?.suggestedGame,
+            ),
       ),
     );
   }
@@ -1159,6 +1228,81 @@ class _TrustedTableState extends State<_TrustedTable> {
       c.dispose();
     }
     super.dispose();
+  }
+
+  // ── Purge des contrôleurs orphelins + cache catalogue (F4, chantier
+  // Sentinelle) ──
+
+  /// Supprime de la map les contrôleurs dont l'id n'est plus dans la liste
+  /// courante du board (suggestions validées/rejetées) et les dispose.
+  /// Appelé en tête de chaque build : sans cela, ils s'accumulaient jusqu'au
+  /// dispose de l'écran. Les contrôleurs des lignes des AUTRES pages de
+  /// pagination sont CONSERVÉS (la saisie survit à la navigation entre
+  /// pages — comportement historique inchangé).
+  void _purgeTitleControllers() {
+    if (_titleControllers.isEmpty) return;
+    final Set<String> liveIds = widget.suggestions.map((s) => s.id).toSet();
+    final List<TextEditingController> orphans = <TextEditingController>[];
+    for (final id in _titleControllers.keys
+        .where((id) => !liveIds.contains(id))
+        .toList()) {
+      final TextEditingController? c = _titleControllers.remove(id);
+      if (c != null) orphans.add(c);
+    }
+    if (orphans.isEmpty) return;
+    // Dispose DIFFÉRÉ en post-frame : les TextField des lignes disparues ne
+    // sont démontés qu'à la fin de CE build — disposer leurs contrôleurs
+    // immédiatement ferait échouer leur removeListener (assert debug
+    // « used after being disposed »).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      for (final c in orphans) {
+        c.dispose();
+      }
+    });
+  }
+
+  /// Cache catalogue (perf) : la liste triée des noms de jeux et les
+  /// DropdownMenuItem PARTAGÉS par toutes les lignes ne sont reconstruits
+  /// que lorsque le catalogue change. Détection par contenu (longueur +
+  /// identité des éléments) : [StoreController.games] réassigne sa liste à
+  /// chaque modification (jamais de mutation en place) et les [Game]
+  /// inchangés conservent leur identité — une comparaison O(n) triviale
+  /// remplace le re-tri + la recréation de ~166 items × 100 lignes à
+  /// chaque rebuild.
+  List<Game> _catalogSource = const <Game>[];
+  List<String> _catalogNames = const <String>[];
+  List<DropdownMenuItem<String>> _catalogItems =
+      const <DropdownMenuItem<String>>[];
+
+  /// Reconstruit le cache catalogue si [games] a changé (tête de build).
+  void _refreshCatalogCache(List<Game> games) {
+    if (games.length == _catalogSource.length) {
+      bool same = true;
+      for (int i = 0; i < games.length; i++) {
+        if (!identical(games[i], _catalogSource[i])) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+    }
+    _catalogSource = games;
+    // Dédupliqué + tri alphabétique (DropdownButton exige des valeurs
+    // uniques) — mêmes valeurs et même ordre qu'avant la mémorisation.
+    _catalogNames = games.map((g) => g.name).toSet().toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    _catalogItems = _catalogNames
+        .map(
+          (name) => DropdownMenuItem<String>(
+            value: name,
+            child: Text(
+              name,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
+        )
+        .toList();
   }
 
   // ── Pagination (réplique du système de _ToVerifyTable) ──
@@ -1324,16 +1468,9 @@ class _TrustedTableState extends State<_TrustedTable> {
                   style: const TextStyle(fontSize: 12),
                 ),
               ),
-            ...catalogGameNames.map(
-              (name) => DropdownMenuItem<String>(
-                value: name,
-                child: Text(
-                  name,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12),
-                ),
-              ),
-            ),
+            // Items du catalogue MÉMORISÉS et partagés par toutes les lignes
+            // (reconstruits uniquement quand store.games change — F4).
+            ..._catalogItems,
           ],
           onChanged: (newGame) {
             if (newGame == null) return;
@@ -1398,11 +1535,11 @@ class _TrustedTableState extends State<_TrustedTable> {
   @override
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
-    // Noms de jeux du catalogue, dédupliqués et triés alphabétiquement
-    // (DropdownButton exige des valeurs uniques ; le tri aide l'admin à
-    // retrouver un jeu).
-    final catalogGameNames = store.games.map((g) => g.name).toSet().toList()
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    // F4 : purge des contrôleurs orphelins (ids disparus du board) + cache
+    // catalogue (recalcul uniquement si store.games a changé).
+    _purgeTitleControllers();
+    _refreshCatalogCache(store.games);
+    final catalogGameNames = _catalogNames;
     // On ne construit que les lignes de la page courante (100 max) pour éviter
     // de matérialiser toute la liste et ralentir l'interface admin.
     final pageItems = _paged;
@@ -1630,11 +1767,26 @@ class _TrustedTableState extends State<_TrustedTable> {
 class _ToVerifyTable extends StatefulWidget {
   const _ToVerifyTable({
     required this.suggestions,
+    required this.editedTitles,
+    required this.onTitleChanged,
     this.selectedIds,
     this.onToggle,
   });
 
   final List<Suggestion> suggestions;
+
+  /// Titres pour insertion modifiés par l'admin (key = suggestion ID).
+  /// Source de vérité : [_SentinelleScreenState._toVerifyEditedTitles].
+  /// Sert à AMORCER un contrôleur recréé après purge (I-003 / R3) : le
+  /// texte affiché reste identique au texte transmis au dialogue
+  /// « Ajouter manuellement ».
+  final Map<String, String> editedTitles;
+
+  /// Callback appelé à chaque frappe dans le champ « Titre pour insertion »
+  /// — remonte la saisie au parent pour qu'elle survive à la purge des
+  /// contrôleurs orphelins (I-002 + I-003).
+  final void Function(String suggestionId, String title) onTitleChanged;
+
   final Set<String>? selectedIds;
   final ValueChanged<String>? onToggle;
 
@@ -1659,11 +1811,16 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
       s.id,
       // Règle 12/09/2026 : le jeu proposé par l'IA (pas d'override dans ce
       // tableau) est passé pour retirer ses mentions du titre pré-rempli.
+      // I-003 / R3 : un override de titre CONSERVÉ par le parent (saisie
+      // remontée via onTitleChanged) prime sur le pré-rempli calculé — le
+      // texte affiché reste celui transmis au dialogue « Ajouter
+      // manuellement », même après purge + recréation du contrôleur.
       () => TextEditingController(
-        text: store.titleForInsertion(
-          s,
-          gameName: s.aiRecommendation?.suggestedGame,
-        ),
+        text: widget.editedTitles[s.id] ??
+            store.titleForInsertion(
+              s,
+              gameName: s.aiRecommendation?.suggestedGame,
+            ),
       ),
     );
   }
@@ -1674,6 +1831,35 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
       c.dispose();
     }
     super.dispose();
+  }
+
+  /// Supprime de la map les contrôleurs dont l'id n'est plus dans la liste
+  /// courante du board (suggestions validées/rejetées) et les dispose.
+  /// Appelé en tête de chaque build (I-002 / R2, revue chantier Sentinelle) :
+  /// même pattern d'accumulation que les deux autres boards — sans purge,
+  /// les contrôleurs s'accumulaient jusqu'au dispose de l'écran. Les
+  /// contrôleurs des lignes des AUTRES pages de pagination sont CONSERVÉS
+  /// (la saisie survit à la navigation entre pages).
+  void _purgeTitleControllers() {
+    if (_titleControllers.isEmpty) return;
+    final Set<String> liveIds = widget.suggestions.map((s) => s.id).toSet();
+    final List<TextEditingController> orphans = <TextEditingController>[];
+    for (final id in _titleControllers.keys
+        .where((id) => !liveIds.contains(id))
+        .toList()) {
+      final TextEditingController? c = _titleControllers.remove(id);
+      if (c != null) orphans.add(c);
+    }
+    if (orphans.isEmpty) return;
+    // Dispose DIFFÉRÉ en post-frame : les TextField des lignes disparues ne
+    // sont démontés qu'à la fin de CE build — disposer leurs contrôleurs
+    // immédiatement ferait échouer leur removeListener (assert debug
+    // « used after being disposed »).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      for (final c in orphans) {
+        c.dispose();
+      }
+    });
   }
 
   /// Filtre : null = tout, AiVerdict.caution = uniquement "À vérifier".
@@ -1755,6 +1941,9 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
           width: 220,
           child: TextField(
             controller: titleController,
+            // I-003 / R3 : chaque frappe est remontée au parent pour que la
+            // saisie survive à la purge des contrôleurs orphelins (I-002).
+            onChanged: (text) => widget.onTitleChanged(s.id, text),
             minLines: 1,
             maxLines: 3,
             decoration: const InputDecoration(
@@ -1849,6 +2038,9 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
   @override
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
+    // I-002 / R2 : purge des contrôleurs orphelins (ids disparus du board) —
+    // même règle que _TrustedTable / _GamesToCreateTable (F4).
+    _purgeTitleControllers();
     final hasCheckbox = widget.selectedIds != null && widget.onToggle != null;
     final pageItems = _page;
     final totalFiltered = _filtered.length;
@@ -2107,6 +2299,7 @@ class _GamesToCreateTable extends StatefulWidget {
     required this.editedCategories,
     required this.onCategoryChanged,
     required this.onGameNameChanged,
+    required this.editedTitles,
     required this.onTitleChanged,
   });
 
@@ -2125,6 +2318,12 @@ class _GamesToCreateTable extends StatefulWidget {
   /// Callback appelé à chaque frappe dans le champ « nom du jeu » — remonte
   /// la saisie au parent pour que les validations par lot l'utilisent.
   final void Function(String suggestionId, String gameName) onGameNameChanged;
+
+  /// Titres pour insertion modifiés par l'admin (key = suggestion ID).
+  /// Source de vérité : [_SentinelleScreenState._gtcEditedTitles]. Sert à
+  /// AMORCER un contrôleur recréé après purge (I-003 / R3) — texte affiché
+  /// == texte appliqué à la validation.
+  final Map<String, String> editedTitles;
 
   /// Callback appelé à chaque frappe dans le champ « Titre pour insertion »
   /// — remonte la saisie au parent ([_SentinelleScreenState._gtcEditedTitles])
@@ -2165,18 +2364,55 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
       s.id,
       // Règle 12/09/2026 : le nom de jeu effectif (champ éditable, pré-rempli
       // par l'IA) est passé pour retirer ses mentions du titre pré-rempli.
+      // I-003 / R3 : un override de titre CONSERVÉ par le parent (restauration
+      // d'un échec partiel) prime sur le pré-rempli calculé — texte affiché
+      // == texte appliqué à la validation.
       () {
         final gameText = _controllerFor(s).text.trim();
         return TextEditingController(
-          text: store.titleForInsertion(
-            s,
-            gameName: gameText.isNotEmpty
-                ? gameText
-                : s.aiRecommendation?.suggestedGame,
-          ),
+          text: widget.editedTitles[s.id] ??
+              store.titleForInsertion(
+                s,
+                gameName: gameText.isNotEmpty
+                    ? gameText
+                    : s.aiRecommendation?.suggestedGame,
+              ),
         );
       },
     );
+  }
+
+  /// Supprime de la map les contrôleurs dont l'id n'est plus dans la liste
+  /// courante du board (suggestions créées/rejetées) et les dispose.
+  /// Appelé en tête de chaque build (F4, chantier Sentinelle) : sans cela,
+  /// ils s'accumulaient jusqu'au dispose de l'écran. Même règle que
+  /// [_TrustedTableState] : les contrôleurs des AUTRES pages de pagination
+  /// sont conservés (saisie préservée entre les pages).
+  void _purgeControllers() {
+    if (_gameNameControllers.isEmpty && _titleControllers.isEmpty) return;
+    final Set<String> liveIds = widget.suggestions.map((s) => s.id).toSet();
+    final List<TextEditingController> orphans = <TextEditingController>[];
+    for (final map in <Map<String, TextEditingController>>[
+      _gameNameControllers,
+      _titleControllers,
+    ]) {
+      for (final id in map.keys
+          .where((id) => !liveIds.contains(id))
+          .toList()) {
+        final TextEditingController? c = map.remove(id);
+        if (c != null) orphans.add(c);
+      }
+    }
+    if (orphans.isEmpty) return;
+    // Dispose DIFFÉRÉ en post-frame : les TextField des lignes disparues ne
+    // sont démontés qu'à la fin de CE build — disposer leurs contrôleurs
+    // immédiatement ferait échouer leur removeListener (assert debug
+    // « used after being disposed »).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      for (final c in orphans) {
+        c.dispose();
+      }
+    });
   }
 
   @override
@@ -2260,6 +2496,8 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
   @override
   Widget build(BuildContext context) {
     final store = context.read<StoreController>();
+    // F4 : purge des contrôleurs orphelins (ids disparus du board).
+    _purgeControllers();
     final pageItems = _page;
 
     return Column(

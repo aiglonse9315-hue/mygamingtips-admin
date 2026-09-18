@@ -1432,11 +1432,38 @@ class StoreController extends ChangeNotifier {
   Future<int> unlockStuckSuggestions() async {
     if (sync == null) return 0;
     try {
-      final unlocked = await sync!.unlockStuckSuggestions();
+      final result = await sync!.unlockStuckSuggestions();
+      final int unlocked = result.unlocked;
       if (unlocked > 0) {
-        // Resync ciblée : les suggestions débloquées quittent « analyzing »
-        // et redeviennent « new » (changement de mode → couvert par la
-        // fusion multi-modes de la sync incrémentale).
+        // Correctif F3 (chantier Sentinelle) : retrait OPTIMISTE immédiat
+        // des ids débloqués du board « Analyses en cours » — l'admin voit
+        // les lignes disparaître sans attendre la resync (AC5).
+        if (result.ids.isNotEmpty) {
+          // Cas nominal : l'EF (v71+) renvoie les ids exacts débloqués.
+          final Set<String> unlockedIds = result.ids.toSet();
+          _sentinelleAnalyzing = _sentinelleAnalyzing
+              .where((s) => !unlockedIds.contains(s.id))
+              .toList();
+        } else {
+          // Repli (EF ancienne révision sans `ids`) : critère miroir de
+          // l'EF — sentinelle_started_at posé depuis > 10 min (les entrées
+          // d'analyzing n'ont par définition pas encore de verdict).
+          final DateTime cutoff = DateTime.now().subtract(
+            const Duration(minutes: 10),
+          );
+          _sentinelleAnalyzing = _sentinelleAnalyzing.where((s) {
+            final DateTime? started = s.sentinelleStartedAt;
+            return started == null || started.isAfter(cutoff);
+          }).toList();
+        }
+        notifyListeners();
+        // ⚠️ PAS de tombstone (_pendingRemovalIds) ici : les lignes ne sont
+        // pas supprimées, elles CHANGENT de mode (analyzing → new) — un
+        // tombstone les exclurait du delta « new » entrant et les
+        // masquerait du menu Suggestions.
+        // Resync ciblée en filet de sécurité : la fusion multi-modes de la
+        // sync incrémentale confirme le retrait optimiste et fait
+        // réapparaître les lignes dans « new ».
         await syncFromSupabase(
           datasets: const {
             SyncDataset.sentinelleAnalyzing,
@@ -2686,7 +2713,79 @@ class StoreController extends ChangeNotifier {
     final Future<void> current = () async {
       if (previous != null) {
         try {
-          await previous;
+          // Correctif F1 (chantier Sentinelle) : l'attente de la passe
+          // précédente est BORNÉE à 60 s. Une Future Dart n'est pas
+          // annulable : si la passe précédente pend (réseau/base), cette
+          // attente — hors de tout watchdog — bloquait la nouvelle passe
+          // indéfiniment, AVANT même que son propre filet de sécurité
+          // (budget + watchdog) soit armé.
+          await previous.timeout(const Duration(seconds: 60));
+        } on TimeoutException {
+          // Attente expirée : on ABANDONNE proprement la nouvelle passe —
+          // rien n'a été démarré (isSyncing / _loadingDatasets intacts).
+          // Correctif I-001 (revue chantier Sentinelle) : la passe
+          // précédente TOURNE ENCORE — on RÉ-ENCHAÎNE _ongoingSync dessus
+          // AVANT de rendre la main. Sans cela, le finally ci-dessous (test
+          // identical()) libérerait la chaîne et un retry utilisateur
+          // démarrerait une VRAIE passe en parallèle de l'orpheline — dont
+          // le finally écraserait alors isSyncing / _loadingDatasets de la
+          // nouvelle.
+          //
+          // Correctif B-001 (revue chantier Sentinelle) : le ré-enchaînement
+          // seul ne protège que les appels FUTURS. Un waiter DÉJÀ chaîné
+          // sur le `current` de CETTE invocation (previous = current) voit
+          // son `await current.timeout(60 s)` compléter NORMALEMENT dès le
+          // return ci-dessous (le catch avale l'exception) : il démarrerait
+          // sa _syncPass PENDANT que l'orpheline tourne encore (budget
+          // jusqu'à 120 s en full sync) et les deux finally se
+          // clobbereraient isSyncing / _loadingDatasets. On RÉ-ATTEND donc
+          // l'orpheline jusqu'à sa fin RÉELLE avant de rendre la main.
+          // Cette ré-attente ne peut pas pendre indéfiniment : l'orpheline
+          // est TOUJOURS bornée par son propre .timeout(budget 45/120 s)
+          // dans [_syncPass] (+ watchdog à budget + 60 s) — y compris si
+          // elle a été filtrée à vide par skipAlreadyLoaded (return
+          // immédiat, Future complétée aussitôt) — et le message syncError
+          // posé ci-dessous assure déjà l'information utilisateur pendant
+          // l'attente. Ainsi le `current` abandonné ne complète QU'AVEC
+          // l'orpheline : tout waiter déjà chaîné dessus ne démarre sa
+          // passe qu'après la fin RÉELLE de l'orpheline — plus aucune
+          // passe parallèle possible, les finally ne se chevauchent plus.
+          // Quatre chemins vérifiés :
+          // 1) timeout simple : la chaîne reste scellée derrière la passe
+          //    orpheline, qui reste bornée par son propre budget (45/120 s)
+          //    — tout appel suivant attend de nouveau sa fin (60 s max) ;
+          // 2) double timeout : la ré-assignation renvoie la même Future —
+          //    idempotent, la chaîne converge dès que l'orpheline finit ;
+          // 3) orpheline DÉJÀ finie au moment du ré-enchaînement : sans
+          //    danger. Son propre finally ne peut pas avoir libéré la
+          //    chaîne AVANT (à cet instant _ongoingSync vaut `current`,
+          //    pas `previous`), et quand il court APRÈS, il voit
+          //    _ongoingSync == previous et libère — état correct puisque
+          //    plus rien ne tourne. Dans l'intervalle, _ongoingSync pointe
+          //    vers une Future terminée que l'appel suivant résout
+          //    immédiatement (await sur Future complétée = micro-tâche) ;
+          // 4) waiter DÉJÀ chaîné sur le `current` abandonné (B-001) —
+          //    interleaving à 3 appels : O orpheline en full sync (budget
+          //    120 s) → A timeout à 60 s → B chaîné sur current_A AVANT le
+          //    timeout de A (previous_B = current_A). Sans la ré-attente,
+          //    current_A complétait au return de A et B démarrait sa passe
+          //    en parallèle de O. Avec : current_A ne complète qu'à la fin
+          //    RÉELLE de O — B démarre alors APRÈS O si O finit dans sa
+          //    fenêtre de 60 s, sinon timeout à son tour et
+          //    ré-enchaînement sur current_A (converge comme 2). Jamais de
+          //    passe parallèle, jamais de finally qui se chevauchent.
+          _ongoingSync = previous;
+          syncError = 'Synchronisation déjà en cours : la passe précédente '
+              'n\'a pas répondu en 60 s — elle se termine en arrière-plan, '
+              'réessayez dans un instant.';
+          notifyListeners();
+          // B-001 : ne rendre la main QU'AVEC l'orpheline (bornée — voir
+          // le pavé ci-dessus), pour sceller aussi les waiters DÉJÀ
+          // chaînés sur le `current` abandonné.
+          try {
+            await previous;
+          } catch (_) {}
+          return;
         } catch (_) {}
       }
       await _syncPass(
@@ -2712,59 +2811,71 @@ class StoreController extends ChangeNotifier {
     required bool forceFull,
     required bool skipAlreadyLoaded,
   }) async {
-    if (skipAlreadyLoaded) {
-      // « Skip si chargé ET frais » : un dataset périmé (> 2 min) reste dans
-      // la passe (auto-refresh à l'arrivée sur un menu).
-      wanted = wanted.where((SyncDataset d) => !_isFresh(d)).toSet();
-      if (wanted.isEmpty) return;
-    }
-    isSyncing = true;
-    _loadingDatasets.addAll(wanted);
-    // ⚠️ On NE remet pas syncError à null ici : cela effacerait une erreur
-    // d'action récente. On l'efface seulement si la sync réussit.
-    notifyListeners();
-    // Budget global : 45 s si TOUS les datasets à curseur demandés ont un
-    // curseur valide (sync purement incrémentale), 120 s sinon (au moins
-    // une full sync paginée — ex. 10k+ contenus).
-    final bool incrementalOnly =
-        !forceFull &&
-        wanted.every(
-          (SyncDataset d) =>
-              !_cursorNames.containsKey(d) || _validCursorFor(d) != null,
-        );
-    final Duration budget = incrementalOnly
-        ? const Duration(seconds: 45)
-        : const Duration(seconds: 120);
-    // ── Watchdog anti-spinner-infini ──
-    // Une Future Dart n'est pas annulable : si un fetch de dataset pend côté
-    // réseau/base, le timeout global ne fait échouer que l'await EXTÉRIEUR et
-    // le finally ci-dessous devrait quand même libérer isSyncing. Si, malgré
-    // tout, la passe n'est pas terminée budget + 60 s après son démarrage, ce
-    // Timer force la libération de l'UI (spinner, indicateurs par écran),
-    // nomme les datasets encore en vol et bascule en mode hors-ligne.
+    // Correctif F1 (chantier Sentinelle) : TOUT le corps — prologue compris —
+    // est dans le try/finally. Avant, `isSyncing = true` était posé AVANT le
+    // try : une exception du prologue (filtre _isFresh, localStorage corrompu
+    // dans loadCursor, parsing de curseur) laissait isSyncing à true
+    // DÉFINITIVEMENT et sans watchdog armé → spinner bloqué. Désormais le
+    // finally libère l'UI QUELLE QUE SOIT l'issue.
     bool passFinished = false;
-    final Duration watchdogDelay = budget + const Duration(seconds: 60);
-    final Timer watchdog = Timer(watchdogDelay, () {
-      if (passFinished) return;
-      final List<String> pending = _inFlightDatasets.isNotEmpty
-          ? _inFlightDatasets.map((SyncDataset d) => d.name).toList()
-          : wanted.map((SyncDataset d) => d.name).toList();
-      isSyncing = false;
-      _loadingDatasets.clear();
-      syncError =
-          'Synchronisation bloquée (watchdog ${watchdogDelay.inSeconds} s) — '
-          'datasets sans réponse : ${pending.join(', ')}. '
-          'Données affichées = cache local ; réessayez avec Actualiser.';
-      // Des requêtes encore en vol = blocage de type réseau → badge hors-ligne.
-      if (_inFlightDatasets.isNotEmpty) _setOffline(true);
-      notifyListeners();
-      debugPrint(
-        '[sync] WATCHDOG déclenché après ${watchdogDelay.inSeconds} s — '
-        'passe non terminée. Datasets en vol : ${pending.join(', ')} '
-        '(wanted: ${wanted.map((SyncDataset d) => d.name).join(', ')}).',
-      );
-    });
+    // Armé après le calcul du budget ; reste null si le prologue lève avant
+    // (le finally doit alors simplement sauter le cancel).
+    Timer? watchdog;
     try {
+      if (skipAlreadyLoaded) {
+        // « Skip si chargé ET frais » : un dataset périmé (> 2 min) reste dans
+        // la passe (auto-refresh à l'arrivée sur un menu).
+        wanted = wanted.where((SyncDataset d) => !_isFresh(d)).toSet();
+        if (wanted.isEmpty) return;
+      }
+      isSyncing = true;
+      _loadingDatasets.addAll(wanted);
+      // ⚠️ On NE remet pas syncError à null ici : cela effacerait une erreur
+      // d'action récente. On l'efface seulement si la sync réussit.
+      notifyListeners();
+      // Budget global : 45 s si TOUS les datasets à curseur demandés ont un
+      // curseur valide (sync purement incrémentale), 120 s sinon (au moins
+      // une full sync paginée — ex. 10k+ contenus).
+      final bool incrementalOnly =
+          !forceFull &&
+          wanted.every(
+            (SyncDataset d) =>
+                !_cursorNames.containsKey(d) || _validCursorFor(d) != null,
+          );
+      final Duration budget = incrementalOnly
+          ? const Duration(seconds: 45)
+          : const Duration(seconds: 120);
+      // ── Watchdog anti-spinner-infini ──
+      // Une Future Dart n'est pas annulable : si un fetch de dataset pend
+      // côté réseau/base, le timeout global ne fait échouer que l'await
+      // EXTÉRIEUR et le finally ci-dessous devrait quand même libérer
+      // isSyncing. Si, malgré tout, la passe n'est pas terminée budget +
+      // 60 s après son démarrage, ce Timer force la libération de l'UI
+      // (spinner, indicateurs par écran), nomme les datasets encore en vol
+      // et bascule en mode hors-ligne. Filet de sécurité conservé : il est
+      // désormais redondant avec le finally global, mais reste utile si le
+      // event loop lui-même est obstrué.
+      final Duration watchdogDelay = budget + const Duration(seconds: 60);
+      watchdog = Timer(watchdogDelay, () {
+        if (passFinished) return;
+        final List<String> pending = _inFlightDatasets.isNotEmpty
+            ? _inFlightDatasets.map((SyncDataset d) => d.name).toList()
+            : wanted.map((SyncDataset d) => d.name).toList();
+        isSyncing = false;
+        _loadingDatasets.clear();
+        syncError =
+            'Synchronisation bloquée (watchdog ${watchdogDelay.inSeconds} s) — '
+            'datasets sans réponse : ${pending.join(', ')}. '
+            'Données affichées = cache local ; réessayez avec Actualiser.';
+        // Des requêtes encore en vol = blocage de type réseau → badge hors-ligne.
+        if (_inFlightDatasets.isNotEmpty) _setOffline(true);
+        notifyListeners();
+        debugPrint(
+          '[sync] WATCHDOG déclenché après ${watchdogDelay.inSeconds} s — '
+          'passe non terminée. Datasets en vol : ${pending.join(', ')} '
+          '(wanted: ${wanted.map((SyncDataset d) => d.name).join(', ')}).',
+        );
+      });
       await _doSyncFromSupabase(wanted, forceFull: forceFull).timeout(
         budget,
         onTimeout: () {
@@ -2780,16 +2891,151 @@ class StoreController extends ChangeNotifier {
         // traitement que pour les écritures : logout forcé.
         onAuthError?.call();
       } else {
-        // Timeout du budget global ou coupure réseau → badge hors-ligne.
+        // Timeout du budget global, coupure réseau OU exception du prologue
+        // (curseur/localStorage) → erreur visible ; badge hors-ligne si
+        // c'est une erreur de type réseau.
         if (_isNetworkError(e)) _setOffline(true);
         syncError = e.toString();
       }
     } finally {
       passFinished = true;
-      watchdog.cancel(); // fin normale de la passe → watchdog désarmé
+      watchdog?.cancel(); // fin normale de la passe → watchdog désarmé
       isSyncing = false;
       _loadingDatasets.clear();
       notifyListeners();
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Polling léger « Analyses en cours » (F2 — chantier Sentinelle)
+  // ─────────────────────────────────────────────────────────────────────
+
+  /// Timer du polling léger du board « Analyses en cours », actif uniquement
+  /// pendant que le menu Sentinelle est ouvert. Null quand arrêté.
+  Timer? _analyzingPollingTimer;
+
+  // ── Compteurs d'échecs CONSÉCUTIFS du tick (I-004 / R4+R5, revue
+  // chantier Sentinelle) ──
+
+  /// Échecs RÉSEAU consécutifs. Un échec non-réseau (l'EF a RÉPONDU : 500,
+  /// parsing…) prouve que le réseau fonctionne → il remet ce compteur à
+  /// zéro ; tout succès aussi.
+  int _analyzingPollNetFailures = 0;
+
+  /// Échecs NON-réseau consécutifs (EF 500, parsing…). Symétrique : un
+  /// échec réseau interrompt la série ; tout succès la remet à zéro.
+  int _analyzingPollOtherFailures = 0;
+
+  /// « Déjà signalé » : true une fois les 3 échecs non-réseau consécutifs
+  /// surfacés dans [syncError] — empêche de réécrire la bannière à chaque
+  /// tick ; réarmé au premier succès.
+  bool _analyzingPollErrorSignaled = false;
+
+  /// Démarre le polling léger du board « Analyses en cours » (toutes les
+  /// 30 s) — appelé à l'ouverture du menu Sentinelle (initState).
+  ///
+  /// Idempotent : un second appel ne crée PAS de doublon. Chaque tick
+  /// resynchronise UNIQUEMENT le dataset [SyncDataset.sentinelleAnalyzing],
+  /// en incrémental (curseur) et SANS passe globale : pas d'`isSyncing`,
+  /// pas de spinner global, aucun impact sur les autres boards.
+  void startAnalyzingPolling() {
+    if (_analyzingPollingTimer != null) return; // déjà actif
+    _analyzingPollingTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _analyzingPollingTick(),
+    );
+  }
+
+  /// Arrête le polling « Analyses en cours » (sortie du menu Sentinelle).
+  /// Idempotent : sans timer actif, ne fait rien.
+  void stopAnalyzingPolling() {
+    _analyzingPollingTimer?.cancel();
+    _analyzingPollingTimer = null;
+  }
+
+  @override
+  void dispose() {
+    // Filet de sécurité : le store vit racine de l'app (jamais disposé en
+    // pratique), mais si cela arrivait, le timer ne doit pas survivre.
+    stopAnalyzingPolling();
+    super.dispose();
+  }
+
+  /// Un tick de polling : resync incrémentale du SEUL dataset analyzing.
+  ///
+  /// Tick IGNORÉ si une passe globale est en cours ([isSyncing]) ou si le
+  /// dataset analyzing est déjà en vol ([_inFlightDatasets]). Le tick tourne
+  /// AUSSI en mode hors-ligne : c'est le SEUL agent d'auto-récupération du
+  /// badge (I-004 / R4). Cette méthode ne lève JAMAIS d'exception : un échec
+  /// est tracé en console ; il ne bascule hors-ligne qu'après 3 échecs
+  /// RÉSEAU consécutifs et n'écrit [syncError] qu'après 3 échecs NON-réseau
+  /// consécutifs, une seule fois (voir le catch ci-dessous) ; le prochain
+  /// tick réessaiera.
+  Future<void> _analyzingPollingTick() async {
+    // I-004 / R4 : plus de garde isOffline — un passage hors-ligne gelait
+    // badge ET polling jusqu'à une action manuelle, sans aucune possibilité
+    // d'auto-récupération. Désormais le tick continue de sonder hors-ligne
+    // et _setOffline(true) n'est armé qu'au franchissement du seuil (déjà
+    // idempotent en interne : pas de _setOffline répété).
+    if (sync == null || isSyncing) return;
+    if (_inFlightDatasets.contains(SyncDataset.sentinelleAnalyzing)) return;
+    _inFlightDatasets.add(SyncDataset.sentinelleAnalyzing);
+    try {
+      // On ne notifie QUE si le contenu a réellement changé : la fusion
+      // incrémentale ne réassigne pas la liste quand le delta est vide
+      // (voir _mergeSuggestionsIncremental) ; en full sync (curseur absent
+      // ou > 24 h), la liste est réassignée → la référence change aussi.
+      final List<Suggestion> before = _sentinelleAnalyzing;
+      await _syncSuggestionMode(
+        SyncDataset.sentinelleAnalyzing,
+        sync!.fetchSentinelleAnalyzing,
+        forceFull: false,
+        // Ensemble jetable : la purge des tombstones reste réservée aux
+        // passes complètes des 5 modes (voir _doSyncFromSupabase).
+        fullModeSyncs: <SyncDataset>{},
+      );
+      // Succès : remise à zéro des compteurs d'échecs consécutifs et
+      // réarmement du flag « déjà signalé ».
+      _analyzingPollNetFailures = 0;
+      _analyzingPollOtherFailures = 0;
+      _analyzingPollErrorSignaled = false;
+      _setOffline(false); // au moins une requête a abouti → en ligne
+      if (!identical(before, _sentinelleAnalyzing)) notifyListeners();
+    } on AdminAuthException {
+      // 401 pendant une lecture service_role → logout forcé (comme partout).
+      onAuthError?.call();
+    } catch (e) {
+      if (_isNetworkError(e)) {
+        // R4 : un échec réseau ISOLÉ (transitoire) ne bascule plus en
+        // hors-ligne — cela gelait badge + polling jusqu'à action manuelle.
+        // Seuil : 3 échecs réseau CONSÉCUTIFS. Un échec non-réseau prouve
+        // que le réseau répond → il interrompt la série (remise à zéro).
+        _analyzingPollNetFailures++;
+        _analyzingPollOtherFailures = 0;
+        if (_analyzingPollNetFailures >= 3) _setOffline(true);
+      } else {
+        // R5 / AC6 : après 3 échecs NON-réseau consécutifs (EF 500,
+        // parsing…), l'erreur est surfacée via syncError — visible et
+        // exploitable — mais UNE seule fois (flag « déjà signalé », réarmé
+        // au premier succès) : un rafraîchissement de fond ne doit ni
+        // écraser une erreur d'action à chaque tick, ni spammer la
+        // bannière. Un échec réseau interrompt la série (remise à zéro).
+        _analyzingPollOtherFailures++;
+        _analyzingPollNetFailures = 0;
+        if (_analyzingPollOtherFailures >= 3 &&
+            !_analyzingPollErrorSignaled) {
+          _analyzingPollErrorSignaled = true;
+          syncError = 'Le rafraîchissement automatique des « Analyses en '
+              'cours » échoue ($_analyzingPollOtherFailures échecs '
+              'consécutifs) : $e';
+          notifyListeners();
+        }
+      }
+      debugPrint(
+        '[sync] polling analyzing échoué (retry au prochain tick) : $e',
+      );
+    } finally {
+      _inFlightDatasets.remove(SyncDataset.sentinelleAnalyzing);
     }
   }
 

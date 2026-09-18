@@ -790,12 +790,21 @@ class SupabaseSync {
   }
 
   /// Débloque les suggestions stuck en "Analyse en cours" depuis > 10 min.
-  /// Retourne le nombre de suggestions débloquées.
-  Future<int> unlockStuckSuggestions({int timeoutMinutes = 10}) async {
+  /// Retourne le nombre de suggestions débloquées ET leurs ids (l'EF v71+
+  /// renvoie `ids` — utilisé par le retrait optimiste du board « Analyses
+  /// en cours », correctif F3 ; liste vide si l'EF est plus ancienne).
+  Future<({int unlocked, List<String> ids})> unlockStuckSuggestions({
+    int timeoutMinutes = 10,
+  }) async {
     final data = await _post('suggestions/unlock-stuck', {
       'timeout_minutes': timeoutMinutes,
     });
-    return (data['unlocked'] as int?) ?? 0;
+    return (
+      unlocked: (data['unlocked'] as int?) ?? 0,
+      ids:
+          (data['ids'] as List<dynamic>?)?.whereType<String>().toList() ??
+          const <String>[],
+    );
   }
 
   /// Compte les suggestions en "Analyse en cours" (optionnel : stuck seulement).
