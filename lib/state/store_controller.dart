@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import '../data/store.dart';
 import '../data/supabase_sync.dart';
+import '../domain/analytics_calc.dart';
 import '../domain/models/banned_user.dart';
 import '../domain/models/category.dart';
 import '../domain/models/content.dart';
@@ -345,6 +346,14 @@ class StoreController extends ChangeNotifier {
   /// Efface la dernière erreur d'action.
   void clearActionError() {
     lastActionError = null;
+    notifyListeners();
+  }
+
+  /// Signale une erreur de validation côté écran (snackbar rouge via le
+  /// shell) — point d'entrée public pour les écrans (validation locale
+  /// avant appel EF, ex. montant invalide dans un dialog Analytics).
+  void reportActionError(String message) {
+    lastActionError = message;
     notifyListeners();
   }
 
@@ -3585,6 +3594,238 @@ class StoreController extends ChangeNotifier {
       );
     } finally {
       _syncStatusPollInFlight = false;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Menu « Analytics » (chantier F1 — migration 0066, EF v76, §70.3/§70.6)
+  // ─────────────────────────────────────────────────────────────────────
+  // État MINIMAL, sans polling ni dataset synchronisé : l'écran déclenche
+  // les fetches à l'ouverture et au changement de période (pattern
+  // Contributeurs/Limite). AUCUN full sync contents/games ici : les
+  // agrégats (comptes, abonnements) sont calculés par l'EF.
+
+  /// Dernière vue agrégée `analytics/overview` (null = jamais chargée).
+  AnalyticsOverview? analyticsOverview;
+
+  /// Dernière série `analytics/series` (buckets jour ou mois).
+  List<SeriesBucket> analyticsSeries = const [];
+
+  /// Prix catalogue (pricing_config) — alimenté par overview ET pricing/list.
+  List<PricingConfig> pricingConfigs = const [];
+
+  /// Juridictions fiscales (tax_config).
+  List<TaxConfig> taxConfigs = const [];
+
+  /// Frais de société (company_expenses).
+  List<ExpenseEntry> companyExpenses = const [];
+
+  /// true pendant un fetch analytics (spinner de l'écran).
+  bool analyticsLoading = false;
+
+  /// Dernière erreur de lecture analytics (affichée par l'écran, pas de
+  /// snackbar : la lecture est l'état principal de l'écran).
+  String? analyticsError;
+
+  /// Charge la vue agrégée + le prix catalogue pour la période [from, to].
+  Future<void> fetchAnalyticsOverview({
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    if (sync == null) return;
+    analyticsLoading = true;
+    analyticsError = null;
+    notifyListeners();
+    try {
+      final data = await sync!.fetchAnalyticsOverview(from: from, to: to);
+      analyticsOverview = AnalyticsOverview.fromJson(data);
+      final pricingRaw = data['pricing'] as List? ?? [];
+      pricingConfigs = pricingRaw
+          .map((e) => PricingConfig.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      analyticsError = 'Chargement des indicateurs impossible : $e';
+    } finally {
+      analyticsLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Charge les séries temporelles (graphiques + exports).
+  Future<void> fetchAnalyticsSeries({
+    required DateTime from,
+    required DateTime to,
+    required String granularity,
+  }) async {
+    if (sync == null) return;
+    analyticsLoading = true;
+    analyticsError = null;
+    notifyListeners();
+    try {
+      final data = await sync!.fetchAnalyticsSeries(
+        from: from,
+        to: to,
+        granularity: granularity,
+      );
+      final raw = data['buckets'] as List? ?? [];
+      analyticsSeries = raw
+          .map((e) => SeriesBucket.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      analyticsError = 'Chargement des séries impossible : $e';
+    } finally {
+      analyticsLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Charge les 3 tables de config (prix, fiscalité, frais) en parallèle.
+  ///
+  /// Les frais de société sont RÉSERVÉS au compte principal (l'EF renvoie
+  /// 403 sur `expenses/*` sinon) : un compte secondaire n'appelle pas la
+  /// route — la section correspondante est masquée dans l'UI et aucune
+  /// erreur ne doit remonter (ni rouge, ni orange).
+  Future<void> fetchAnalyticsConfigs() async {
+    if (sync == null) return;
+    try {
+      final results = await Future.wait([
+        sync!.fetchPricing(),
+        sync!.fetchTaxes(),
+        if (isOwner)
+          sync!.fetchExpenses()
+        else
+          Future.value(const <Map<String, dynamic>>[]),
+      ]);
+      pricingConfigs = results[0]
+          .map((e) => PricingConfig.fromJson(e))
+          .toList();
+      taxConfigs = results[1].map((e) => TaxConfig.fromJson(e)).toList();
+      companyExpenses = results[2]
+          .map((e) => ExpenseEntry.fromJson(e))
+          .toList();
+      notifyListeners();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } on AdminForbiddenException {
+      // Filet de sécurité (ex. claims is_owner périmés) : jamais d'erreur
+      // affichée pour une section que le compte ne doit de toute façon
+      // pas voir — on se contente d'une liste de frais vide.
+      companyExpenses = const [];
+      notifyListeners();
+    } catch (e) {
+      analyticsError = 'Chargement de la configuration impossible : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Met à jour le prix catalogue d'un plan (EF pricing/set) puis resync
+  /// la liste locale. Erreur → [lastActionError] (snackbar rouge).
+  Future<void> setPricing({
+    required String plan,
+    required double priceTtc,
+    String? currency,
+    double? playFeePct,
+    bool? active,
+  }) async {
+    if (sync == null) return;
+    try {
+      await sync!.setPricing(
+        plan: plan,
+        priceTtc: priceTtc,
+        currency: currency,
+        playFeePct: playFeePct,
+        active: active,
+      );
+      pricingConfigs = (await sync!.fetchPricing())
+          .map((e) => PricingConfig.fromJson(e))
+          .toList();
+      notifyListeners();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      lastActionError = 'Prix non enregistré (erreur serveur) : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Met à jour une juridiction fiscale (EF taxes/set) puis resync locale.
+  Future<void> setTax({
+    required String jurisdiction,
+    required double vatRate,
+    bool? franchiseBase,
+    String? label,
+    bool? active,
+  }) async {
+    if (sync == null) return;
+    try {
+      await sync!.setTax(
+        jurisdiction: jurisdiction,
+        vatRate: vatRate,
+        franchiseBase: franchiseBase,
+        label: label,
+        active: active,
+      );
+      taxConfigs = (await sync!.fetchTaxes())
+          .map((e) => TaxConfig.fromJson(e))
+          .toList();
+      notifyListeners();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      lastActionError = 'Fiscalité non enregistrée (erreur serveur) : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Crée ou met à jour un frais de société (EF expenses/upsert) puis
+  /// resync la liste locale.
+  Future<void> upsertExpense(ExpenseEntry expense) async {
+    if (sync == null) return;
+    String two(int v) => v.toString().padLeft(2, '0');
+    String dateOnly(DateTime d) => '${d.year}-${two(d.month)}-${two(d.day)}';
+    try {
+      await sync!.upsertExpense({
+        if (expense.id != null) 'id': expense.id,
+        'label': expense.label,
+        'category': expense.category,
+        'amount': expense.amount,
+        'currency': expense.currency,
+        'recurrence': expense.recurrence,
+        'started_on': dateOnly(expense.startedOn),
+        'ended_on': expense.endedOn == null ? null : dateOnly(expense.endedOn!),
+        'active': expense.active,
+        'notes': expense.notes,
+      });
+      companyExpenses = (await sync!.fetchExpenses())
+          .map((e) => ExpenseEntry.fromJson(e))
+          .toList();
+      notifyListeners();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      lastActionError = 'Frais non enregistré (erreur serveur) : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Supprime un frais de société (EF expenses/delete) puis resync locale.
+  Future<void> deleteExpense(int id) async {
+    if (sync == null) return;
+    try {
+      await sync!.deleteExpense(id);
+      companyExpenses = (await sync!.fetchExpenses())
+          .map((e) => ExpenseEntry.fromJson(e))
+          .toList();
+      notifyListeners();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      lastActionError = 'Frais non supprimé (erreur serveur) : $e';
+      notifyListeners();
     }
   }
 

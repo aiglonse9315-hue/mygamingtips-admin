@@ -11,6 +11,7 @@ import '../widgets/admin_topbar.dart';
 import '../widgets/confirm_dialog.dart';
 import 'abonnements_screen.dart';
 import 'admin_users_screen.dart';
+import 'analytics_screen.dart';
 import 'banned_screen.dart';
 import 'contents_screen.dart';
 import 'contributors_screen.dart';
@@ -48,6 +49,7 @@ class _AdminShellState extends State<AdminShell> {
     NavItem('Sentinelle', Icons.smart_toy_rounded, '/sentinelle'),
     NavItem('Scruteur', Icons.travel_explore_rounded, '/scruteur'),
     NavItem('Abonnements', Icons.card_membership_rounded, '/abonnements'),
+    NavItem('Analytics', Icons.bar_chart_rounded, '/analytics'),
     NavItem('Contributeurs', Icons.groups_rounded, '/contributors'),
     NavItem('Comptes à bannir', Icons.block_rounded, '/banned'),
     NavItem('Limite', Icons.data_usage_rounded, '/limites'),
@@ -226,6 +228,11 @@ class _AdminShellState extends State<AdminShell> {
           datasets: {SyncDataset.subscriptions},
           child: AbonnementsScreen(),
         );
+      case '/analytics':
+        // Fetch direct (pattern Contributeurs/Limite) : pas de _DatasetGate,
+        // AUCUN dataset synchronisé → ce menu ne déclenche PAS de full sync
+        // du catalogue (agrégats calculés par l'EF v76, fraîcheur au clic).
+        return const AnalyticsScreen();
       case '/contributors':
         return const ContributorsScreen();
       case '/banned':

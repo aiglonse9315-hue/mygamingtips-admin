@@ -921,6 +921,91 @@ class SupabaseSync {
     return allSubs;
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // ANALYTICS + CONFIG (EF v76, migration 0066 — chantier F1, §70.3/§70.6)
+  // Retourne le JSON BRUT des routes (parsing en modèles côté
+  // StoreController via domain/analytics_calc.dart).
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Vue agrégée du menu Analytics {from, to} (bornes fuseau LOCAL du
+  /// panneau, sérialisées en ISO 8601 complet — le fuseau est documenté
+  /// dans l'UI de l'écran).
+  Future<Map<String, dynamic>> fetchAnalyticsOverview({
+    required DateTime from,
+    required DateTime to,
+  }) =>
+      _post('analytics/overview', {
+        'from': from.toIso8601String(),
+        'to': to.toIso8601String(),
+      });
+
+  /// Séries temporelles des souscriptions {from, to, granularity}.
+  Future<Map<String, dynamic>> fetchAnalyticsSeries({
+    required DateTime from,
+    required DateTime to,
+    required String granularity, // 'day' | 'month'
+  }) =>
+      _post('analytics/series', {
+        'from': from.toIso8601String(),
+        'to': to.toIso8601String(),
+        'granularity': granularity,
+      });
+
+  Future<List<Map<String, dynamic>>> fetchPricing() async {
+    final data = await _post('pricing/list', <String, dynamic>{});
+    final list = data['pricing'] as List? ?? [];
+    return list.cast<Map<String, dynamic>>();
+  }
+
+  Future<void> setPricing({
+    required String plan,
+    required double priceTtc,
+    String? currency,
+    double? playFeePct,
+    bool? active,
+  }) =>
+      _post('pricing/set', {
+        'plan': plan,
+        'price_ttc': priceTtc,
+        'currency': ?currency,
+        'play_fee_pct': ?playFeePct,
+        'active': ?active,
+      });
+
+  Future<List<Map<String, dynamic>>> fetchTaxes() async {
+    final data = await _post('taxes/list', <String, dynamic>{});
+    final list = data['taxes'] as List? ?? [];
+    return list.cast<Map<String, dynamic>>();
+  }
+
+  Future<void> setTax({
+    required String jurisdiction,
+    required double vatRate,
+    bool? franchiseBase,
+    String? label,
+    bool? active,
+  }) =>
+      _post('taxes/set', {
+        'jurisdiction': jurisdiction,
+        'vat_rate': vatRate,
+        'franchise_base': ?franchiseBase,
+        'label': ?label,
+        'active': ?active,
+      });
+
+  Future<List<Map<String, dynamic>>> fetchExpenses() async {
+    final data = await _post('expenses/list', <String, dynamic>{});
+    final list = data['expenses'] as List? ?? [];
+    return list.cast<Map<String, dynamic>>();
+  }
+
+  /// Crée (id null) ou met à jour (id fourni) un frais de société.
+  Future<void> upsertExpense(Map<String, dynamic> body) =>
+      _post('expenses/upsert', body);
+
+  Future<void> deleteExpense(int id) =>
+      _post('expenses/delete', {'id': id});
+
   /// Récupère la liste des utilisateurs bannis depuis Supabase (via Edge
   /// Function `profiles/banned-list`).
   ///
