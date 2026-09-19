@@ -35,6 +35,63 @@ class _GamesScreenState extends State<GamesScreen> {
     super.dispose();
   }
 
+  /// true si l'URL de pochette pointe vers le Storage Supabase du projet
+  /// (bucket game-covers, chantier G) — sinon c'est un hotlink externe
+  /// (sujet au blocage CORS/hotlink, d'où le tooltip dédié de l'aperçu).
+  static bool _isHostedCoverUrl(String? url) {
+    if (url == null || url.isEmpty) return false;
+    final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+    return host == 'supabase.co' || host.endsWith('.supabase.co');
+  }
+
+  /// Cellule « Contenus » du tableau : compteur + TOOLTIP de répartition
+  /// par langue au survol (chantier G — « 🇫🇷 FR : 12 » par ligne, drapeau
+  /// + code + count, uniquement les langues > 0, ligne « Sans langue » si
+  /// des contenus validés n'ont pas de video_language, ligne fourre-tout
+  /// « 🌐 Autre (CODE) » pour les codes hors pack 12 — I-001).
+  ///
+  /// Le calcul est 100 % en mémoire ([StoreController.contentCountByLangFor]
+  /// groupe les contenus déjà chargés — AUCUNE requête, egress nul).
+  Widget _contentCountCell(StoreController store, Game g) {
+    final count = Text('${store.contentCountFor(g.id)}',
+        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13));
+    final dist = store.contentCountByLangFor(g.id);
+    final spans = <InlineSpan>[];
+    for (final lang in kSupportedLanguages) {
+      final n = dist.byLang[lang.code];
+      if (n == null || n <= 0) continue;
+      if (spans.isNotEmpty) spans.add(const TextSpan(text: '\n'));
+      spans.add(TextSpan(text: '${lang.flag} ${lang.code} : $n'));
+    }
+    // I-001 : codes hors des 12 langues supportées (ex. « NL » tagué par
+    // un bot) — sans cette ligne fourre-tout, la somme du tooltip serait
+    // inférieure au compteur affiché. Codes triés pour un rendu stable.
+    final supportedCodes = {for (final l in kSupportedLanguages) l.code};
+    final otherCodes = dist.byLang.keys
+        .where((code) => !supportedCodes.contains(code))
+        .toList()
+      ..sort();
+    for (final code in otherCodes) {
+      if (spans.isNotEmpty) spans.add(const TextSpan(text: '\n'));
+      spans.add(TextSpan(text: '🌐 Autre ($code) : ${dist.byLang[code]}'));
+    }
+    if (dist.noLang > 0) {
+      if (spans.isNotEmpty) spans.add(const TextSpan(text: '\n'));
+      spans.add(TextSpan(text: '🏷️ Sans langue : ${dist.noLang}'));
+    }
+    if (spans.isEmpty) return count; // rien à détailler
+    return Tooltip(
+      richMessage: TextSpan(
+        children: spans,
+        // B-001 : PAS de couleur forcée — le TextSpan hérite du textStyle
+        // du Tooltip (noir sur fond clair en dark theme, blanc sur fond
+        // sombre en light theme), lisible dans les deux thèmes.
+        style: const TextStyle(fontSize: 12, height: 1.5),
+      ),
+      child: count,
+    );
+  }
+
   /// Confirmation avant la synchronisation globale des alias connus
   /// (v72, passation §67). Sémantique documentée : AJOUT SEUL.
   Future<void> _confirmSyncKnownAliases(
@@ -296,8 +353,24 @@ class _GamesScreenState extends State<GamesScreen> {
                                     )
                                   : Image.network(g.coverUrl!,
                                       fit: BoxFit.cover,
-                                      errorBuilder: (_, __, ___) => Container(
-                                            color: AppColors.darkSurfaceAlt,
+                                      // Chantier G : l'échec de chargement
+                                      // est désormais VISIBLE (avant :
+                                      // errorBuilder vide = tuile grise
+                                      // muette). Le bucket game-covers
+                                      // résout structurellement le
+                                      // CORS/hotlink des URLs externes.
+                                      errorBuilder: (_, __, ___) => Tooltip(
+                                            message:
+                                                _isHostedCoverUrl(g.coverUrl)
+                                                    ? 'Image indisponible (Supabase Storage)'
+                                                    : 'Image bloquée par l\'hébergeur (CORS/hotlink) — migrée prochainement vers Supabase Storage',
+                                            child: Container(
+                                              color: AppColors.darkSurfaceAlt,
+                                              child: const Icon(
+                                                  Icons.broken_image_rounded,
+                                                  size: 18,
+                                                  color: Colors.orange),
+                                            ),
                                           )),
                             ),
                           ),
@@ -316,9 +389,7 @@ class _GamesScreenState extends State<GamesScreen> {
                                   .textTheme
                                   .bodySmall
                                   ?.color)),
-                      Text('${store.contentCountFor(g.id)}',
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w700, fontSize: 13)),
+                      _contentCountCell(store, g),
                       Row(
                         children: [
                           Container(

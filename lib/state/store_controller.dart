@@ -526,6 +526,33 @@ class StoreController extends ChangeNotifier {
   int contentCountFor(String gameId) =>
       _contents.where((c) => c.gameId == gameId && c.validated).length;
 
+  /// Répartition par langue des contenus validés d'un jeu (tooltip de la
+  /// cellule « Contenus » du tableau des jeux — chantier G).
+  ///
+  /// Calcul 100 % EN MÉMOIRE (groupBy sur `_contents` déjà chargés — AUCUNE
+  /// requête réseau, egress nul). Les codes `videoLanguage` sont normalisés
+  /// en majuscules. Un code HORS des 12 langues `kSupportedLanguages` (ex.
+  /// « NL » tagué par un bot) reste compté dans [byLang] : l'UI l'affiche
+  /// en ligne fourre-tout « 🌐 Autre (CODE) » (I-001) pour que la somme du
+  /// tooltip corresponde au compteur affiché.
+  /// [noLang] compte les contenus validés sans langue taguée (video_language
+  /// NULL — contenus non vidéo ou pré-taggants) : affiché en dernière ligne
+  /// du tooltip pour que la somme corresponde au compteur affiché.
+  ({Map<String, int> byLang, int noLang}) contentCountByLangFor(String gameId) {
+    final byLang = <String, int>{};
+    var noLang = 0;
+    for (final c in _contents) {
+      if (c.gameId != gameId || !c.validated) continue;
+      final lang = c.videoLanguage?.trim().toUpperCase() ?? '';
+      if (lang.isEmpty) {
+        noLang++;
+      } else {
+        byLang[lang] = (byLang[lang] ?? 0) + 1;
+      }
+    }
+    return (byLang: byLang, noLang: noLang);
+  }
+
   /// Ajoute un jeu. En mode production, attend la confirmation serveur.
   /// En cas d'échec, le jeu est retiré (rollback) et l'erreur est notifiée.
   Future<void> addGame({
