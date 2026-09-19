@@ -520,3 +520,179 @@ String formatDayLabel(String day) {
   if (parts.length != 3) return day;
   return '${parts[2]}/${parts[1]}';
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chantier F3 — attribution d'acquisition (EF v78, migration 0069, §70.5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Canaux d'acquisition (whitelist serveur, migration 0069) + 'inconnu'
+/// (comptes sans attribution : pré-F3, iOS, referrer indéterminable).
+const List<String> kAcquisitionSources = [
+  'tiktok',
+  'youtube',
+  'facebook',
+  'instagram',
+  'site_web',
+  'play_store',
+  'play_store_via_site',
+  'direct',
+  'inconnu',
+];
+
+/// Libellés d'affichage des canaux (menu Analytics).
+const Map<String, String> kAcquisitionSourceLabels = {
+  'tiktok': 'TikTok',
+  'youtube': 'YouTube',
+  'facebook': 'Facebook',
+  'instagram': 'Instagram',
+  'site_web': 'Site web',
+  'play_store': 'Play Store (organique)',
+  'play_store_via_site': 'Play Store via le site',
+  'direct': 'Direct / autre',
+  'inconnu': 'Inconnu (avant F3)',
+};
+
+/// Un agrégat de clics « site → store » par (source, campagne) sur la
+/// période (route EF `analytics/acquisition`).
+class AcquisitionClick {
+  final String source;
+  final String? campaign; // null = clic sans campagne (lien nu)
+  final int n;
+
+  const AcquisitionClick({required this.source, this.campaign, this.n = 0});
+
+  factory AcquisitionClick.fromJson(Map<String, dynamic> json) =>
+      AcquisitionClick(
+        source: (json['source'] as String?) ?? 'direct',
+        campaign: json['campaign'] as String?,
+        n: (json['n'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// Vue agrégée `analytics/acquisition` (EF v78) : comptes par canal
+/// (first touch) + clics site → store de la période.
+class AcquisitionStats {
+  /// Comptes CRÉÉS sur la période, par acquisition_first ('inconnu' = NULL).
+  final Map<String, int> firstPeriod;
+
+  /// TOUS les comptes, par acquisition_first (même regroupement).
+  final Map<String, int> firstGlobal;
+
+  /// Clics « Télécharger » du site vers le store, par (source, campagne),
+  /// triés décroissant côté serveur.
+  final List<AcquisitionClick> clicks;
+
+  /// Total des clics de la période (somme serveur, exacte même si [clicks]
+  /// était plafonné — cf. [clicksTruncated]).
+  final int clicksTotal;
+
+  /// Vrai si la liste des clics a été plafonnée côté serveur (50 000
+  /// lignes — défensif, jamais atteint à volume prévu).
+  final bool clicksTruncated;
+
+  const AcquisitionStats({
+    this.firstPeriod = const {},
+    this.firstGlobal = const {},
+    this.clicks = const [],
+    this.clicksTotal = 0,
+    this.clicksTruncated = false,
+  });
+
+  factory AcquisitionStats.fromJson(Map<String, dynamic> json) {
+    Map<String, int> counts(dynamic raw) {
+      final out = <String, int>{};
+      if (raw is Map) {
+        for (final e in raw.entries) {
+          out['${e.key}'] = (e.value as num?)?.toInt() ?? 0;
+        }
+      }
+      return out;
+    }
+
+    final rawClicks = json['clicks'] as List? ?? [];
+    return AcquisitionStats(
+      firstPeriod: counts(json['first_period']),
+      firstGlobal: counts(json['first_global']),
+      clicks: rawClicks
+          .map((e) => AcquisitionClick.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      clicksTotal: (json['clicks_total'] as num?)?.toInt() ?? 0,
+      clicksTruncated: json['clicks_truncated'] == true,
+    );
+  }
+}
+
+/// Total first-touch d'une map par canal, avec exclusion optionnelle d'un
+/// canal (toggle « hors redirections site » = exclut play_store_via_site).
+int acquisitionTotal(Map<String, int> bySource, {String? exclude}) {
+  var total = 0;
+  for (final e in bySource.entries) {
+    if (e.key == exclude) continue;
+    total += e.value;
+  }
+  return total;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chantier F3 — générateur de liens UTM (menu Analytics, instructions site
+// docs/INSTRUCTIONS_SITE_LIEN_PLAYSTORE.md §1/§4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Package Android de l'app (applicationId de android/app/build.gradle.kts).
+/// Utilisé par le lien Play Store direct avec referrer.
+const String kPlayPackageName = 'com.mygamingtips';
+
+/// Canaux proposés par le générateur de liens UTM (instructions §4).
+const List<String> kUtmGeneratorChannels = [
+  'tiktok',
+  'youtube',
+  'facebook',
+  'instagram',
+  'site_web',
+];
+
+/// utm_medium par défaut par canal (conventions des instructions §4 :
+/// bio TikTok/Instagram, description YouTube, post Facebook).
+const Map<String, String> kUtmMediumByChannel = {
+  'tiktok': 'bio',
+  'youtube': 'description',
+  'instagram': 'bio',
+  'facebook': 'post',
+  'site_web': 'site',
+};
+
+/// Validation du nom de campagne : MÊME borne que l'EF publique
+/// acquisition-track (1-120 caractères, [A-Za-z0-9._~-] uniquement) — un
+/// lien généré ici doit toujours être accepté par l'endpoint de comptage.
+bool isValidUtmCampaign(String campaign) =>
+    RegExp(r'^[A-Za-z0-9._~-]{1,120}$').hasMatch(campaign);
+
+/// Lien vers LE SITE porteur des UTM (le site propage ensuite vers le Play
+/// Store via son bouton « Télécharger » — instructions §2). C'est le lien à
+/// diffuser sur les réseaux.
+String buildSiteUtmLink({
+  required String siteBaseUrl,
+  required String channel,
+  required String campaign,
+  String? medium,
+}) {
+  final m = medium ?? kUtmMediumByChannel[channel] ?? 'site';
+  return '$siteBaseUrl/?utm_source=$channel&utm_medium=$m'
+      '&utm_campaign=$campaign';
+}
+
+/// Lien PLAY STORE direct avec referrer encodé (instructions §1 :
+/// `?id=<package>&referrer=<utm URL-encodés>`). Usage : partage sans passage
+/// par le site (la propagation UTM du site reste la voie recommandée).
+String buildPlayStoreReferrerLink({
+  required String channel,
+  required String campaign,
+  String? medium,
+  String packageName = kPlayPackageName,
+}) {
+  final m = medium ?? kUtmMediumByChannel[channel] ?? 'site';
+  final referrer =
+      Uri.encodeComponent('utm_source=$channel&utm_medium=$m&utm_campaign=$campaign');
+  return 'https://play.google.com/store/apps/details?id=$packageName'
+      '&referrer=$referrer';
+}

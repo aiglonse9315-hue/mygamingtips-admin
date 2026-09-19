@@ -968,6 +968,18 @@ class SupabaseSync {
   Future<Map<String, dynamic>> fetchAnalyticsRetention({int weeks = 8}) =>
       _post('analytics/retention', {'weeks': weeks});
 
+  /// Attribution d'acquisition {from, to} (EF v78, migration 0069 — chantier
+  /// F3, §70.5) : {first_period, first_global, clicks: [{source, campaign,
+  /// n}], clicks_total, clicks_truncated}.
+  Future<Map<String, dynamic>> fetchAnalyticsAcquisition({
+    required DateTime from,
+    required DateTime to,
+  }) =>
+      _post('analytics/acquisition', {
+        'from': from.toIso8601String(),
+        'to': to.toIso8601String(),
+      });
+
   Future<List<Map<String, dynamic>>> fetchPricing() async {
     final data = await _post('pricing/list', <String, dynamic>{});
     final list = data['pricing'] as List? ?? [];

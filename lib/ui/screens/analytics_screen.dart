@@ -6,12 +6,22 @@ import 'dart:html' as html;
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:provider/provider.dart';
 
 import '../../domain/analytics_calc.dart';
 import '../../domain/analytics_export.dart';
 import '../../state/store_controller.dart';
 import '../widgets/confirm_dialog.dart';
+
+/// Domaine public du site MyGamingTips, utilisé par le générateur de liens
+/// UTM de la section « Acquisition ».
+///
+/// ⚠️ PLACEHOLDER (chantier F3, §70.5) : le site est EN CONSTRUCTION et son
+/// domaine final n'apparaît ni dans PRODUCT.md ni dans le README. Remplacer
+/// par le domaine définitif AVANT de diffuser des liens générés — le format
+/// des liens est celui de docs/INSTRUCTIONS_SITE_LIEN_PLAYSTORE.md §4.
+const String kSiteBaseUrl = 'https://www.mygamingtips.fr';
 
 /// Écran « Analytics » (chantier F1 — migration 0066, EF v76, décisions
 /// §70.3 / §70.6).
@@ -49,6 +59,21 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   late int _exportYear;
   late int _exportMonth;
   bool _exporting = false;
+
+  // ── Acquisition (chantier F3 — EF v78, migration 0069) ──
+  /// Toggle « Play Store : global / hors redirections site » (exclut
+  /// play_store_via_site du graphique d'attribution).
+  bool _acqExcludeSiteRedirects = false;
+
+  /// Générateur de liens UTM : canal sélectionné + champ campagne.
+  String _utmChannel = kUtmGeneratorChannels.first;
+  final TextEditingController _utmCampaignCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _utmCampaignCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -102,6 +127,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       ),
       store.fetchAnalyticsActivity(from: _from, to: _to),
       store.fetchAnalyticsRetention(),
+      // Chantier F3 : attribution des comptes + clics site → store.
+      store.fetchAnalyticsAcquisition(from: _from, to: _to),
     ]);
   }
 
@@ -308,6 +335,13 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           _buildActivitySection(theme, store),
           const SizedBox(height: 16),
           _buildRetentionSection(theme, store),
+          const SizedBox(height: 16),
+          // Chantier F3 (EF v78, migration 0069) : attribution + liens UTM.
+          _buildAcquisitionSection(theme, store),
+          const SizedBox(height: 16),
+          _buildClicksCard(theme, store),
+          const SizedBox(height: 16),
+          _buildUtmGeneratorCard(theme),
           const SizedBox(height: 16),
           _buildPricingSection(theme, store),
           const SizedBox(height: 16),
@@ -1246,6 +1280,383 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               const AxisTitles(sideTitles: SideTitles(showTitles: false)),
           rightTitles:
               const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+      ),
+    );
+  }
+
+  // ── Acquisition (chantier F3 — EF v78, migration 0069, §70.5) ──
+
+  /// Copie [text] dans le presse-papiers + snackbar de confirmation.
+  Future<void> _copyToClipboard(String text, String label) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$label copié dans le presse-papiers.')),
+    );
+  }
+
+  /// Section « Acquisition » : bar chart des comptes par canal (first touch,
+  /// global) + toggle « Play Store : global / hors redirections site ».
+  Widget _buildAcquisitionSection(ThemeData theme, StoreController store) {
+    final acq = store.analyticsAcquisition;
+    // Toggle « hors redirections site » : exclut play_store_via_site (les
+    // installs venues du site sans UTM externe — instructions §5).
+    final exclude = _acqExcludeSiteRedirects ? 'play_store_via_site' : null;
+    final global = acq?.firstGlobal ?? const <String, int>{};
+    final period = acq?.firstPeriod ?? const <String, int>{};
+    final entries = [
+      for (final s in kAcquisitionSources)
+        if (s != exclude && (global[s] ?? 0) > 0) MapEntry(s, global[s] ?? 0),
+    ];
+    final totalGlobal = acquisitionTotal(global, exclude: exclude);
+    final totalPeriod = acquisitionTotal(period, exclude: exclude);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Acquisition — canaux des comptes (premier contact)',
+              style: theme.textTheme.titleMedium,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Attribution via le Play Install Referrer lu par l\'app au 1er '
+              'lancement (migration 0069). « Inconnu » = comptes créés avant '
+              'l\'instrumentation ou installs iOS (pas de referrer).',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(
+                  value: false,
+                  label: Text('Play Store : global'),
+                ),
+                ButtonSegment(
+                  value: true,
+                  label: Text('Hors redirections site'),
+                ),
+              ],
+              selected: {_acqExcludeSiteRedirects},
+              onSelectionChanged: (s) =>
+                  setState(() => _acqExcludeSiteRedirects = s.first),
+            ),
+            const SizedBox(height: 12),
+            if (acq == null)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 40),
+                child: Center(
+                  child: Text(
+                    'Données d\'acquisition indisponibles (EF v78 non '
+                    'déployée ou migration 0069 non appliquée).',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              )
+            else if (entries.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 40),
+                child: Center(
+                  child: Text(
+                    'Aucun compte attribué pour l\'instant — '
+                    'l\'instrumentation démarre avec la prochaine version de '
+                    'l\'app.',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              )
+            else ...[
+              SizedBox(height: 240, child: _acquisitionBarChart(entries)),
+              const SizedBox(height: 8),
+              Text(
+                '$totalGlobal compte(s) au total'
+                '${_acqExcludeSiteRedirects ? ' (hors redirections site)' : ''}'
+                ' — dont $totalPeriod créé(s) sur la période sélectionnée.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Bar chart first-touch : une barre par canal présent (ordre fixe de
+  /// [kAcquisitionSources]), valeur = comptes globaux.
+  Widget _acquisitionBarChart(List<MapEntry<String, int>> entries) {
+    final maxV = entries.fold<int>(0, (m, e) => e.value > m ? e.value : m);
+    final maxY = (maxV <= 0 ? 1 : maxV * 1.25).toDouble();
+    return BarChart(
+      BarChartData(
+        minY: 0,
+        maxY: maxY,
+        borderData: FlBorderData(show: false),
+        gridData: const FlGridData(show: true, drawVerticalLine: false),
+        barTouchData: BarTouchData(
+          touchTooltipData: BarTouchTooltipData(
+            getTooltipItem: (group, groupIndex, rod, rodIndex) {
+              final source = entries[group.x.toInt()].key;
+              return BarTooltipItem(
+                '${kAcquisitionSourceLabels[source] ?? source}\n'
+                '${rod.toY.round()} compte(s)',
+                const TextStyle(color: Colors.white, fontSize: 12),
+              );
+            },
+          ),
+        ),
+        barGroups: [
+          for (var i = 0; i < entries.length; i++)
+            BarChartGroupData(
+              x: i,
+              barRods: [
+                BarChartRodData(
+                  toY: entries[i].value.toDouble(),
+                  width: 22,
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(4),
+                  ),
+                  color: entries[i].key == 'inconnu'
+                      ? Colors.grey.shade600
+                      : Colors.cyan.shade300,
+                ),
+              ],
+            ),
+        ],
+        titlesData: FlTitlesData(
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 36,
+              getTitlesWidget: (v, meta) => v == meta.max
+                  ? const SizedBox.shrink()
+                  : Text(
+                      v.round().toString(),
+                      style: const TextStyle(fontSize: 10),
+                    ),
+            ),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 30,
+              getTitlesWidget: (v, meta) {
+                final i = v.toInt();
+                if (i < 0 || i >= entries.length) {
+                  return const SizedBox.shrink();
+                }
+                final source = entries[i].key;
+                // Libellés courts : le tooltip porte le libellé complet.
+                final short = switch (source) {
+                  'play_store_via_site' => 'PS via site',
+                  'play_store' => 'Play Store',
+                  'site_web' => 'Site',
+                  'inconnu' => 'Inconnu',
+                  _ => (kAcquisitionSourceLabels[source] ?? source),
+                };
+                return Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(short, style: const TextStyle(fontSize: 10)),
+                );
+              },
+            ),
+          ),
+          topTitles:
+              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles:
+              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+      ),
+    );
+  }
+
+  /// Carte « Redirections site → store » : clics du bouton « Télécharger »
+  /// du site (EF publique acquisition-track) sur la période sélectionnée.
+  Widget _buildClicksCard(ThemeData theme, StoreController store) {
+    final acq = store.analyticsAcquisition;
+    final clicks = acq?.clicks ?? const <AcquisitionClick>[];
+    final total = acq?.clicksTotal ?? 0;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Redirections site → Play Store',
+              style: theme.textTheme.titleMedium,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Clics sur le bouton « Télécharger » du site sur la période '
+              '(comptés par l\'endpoint public acquisition-track — aucune '
+              'donnée personnelle).',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            if (acq == null)
+              Text('Indisponible (EF v78 non déployée).',
+                  style: theme.textTheme.bodySmall)
+            else ...[
+              Text(
+                '$total clic(s) sur la période',
+                style: theme.textTheme.titleLarge,
+              ),
+              if (acq.clicksTruncated)
+                Text(
+                  'Liste plafonnée (50 000 lignes) — total exact, détail '
+                  'partiel.',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: Colors.orange.shade300),
+                ),
+              if (clicks.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                for (final c in clicks.take(5))
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text(
+                      '${kAcquisitionSourceLabels[c.source] ?? c.source} · '
+                      '${c.campaign ?? '(sans campagne)'} — ${c.n}',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                if (clicks.length > 5)
+                  Text(
+                    '… et ${clicks.length - 5} autre(s) combinaison(s).',
+                    style: theme.textTheme.bodySmall,
+                  ),
+              ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Générateur de liens UTM (instructions site §4) : produit le lien SITE à
+  /// diffuser (le site propage les UTM vers le store) et le lien PLAY STORE
+  /// direct avec referrer encodé. Mêmes bornes que l'EF acquisition-track
+  /// pour la campagne ([A-Za-z0-9._~-], ≤ 120).
+  Widget _buildUtmGeneratorCard(ThemeData theme) {
+    final campaign = _utmCampaignCtrl.text.trim();
+    final valid = isValidUtmCampaign(campaign);
+    final siteLink = valid
+        ? buildSiteUtmLink(
+            siteBaseUrl: kSiteBaseUrl,
+            channel: _utmChannel,
+            campaign: campaign,
+          )
+        : null;
+    final playLink = valid
+        ? buildPlayStoreReferrerLink(
+            channel: _utmChannel,
+            campaign: campaign,
+          )
+        : null;
+
+    Widget linkRow(String label, String? link) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: theme.textTheme.bodySmall),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Expanded(
+                child: SelectableText(
+                  link ?? '—',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ),
+              IconButton(
+                onPressed:
+                    link == null ? null : () => _copyToClipboard(link, label),
+                icon: const Icon(Icons.copy_rounded, size: 18),
+                tooltip: 'Copier',
+              ),
+            ],
+          ),
+        ],
+      );
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Générateur de liens UTM',
+              style: theme.textTheme.titleMedium,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Diffusez le LIEN SITE (le site propage les UTM vers le Play '
+              'Store). Le lien Play direct est un secours sans passage par '
+              'le site. Campagne : lettres/chiffres et . _ ~ - uniquement.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 16,
+              runSpacing: 12,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('Canal : '),
+                    DropdownButton<String>(
+                      value: _utmChannel,
+                      items: [
+                        for (final c in kUtmGeneratorChannels)
+                          DropdownMenuItem(
+                            value: c,
+                            child: Text(kAcquisitionSourceLabels[c] ?? c),
+                          ),
+                      ],
+                      onChanged: (v) {
+                        if (v != null) setState(() => _utmChannel = v);
+                      },
+                    ),
+                  ],
+                ),
+                SizedBox(
+                  width: 260,
+                  child: TextField(
+                    controller: _utmCampaignCtrl,
+                    decoration: InputDecoration(
+                      labelText: 'Campagne',
+                      hintText: 'ex. lancement',
+                      isDense: true,
+                      errorText: campaign.isEmpty || valid
+                          ? null
+                          : 'Invalide ([A-Za-z0-9._~-], ≤ 120)',
+                    ),
+                    onChanged: (_) => setState(() {}),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            linkRow('Lien site (à diffuser)', siteLink),
+            const SizedBox(height: 8),
+            linkRow('Lien Play Store direct (secours)', playLink),
+            const SizedBox(height: 8),
+            Text(
+              '⚠️ Domaine du site : placeholder ($kSiteBaseUrl) — à confirmer '
+              'avant diffusion (le site est en construction).',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: Colors.orange.shade300),
+            ),
+          ],
         ),
       ),
     );

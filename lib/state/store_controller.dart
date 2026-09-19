@@ -3618,6 +3618,12 @@ class StoreController extends ChangeNotifier {
   /// Dernières cohortes de rétention `analytics/retention` (chantier F2).
   List<RetentionCohort> analyticsRetention = const [];
 
+  /// Dernière vue `analytics/acquisition` (chantier F3 — EF v78, migration
+  /// 0069) : comptes par canal (first touch) + clics site → store.
+  /// null = jamais chargée (ou EF v78 non déployée — la section affiche
+  /// alors son état vide).
+  AcquisitionStats? analyticsAcquisition;
+
   /// Prix catalogue (pricing_config) — alimenté par overview ET pricing/list.
   List<PricingConfig> pricingConfigs = const [];
 
@@ -3728,6 +3734,28 @@ class StoreController extends ChangeNotifier {
       onAuthError?.call();
     } catch (e) {
       analyticsError = 'Chargement de la rétention impossible : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Charge l'attribution d'acquisition (chantier F3 — EF v78) sur la
+  /// période [from, to]. Sans spinner propre : suit l'état partagé
+  /// [analyticsLoading] (convention existante, cf. §78). DÉFENSIF : si la
+  /// route n'existe pas encore (EF v78 non déployée), la section affiche
+  /// son état vide sans bloquer le reste de l'écran.
+  Future<void> fetchAnalyticsAcquisition({
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    if (sync == null) return;
+    try {
+      final data = await sync!.fetchAnalyticsAcquisition(from: from, to: to);
+      analyticsAcquisition = AcquisitionStats.fromJson(data);
+      notifyListeners();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      analyticsError = 'Chargement de l\'acquisition impossible : $e';
       notifyListeners();
     }
   }
