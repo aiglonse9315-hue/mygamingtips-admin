@@ -470,6 +470,7 @@ class SuggestionReviewDialog extends StatefulWidget {
     super.key,
     required this.suggestion,
     this.initialTitle,
+    this.aliasCandidateChecked = false,
   });
   final Suggestion suggestion;
 
@@ -478,6 +479,12 @@ class SuggestionReviewDialog extends StatefulWidget {
   /// et non vide après trim, il pré-remplit le champ titre à la place du
   /// titre calculé automatiquement.
   final String? initialTitle;
+
+  /// D3.3/D3.4 — état de la case « Ajouter cet alias à la base à la
+  /// validation » de la ligne Sentinelle (cochée par défaut). L'alias
+  /// candidat n'est créé QUE si cette case est cochée et que le jeu choisi
+  /// est celui du candidat.
+  final bool aliasCandidateChecked;
 
   @override
   State<SuggestionReviewDialog> createState() =>
@@ -543,6 +550,9 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
       category: _category,
       titleAdmin: _title.text,
       imageUrl: _image.text,
+      // D3.4 — l'alias candidat n'est créé QUE si la case de la ligne
+      // Sentinelle était cochée (défaut) à l'ouverture du dialogue.
+      aliasCandidateChecked: widget.aliasCandidateChecked,
     );
     Navigator.pop(context);
   }

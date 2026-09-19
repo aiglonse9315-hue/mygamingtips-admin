@@ -109,6 +109,12 @@ class StoreController extends ChangeNotifier {
   /// Affichée dans une snackbar, puis effacée.
   String? lastActionError;
 
+  /// D3.4 — dernière NOTICE d'action (avertissement LÉGER, ex. alias candidat
+  /// non créé après une validation réussie) — affichée dans une snackbar
+  /// orange, puis effacée. Distincte de [lastActionError] (rouge) : la
+  /// validation elle-même a réussi.
+  String? lastActionNotice;
+
   /// Chaînage anti-réentrance pour syncFromSupabase (correctif I-004).
   ///
   /// Référence vers la passe de sync EN COURS (ou la dernière si elle vient de
@@ -339,6 +345,12 @@ class StoreController extends ChangeNotifier {
   /// Efface la dernière erreur d'action.
   void clearActionError() {
     lastActionError = null;
+    notifyListeners();
+  }
+
+  /// Efface la dernière notice d'action (avertissement léger, D3.4).
+  void clearActionNotice() {
+    lastActionNotice = null;
     notifyListeners();
   }
 
@@ -940,12 +952,19 @@ class StoreController extends ChangeNotifier {
   /// ⚠️ Une seule écriture serveur : la route `/suggestions/accept` crée
   /// elle-même le contenu côté serveur. On NE fait pas d'addContent séparé
   /// (sinon double insertion).
+  ///
+  /// [aliasCandidateChecked] : D3.4 — vrai quand la case « Ajouter cet alias
+  /// à la base à la validation » du panneau Sentinelle est cochée (défaut).
+  /// L'alias candidat est créé en best-effort APRÈS succès, uniquement si le
+  /// jeu choisi dans le dialogue EST celui du candidat ; un échec produit
+  /// une notice légère mais la validation reste faite.
   Future<void> acceptSuggestion({
     required Suggestion suggestion,
     required String gameId,
     required ContentCategory category,
     required String titleAdmin,
     String? imageUrl,
+    bool aliasCandidateChecked = false,
   }) async {
     // Marque la suggestion comme acceptée localement (optimiste).
     _suggestions = _suggestions
@@ -974,6 +993,30 @@ class StoreController extends ChangeNotifier {
       await syncFromSupabase(
         datasets: const {SyncDataset.suggestionsNew, SyncDataset.contents},
       );
+      // D3.4 — alias candidat coché (panneau Sentinelle « À vérifier »,
+      // transmis via le dialogue) : création best-effort APRÈS succès. La
+      // garde « jeu choisi == jeu du candidat » est dans
+      // [_createAliasCandidate] ; échec = notice légère, validation faite.
+      final candidate = suggestion.aiRecommendation?.aliasCandidate;
+      if (aliasCandidateChecked && candidate != null) {
+        Game? game;
+        for (final g in _games) {
+          if (g.id == gameId) {
+            game = g;
+            break;
+          }
+        }
+        if (game != null) {
+          final aliasError = await _createAliasCandidate(
+            game: game,
+            candidate: candidate,
+          );
+          if (aliasError != null) {
+            lastActionNotice = '⚠️ Contenu validé, mais $aliasError.';
+            notifyListeners();
+          }
+        }
+      }
     } catch (e) {
       // Rollback : la suggestion redevient pending.
       _suggestions = _suggestions
@@ -1051,11 +1094,17 @@ class StoreController extends ChangeNotifier {
   /// colonne « Titre pour insertion ». S'il est fourni et non vide après
   /// trim, il devient le `title_admin` envoyé au serveur (sinon le titre
   /// calculé par [_titleForInsertion] est conservé).
+  ///
+  /// [aliasCandidateChecked] : D3.4 — vrai quand la case « Ajouter cet alias
+  /// à la base à la validation » est cochée (défaut) sur la ligne. L'alias
+  /// candidat est alors créé en best-effort APRÈS succès de l'acceptation ;
+  /// un échec produit une notice légère mais la validation reste faite.
   Future<void> acceptOneClick(
     Suggestion suggestion, {
     String? gameOverride,
     String? categoryOverride,
     String? titleOverride,
+    bool aliasCandidateChecked = false,
   }) async {
     final ai = suggestion.aiRecommendation;
     if (ai == null) {
@@ -1161,6 +1210,21 @@ class StoreController extends ChangeNotifier {
           SyncDataset.games,
         },
       );
+      // D3.4 — alias candidat coché : création best-effort APRÈS succès de
+      // l'acceptation. Un échec ici ne doit JAMAIS invalider la validation
+      // (déjà faite) → notice légère uniquement (la création est re-jouable
+      // via le dialog d'alias du jeu).
+      final candidate = ai.aliasCandidate;
+      if (aliasCandidateChecked && candidate != null) {
+        final aliasError = await _createAliasCandidate(
+          game: targetGame,
+          candidate: candidate,
+        );
+        if (aliasError != null) {
+          lastActionNotice = '⚠️ Contenu validé, mais $aliasError.';
+          notifyListeners();
+        }
+      }
     } catch (e) {
       // Rollback : remet la suggestion dans Sentinelle + retire le tombstone.
       _pendingRemovalIds.remove(suggestion.id);
@@ -1195,11 +1259,18 @@ class StoreController extends ChangeNotifier {
   /// suggestion ID) — colonne « Titre pour insertion ». Un override non vide
   /// après trim devient le `title_admin` envoyé ; sinon le titre calculé par
   /// [_titleForInsertion] est conservé.
+  ///
+  /// [aliasCandidateCheckedIds] : D3.4 — ids des suggestions dont l'alias
+  /// candidat est COCHÉ (défaut) dans le panneau. Pour chaque item validé,
+  /// l'alias est créé en best-effort APRÈS succès du lot (UNE requête
+  /// list-all pour tout le lot) ; les échecs produisent une notice légère
+  /// agrégée — les validations restent faites.
   Future<int> acceptSentinelleBatch(
     List<Suggestion> items, {
     Map<String, String>? gameOverrides,
     Map<String, String>? categoryOverrides,
     Map<String, String>? titleOverrides,
+    Set<String>? aliasCandidateCheckedIds,
     void Function(int validated, int total)? onProgress,
   }) async {
     if (items.isEmpty) return 0;
@@ -1213,6 +1284,8 @@ class StoreController extends ChangeNotifier {
           gameOverride: gameOverrides?[s.id],
           categoryOverride: categoryOverrides?[s.id],
           titleOverride: titleOverrides?[s.id],
+          aliasCandidateChecked:
+              aliasCandidateCheckedIds?.contains(s.id) ?? false,
         );
         done++;
         onProgress?.call(done, items.length);
@@ -1224,6 +1297,9 @@ class StoreController extends ChangeNotifier {
     //    distante sauf création de jeu, rare) — même logique qu'acceptOneClick.
     final payload = <Map<String, dynamic>>[];
     final byId = <String, Suggestion>{for (final s in items) s.id: s};
+    // D3.4 — couples (jeu résolu, alias candidat) des items COCHÉS, pour la
+    // création best-effort post-validation (phase 4).
+    final aliasCandidates = <String, (Game, AiAliasCandidate)>{};
     for (final s in items) {
       final ai = s.aiRecommendation;
       if (ai == null) continue; // pas d'analyse IA → ignoré (reste en liste)
@@ -1271,6 +1347,12 @@ class StoreController extends ChangeNotifier {
         if (_dateForInsertion(s) != null)
           'published_at': _dateForInsertion(s)!.toIso8601String(),
       });
+      // D3.4 — mémorise le candidat SEULEMENT si la case est cochée.
+      final candidate = ai.aliasCandidate;
+      if (candidate != null &&
+          (aliasCandidateCheckedIds?.contains(s.id) ?? false)) {
+        aliasCandidates[s.id] = (targetGame, candidate);
+      }
     }
     if (payload.isEmpty) {
       lastActionError =
@@ -1289,6 +1371,7 @@ class StoreController extends ChangeNotifier {
 
     // ── Phase 3 : appels EF par chunks de 100 (plafond côté EF).
     var validated = 0;
+    final validatedIds = <String>{};
     final failedIds = <String>[];
     String? firstError;
     const chunkSize = 100;
@@ -1303,6 +1386,7 @@ class StoreController extends ChangeNotifier {
         final res = await sync!.acceptSuggestionsBatch(chunk);
         final ok = (res['ok'] as List? ?? []).cast<String>();
         validated += ok.length;
+        validatedIds.addAll(ok);
         final failed = (res['failed'] as List? ?? []);
         for (final f in failed) {
           final fid = (f as Map)['id']?.toString();
@@ -1341,6 +1425,37 @@ class StoreController extends ChangeNotifier {
         SyncDataset.games,
       },
     );
+
+    // ── D3.4 — alias candidats COCHÉS des items VALIDÉS : création
+    //    best-effort APRÈS succès du lot (UNE requête list-all pour tout le
+    //    lot, cache mutable par jeu). Un échec ici ne doit JAMAIS invalider
+    //    les validations (déjà faites) → notice légère agrégée uniquement.
+    final toCreate = aliasCandidates.entries
+        .where((e) => validatedIds.contains(e.key))
+        .toList();
+    if (toCreate.isNotEmpty) {
+      try {
+        final aliasesByGame = await _fetchGameAliasesByGame();
+        final aliasErrors = <String>[];
+        for (final e in toCreate) {
+          final (game, candidate) = e.value;
+          final err = await _createAliasCandidate(
+            game: game,
+            candidate: candidate,
+            aliasesByGame: aliasesByGame,
+          );
+          if (err != null) aliasErrors.add(err);
+        }
+        if (aliasErrors.isNotEmpty) {
+          lastActionNotice = '⚠️ Validations effectuées, mais '
+              '${aliasErrors.length} alias candidat(s) non créé(s) : '
+              '${aliasErrors.first}';
+        }
+      } catch (e) {
+        lastActionNotice = '⚠️ Validations effectuées, mais la création des '
+            'alias candidats a échoué ($e).';
+      }
+    }
     notifyListeners();
     return validated;
   }
@@ -2117,6 +2232,70 @@ class StoreController extends ChangeNotifier {
   /// « Synchroniser les alias connus ».
   static String normalizeGameAlias(String alias) =>
       _normalizeGameNameNoAlias(alias);
+
+  /// D3.4 — Charge TOUS les alias en UNE requête et les groupe par jeu
+  /// (game_id → liste MUTABLE, mise à jour localement après chaque création
+  /// réussie pour rester cohérent en validation en lot sans re-fetch).
+  Future<Map<String, List<GameAlias>>> _fetchGameAliasesByGame() async {
+    final remote = await sync!.fetchGameAliasesAll();
+    final byGame = <String, List<GameAlias>>{};
+    for (final e in remote) {
+      byGame.putIfAbsent(e.gameId, () => <GameAlias>[]).add(e.alias);
+    }
+    return byGame;
+  }
+
+  /// D3.4 — Crée l'alias candidat COCHÉ d'une suggestion validée
+  /// (best-effort, à appeler APRÈS succès de l'acceptation) : union des
+  /// alias existants du jeu + {alias: candidat, alias_norm: forme CLÉ via
+  /// [normalizeGameAlias] (B-001 — jamais la forme canonique résolue)}.
+  /// L'EF `games/aliases/set` (remplacement complet recevant l'union) loge
+  /// déjà l'action côté serveur.
+  ///
+  /// GARDES (jamais de création anarchique) :
+  /// - le jeu effectivement validé doit ÊTRE celui du candidat (si l'admin a
+  ///   choisi un autre jeu via override, le candidat ne s'applique plus) ;
+  /// - alias vide ou forme clé vide → sans-op ;
+  /// - alias déjà présent (dédup par alias_norm) → sans-op.
+  ///
+  /// [aliasesByGame] : cache mutable par jeu (UNE requête list-all par lot) ;
+  /// null → fetch frais (validation unitaire).
+  /// Retourne null si OK/sans-op, sinon un message d'erreur (la validation
+  /// reste faite — avertissement léger côté UI).
+  Future<String?> _createAliasCandidate({
+    required Game game,
+    required AiAliasCandidate candidate,
+    Map<String, List<GameAlias>>? aliasesByGame,
+  }) async {
+    if (sync == null) return null;
+    // Garde « jeu validé == jeu du candidat » (comparaison normalisée AVEC
+    // résolution d'alias, comme le matching des bots).
+    if (_normalizeGameName(game.name) != _normalizeGameName(candidate.game)) {
+      return null;
+    }
+    final alias = candidate.alias.trim();
+    if (alias.isEmpty) return null;
+    final norm = normalizeGameAlias(alias);
+    if (norm.isEmpty) return null;
+    try {
+      final byGame = aliasesByGame ?? await _fetchGameAliasesByGame();
+      final existing =
+          byGame.putIfAbsent(game.id, () => <GameAlias>[]);
+      // Union dédup : l'alias existe déjà (même forme clé) → rien à faire.
+      if (existing.any((a) => a.aliasNorm == norm)) return null;
+      final payload = <Map<String, String>>[
+        for (final a in existing) {'alias': a.alias, 'alias_norm': a.aliasNorm},
+        {'alias': alias, 'alias_norm': norm},
+      ];
+      await sync!.setGameAliases(game.id, payload);
+      // Cache local à jour (id inconnu côté client — non utilisé pour la
+      // persistance, la base étant la source de vérité).
+      existing.add(GameAlias(id: '', alias: alias, aliasNorm: norm));
+      return null;
+    } catch (e) {
+      return 'alias « $alias » → ${game.name} non créé ($e)';
+    }
+  }
 
   /// Alias connus en dur ([_gameAliases]) dont la cible canonique correspond
   /// au jeu [gameName] (ex. « Diablo 4 » → « d4 », « diablo iv »).

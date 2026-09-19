@@ -119,6 +119,32 @@ enum AiVerdict {
   }
 }
 
+/// Alias candidat proposé par l'assistant de rattachement D3.1 (Hermes
+/// borné) quand un contenu hors catalogue a été rattaché à un jeu existant
+/// sous un nom NOUVEAU (abréviation, acronyme, nom de DLC...). Affiché dans
+/// le panneau Sentinelle avec une case cochée par défaut : à la validation,
+/// l'alias est ajouté à la base (décochable → jamais créé).
+@immutable
+class AiAliasCandidate {
+  /// Alias proposé (= le nom de jeu suggéré d'origine par le 1er LLM, avant
+  /// rattachement assisté — ex. « SF: Shattered Space »).
+  final String alias;
+
+  /// Nom canonique du jeu du catalogue auquel l'alias serait rattaché.
+  final String game;
+
+  const AiAliasCandidate({required this.alias, required this.game});
+
+  factory AiAliasCandidate.fromJson(Map<String, dynamic> json) {
+    return AiAliasCandidate(
+      alias: json['alias']?.toString() ?? '',
+      game: json['game']?.toString() ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {'alias': alias, 'game': game};
+}
+
 /// Recommandation de l'IA Sentinelle sur une suggestion.
 ///
 /// L'IA analyse l'URL, la pertinence gaming, le contenu inapproprié, et les
@@ -149,6 +175,12 @@ class AiRecommendation {
   /// les autres langues du pack 12.
   final String? youtubeLanguage;
 
+  /// D3.2 — alias candidat proposé par l'assistant de rattachement borné
+  /// (clé `alias_candidate` du jsonb ai_recommendation, fusionné par l'EF —
+  /// aucune migration). Null quand le contenu a été rattaché trivialement ou
+  /// n'a pas pu être rattaché.
+  final AiAliasCandidate? aliasCandidate;
+
   const AiRecommendation({
     required this.verdict,
     required this.confidence,
@@ -162,6 +194,7 @@ class AiRecommendation {
     this.analyzedAt,
     this.needsGameCreation = false,
     this.youtubeLanguage,
+    this.aliasCandidate,
   });
 
   factory AiRecommendation.fromJson(Map<String, dynamic> json) {
@@ -186,7 +219,20 @@ class AiRecommendation {
       // pour qu'un même champ serve au seuil de confiance et à video_language.
       youtubeLanguage:
           (json['youtube_language'] as String?) ?? (json['detected_language'] as String?),
+      // D3.2 — alias candidat (rattachement assisté) : lu depuis la clé
+      // `alias_candidate` du jsonb. Entrées vides → null (défensif).
+      aliasCandidate: _parseAliasCandidate(json['alias_candidate']),
     );
+  }
+
+  /// Parse défensif de la clé `alias_candidate` du jsonb ai_recommendation :
+  /// null si absente, mal formée, ou avec alias/game vides.
+  static AiAliasCandidate? _parseAliasCandidate(Object? raw) {
+    if (raw is! Map) return null;
+    final candidate =
+        AiAliasCandidate.fromJson(Map<String, dynamic>.from(raw));
+    if (candidate.alias.isEmpty || candidate.game.isEmpty) return null;
+    return candidate;
   }
 
   Map<String, dynamic> toJson() => {
@@ -203,5 +249,6 @@ class AiRecommendation {
         if (analyzedAt != null) 'analyzed_at': analyzedAt!.toIso8601String(),
         if (needsGameCreation) 'needs_game_creation': true,
         if (youtubeLanguage != null) 'youtube_language': youtubeLanguage,
+        if (aliasCandidate != null) 'alias_candidate': aliasCandidate!.toJson(),
       };
 }

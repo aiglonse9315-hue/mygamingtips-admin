@@ -99,6 +99,7 @@ class _AdminShellState extends State<AdminShell> {
   }
 
   String? _lastSeenActionError;
+  String? _lastSeenActionNotice;
 
   void _onStoreChanged() {
     final store = context.read<StoreController>();
@@ -117,6 +118,21 @@ class _AdminShellState extends State<AdminShell> {
             textColor: Colors.white,
             onPressed: () {},
           ),
+        ),
+      );
+    }
+    // D3.4 — notice d'action (avertissement LÉGER, orange) : ex. alias
+    // candidat non créé après une validation réussie. Distincte de l'erreur
+    // rouge : l'opération principale a abouti.
+    final notice = store.lastActionNotice;
+    if (notice != null && notice != _lastSeenActionNotice && mounted) {
+      _lastSeenActionNotice = notice;
+      store.clearActionNotice();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(notice),
+          backgroundColor: Colors.orange.shade800,
+          duration: const Duration(seconds: 6),
         ),
       );
     }

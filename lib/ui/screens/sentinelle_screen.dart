@@ -148,6 +148,32 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     _toVerifyEditedTitles[suggestionId] = title;
   }
 
+  /// D3.3 — Alias candidats DÉCOCHÉS par l'admin (key = suggestion ID).
+  /// Un alias candidat est COCHÉ PAR DÉFAUT (créé à la validation) tant que
+  /// l'admin ne l'a pas décoché — décoché = jamais créé (décision §70.7 :
+  /// zéro alias anarchique). Source de vérité remontée par les cellules
+  /// « Alias candidat » des boards (pattern editedTitles).
+  final Set<String> _aliasCandidateUnchecked = <String>{};
+
+  /// Enregistre le choix de l'admin sur la case « Ajouter cet alias à la
+  /// base à la validation ». setState : l'icône de la case dépend de cet
+  /// état (contrairement aux TextField autonomes).
+  void _setAliasCandidateChecked(String suggestionId, bool checked) {
+    setState(() {
+      if (checked) {
+        _aliasCandidateUnchecked.remove(suggestionId);
+      } else {
+        _aliasCandidateUnchecked.add(suggestionId);
+      }
+    });
+  }
+
+  /// Vrai si l'alias candidat de [s] doit être créé à la validation :
+  /// candidat présent ET case non décochée (défaut = cochée).
+  bool _isAliasCandidateChecked(Suggestion s) =>
+      s.aiRecommendation?.aliasCandidate != null &&
+      !_aliasCandidateUnchecked.contains(s.id);
+
   /// Titres pour insertion modifiés par l'admin (section « Jeux à créer »).
   /// Key = ID de suggestion, value = titre saisi. Absent de la map = titre
   /// calculé conservé.
@@ -346,12 +372,16 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     final gameOverrides = <String, String>{};
     final categoryOverrides = <String, String>{};
     final titleOverrides = <String, String>{};
+    // D3.3/D3.4 — ids des suggestions dont l'alias candidat est COCHÉ
+    // (défaut) : l'alias sera créé en best-effort après validation.
+    final aliasCandidateCheckedIds = <String>{};
     for (final s in items) {
       final g = _editedGames[s.id];
       if (g != null && g.trim().isNotEmpty) gameOverrides[s.id] = g;
       categoryOverrides[s.id] = _smartCategoryFor(s, _editedCategories[s.id]);
       final t = _editedTitles[s.id];
       if (t != null && t.trim().isNotEmpty) titleOverrides[s.id] = t;
+      if (_isAliasCandidateChecked(s)) aliasCandidateCheckedIds.add(s.id);
     }
 
     setState(() {
@@ -365,6 +395,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
         gameOverrides: gameOverrides,
         categoryOverrides: categoryOverrides,
         titleOverrides: titleOverrides,
+        aliasCandidateCheckedIds: aliasCandidateCheckedIds,
         onProgress: (done, total) {
           if (!mounted) return;
           setState(() {
@@ -386,6 +417,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
           _editedGames.removeWhere((id, _) => !remaining.contains(id));
           _editedCategories.removeWhere((id, _) => !remaining.contains(id));
           _editedTitles.removeWhere((id, _) => !remaining.contains(id));
+          _aliasCandidateUnchecked.removeWhere((id) => !remaining.contains(id));
         });
       }
     }
@@ -673,6 +705,8 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                 onCategoryChanged: _setEditedCategory,
                 editedTitles: _editedTitles,
                 onTitleChanged: _setEditedTitle,
+                aliasUncheckedIds: _aliasCandidateUnchecked,
+                onAliasCandidateChanged: _setAliasCandidateChecked,
               ),
             ),
 
@@ -819,6 +853,8 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                 onTitleChanged: _setToVerifyEditedTitle,
                 selectedIds: _toVerifySelected,
                 onToggle: _toggleVerifySelect,
+                aliasUncheckedIds: _aliasCandidateUnchecked,
+                onAliasCandidateChanged: _setAliasCandidateChecked,
               ),
             ),
           const SizedBox(height: 32),
@@ -1134,6 +1170,8 @@ class _TrustedTable extends StatefulWidget {
     required this.onCategoryChanged,
     required this.editedTitles,
     required this.onTitleChanged,
+    required this.aliasUncheckedIds,
+    required this.onAliasCandidateChanged,
   });
 
   final List<Suggestion> suggestions;
@@ -1183,6 +1221,15 @@ class _TrustedTable extends StatefulWidget {
   /// pour que « Valider sélection » et « Tout valider » utilisent le titre
   /// saisi, pas seulement le bouton « 1 clic » de la ligne.
   final void Function(String suggestionId, String title) onTitleChanged;
+
+  /// D3.3 — ids des suggestions dont l'alias candidat a été DÉCOCHÉ par
+  /// l'admin (source de vérité : [_SentinelleScreenState]). Un candidat
+  /// absent de ce set est considéré COCHÉ (défaut).
+  final Set<String> aliasUncheckedIds;
+
+  /// D3.3 — remonte le choix de l'admin sur la case « Ajouter cet alias à
+  /// la base à la validation » d'une ligne.
+  final void Function(String suggestionId, bool checked) onAliasCandidateChanged;
 
   @override
   State<_TrustedTable> createState() => _TrustedTableState();
@@ -1571,6 +1618,9 @@ class _TrustedTableState extends State<_TrustedTable> {
             'Catégorie (modifiable)',
             'Confiance',
             'Vues',
+            // D3.3 — insérée APRÈS « Vues » (index 7) pour préserver les
+            // index de tri existants (5 = Confiance, 6 = Vues).
+            'Alias candidat',
             'Actions',
           ],
           // En-tête interactif pour la colonne 0 : case « toute la page ».
@@ -1612,6 +1662,7 @@ class _TrustedTableState extends State<_TrustedTable> {
             'Titre pour insertion (modifiable)',
             'Jeu IA (modifiable)',
             'Catégorie (modifiable)',
+            'Alias candidat',
             'Actions',
           ],
           rows: pageItems.map((s) {
@@ -1710,6 +1761,16 @@ class _TrustedTableState extends State<_TrustedTable> {
                   color: Theme.of(context).textTheme.bodySmall?.color,
                 ),
               ),
+              // D3.3 — étiquette + case « Ajouter cet alias à la base à la
+              // validation » (cochée par défaut) quand l'assistant borné a
+              // rattaché le contenu sous un nom nouveau.
+              _AliasCandidateCell(
+                candidate: ai.aliasCandidate,
+                checked: ai.aliasCandidate != null &&
+                    !widget.aliasUncheckedIds.contains(s.id),
+                onChanged: (checked) =>
+                    widget.onAliasCandidateChanged(s.id, checked),
+              ),
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -1722,6 +1783,10 @@ class _TrustedTableState extends State<_TrustedTable> {
                         widget.editedCategories[s.id],
                       ),
                       titleOverride: titleController.text,
+                      // D3.4 — l'alias candidat n'est créé QUE si la case
+                      // est cochée (défaut) au moment du clic.
+                      aliasCandidateChecked: ai.aliasCandidate != null &&
+                          !widget.aliasUncheckedIds.contains(s.id),
                     ),
                     icon: const Icon(Icons.bolt_rounded, size: 16),
                     label: const Text('1 clic'),
@@ -1769,6 +1834,8 @@ class _ToVerifyTable extends StatefulWidget {
     required this.suggestions,
     required this.editedTitles,
     required this.onTitleChanged,
+    required this.aliasUncheckedIds,
+    required this.onAliasCandidateChanged,
     this.selectedIds,
     this.onToggle,
   });
@@ -1786,6 +1853,15 @@ class _ToVerifyTable extends StatefulWidget {
   /// — remonte la saisie au parent pour qu'elle survive à la purge des
   /// contrôleurs orphelins (I-002 + I-003).
   final void Function(String suggestionId, String title) onTitleChanged;
+
+  /// D3.3 — ids des suggestions dont l'alias candidat a été DÉCOCHÉ par
+  /// l'admin (source de vérité : [_SentinelleScreenState]). Un candidat
+  /// absent de ce set est considéré COCHÉ (défaut).
+  final Set<String> aliasUncheckedIds;
+
+  /// D3.3 — remonte le choix de l'admin sur la case « Ajouter cet alias à
+  /// la base à la validation » d'une ligne.
+  final void Function(String suggestionId, bool checked) onAliasCandidateChanged;
 
   final Set<String>? selectedIds;
   final ValueChanged<String>? onToggle;
@@ -1996,6 +2072,15 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
           color: isReject ? AppColors.categoryVideo : AppColors.plusGold,
         ),
       ),
+      // D3.3 — étiquette + case « Ajouter cet alias à la base à la
+      // validation » (cochée par défaut) quand l'assistant borné a rattaché
+      // le contenu sous un nom nouveau.
+      _AliasCandidateCell(
+        candidate: ai?.aliasCandidate,
+        checked: ai?.aliasCandidate != null &&
+            !widget.aliasUncheckedIds.contains(s.id),
+        onChanged: (checked) => widget.onAliasCandidateChanged(s.id, checked),
+      ),
       Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -2012,6 +2097,11 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
               builder: (_) => SuggestionReviewDialog(
                 suggestion: s,
                 initialTitle: titleController.text,
+                // D3.3/D3.4 — l'état de la case « alias » de la ligne est
+                // transmis au dialogue : l'alias n'est créé QUE s'il est
+                // coché (défaut) au moment de la validation.
+                aliasCandidateChecked: ai?.aliasCandidate != null &&
+                    !widget.aliasUncheckedIds.contains(s.id),
               ),
             ),
           ),
@@ -2092,6 +2182,7 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
                   'Verdict IA',
                   'Raison',
                   'Confiance',
+                  'Alias candidat',
                   'Actions',
                 ]
               : const [
@@ -2100,6 +2191,7 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
                   'Verdict IA',
                   'Raison',
                   'Confiance',
+                  'Alias candidat',
                   'Actions',
                 ],
           rows: pageItems.map((s) => _buildRow(context, store, s)).toList(),
@@ -2149,6 +2241,89 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// D3.3 — Cellule « Alias candidat » des boards Sentinelle : étiquette
+/// « 🏷️ Alias : ‹alias› → ‹jeu› » + case COCHÉE PAR DÉFAUT (« Ajouter cet
+/// alias à la base à la validation »). Décochée = l'alias ne sera JAMAIS
+/// créé (décision §70.7 : zéro alias anarchique). L'état est remonté au
+/// parent via [onChanged] (pattern editedTitles).
+///
+/// Quand [candidate] est null (pas de rattachement assisté ou rattachement
+/// trivial), la cellule affiche « — » (comme les autres cellules vides).
+class _AliasCandidateCell extends StatelessWidget {
+  const _AliasCandidateCell({
+    required this.candidate,
+    required this.checked,
+    required this.onChanged,
+  });
+
+  /// L'alias candidat lu depuis le jsonb ai_recommendation (null = rien à
+  /// afficher au-delà du tiret).
+  final AiAliasCandidate? candidate;
+
+  /// État de la case (cochée par défaut tant que l'admin n'a pas décoché).
+  final bool checked;
+
+  /// Remonte le basculement de la case au parent.
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final candidate = this.candidate;
+    if (candidate == null) {
+      return const Text('—', style: TextStyle(fontSize: 12));
+    }
+    return Tooltip(
+      message: 'L\'assistant a rattaché ce contenu à « ${candidate.game} » '
+          'alors que le nom suggéré d\'origine était « ${candidate.alias} ».\n\n'
+          'Case cochée (défaut) : l\'alias « ${candidate.alias} » sera ajouté '
+          'aux alias de « ${candidate.game} » à la validation — les prochains '
+          'contenus matcheront directement.\n'
+          'Décochez pour ne JAMAIS créer cet alias.',
+      showDuration: const Duration(seconds: 8),
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(12),
+      textStyle: const TextStyle(fontSize: 12, color: Colors.white),
+      decoration: BoxDecoration(
+        color: Colors.grey[900],
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: InkWell(
+        onTap: () => onChanged(!checked),
+        borderRadius: BorderRadius.circular(4),
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 210),
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                checked
+                    ? Icons.check_box_rounded
+                    : Icons.check_box_outline_blank_rounded,
+                size: 16,
+                color: checked ? AppColors.neonCyan : null,
+              ),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  '🏷️ ${candidate.alias} → ${candidate.game}',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: checked ? AppColors.neonCyan : null,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _SectionHeader extends StatelessWidget {
   const _SectionHeader({
