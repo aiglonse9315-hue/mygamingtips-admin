@@ -204,7 +204,11 @@ class AiRecommendation {
         orElse: () => AiVerdict.caution,
       ),
       confidence: (json['confidence'] as num?)?.toDouble() ?? 0.0,
-      reason: json['reason'] as String? ?? '',
+      // Chantier B (fix revue I-001) : les suggestions purgées au ban portent
+      // leur motif dans `reject_reason` SANS clé `reason` ni verdict IA —
+      // fallback pour que le board « Refusées » affiche le vrai motif au lieu
+      // d'un tooltip vide. `reason` reste prioritaire quand il existe.
+      reason: _parseReason(json),
       suggestedGame: json['suggested_game'] as String?,
       suggestedCategory: json['suggested_category'] as String?,
       youtubeViews: json['youtube_views'] as int?,
@@ -223,6 +227,15 @@ class AiRecommendation {
       // `alias_candidate` du jsonb. Entrées vides → null (défensif).
       aliasCandidate: _parseAliasCandidate(json['alias_candidate']),
     );
+  }
+
+  /// Motif affiché : `reason` (analyse Sentinelle) en priorité ; à défaut
+  /// `reject_reason` (purge au ban, chantier B — pas de verdict IA). Jamais
+  /// null : chaîne vide si les deux clés sont absentes/vides.
+  static String _parseReason(Map<String, dynamic> json) {
+    final reason = json['reason'] as String?;
+    if (reason != null && reason.isNotEmpty) return reason;
+    return json['reject_reason'] as String? ?? '';
   }
 
   /// Parse défensif de la clé `alias_candidate` du jsonb ai_recommendation :

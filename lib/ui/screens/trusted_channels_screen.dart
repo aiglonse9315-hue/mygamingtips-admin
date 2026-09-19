@@ -7,6 +7,7 @@ import '../../data/supabase_sync.dart';
 import '../../domain/models/game.dart';
 import '../../domain/models/trusted_channel.dart';
 import '../../state/store_controller.dart';
+import '../widgets/banned_channels_panel.dart';
 import '../widgets/confirm_dialog.dart';
 
 /// Écran « Chaînes YT » — gestion des chaînes YouTube de confiance par jeu,
@@ -276,6 +277,21 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
                 onPressed: _showAddDialog,
                 icon: const Icon(Icons.add_rounded, size: 18),
                 label: const Text('Ajouter une chaîne'),
+              ),
+              const SizedBox(width: 8),
+              // Chantier B (§70.3) : panneau des chaînes bannies (purge auto
+              // de la file pending au ban ; publiés rapportés, retrait
+              // manuel au clic du rapport).
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.categoryVideo,
+                  side: BorderSide(
+                    color: AppColors.categoryVideo.withValues(alpha: 0.6),
+                  ),
+                ),
+                onPressed: () => BannedChannelsPanel.show(context),
+                icon: const Icon(Icons.block_rounded, size: 18),
+                label: const Text('🚫 Bannir'),
               ),
             ],
           ),

@@ -56,5 +56,36 @@ void main() {
       expect(s2.author.id, 'g1');
       expect(s2.author.displayName, 'Test');
     });
+
+    test('AiRecommendation — fallback reject_reason (purge au ban, I-001)', () {
+      // Purge chantier B : ni verdict ni reason, seulement reject_reason →
+      // le motif doit être visible (board « Refusées »), verdict par défaut.
+      final purged = AiRecommendation.fromJson(const {
+        'reject_reason': 'Chaîne bannie',
+      });
+      expect(purged.reason, 'Chaîne bannie');
+      expect(purged.verdict, AiVerdict.caution);
+
+      // Analyse Sentinelle normale : reason prioritaire, JAMAIS écrasée par
+      // un éventuel reject_reason résiduel.
+      final analyzed = AiRecommendation.fromJson(const {
+        'verdict': 'recommended',
+        'confidence': 0.99,
+        'reason': 'Tuto FR validé',
+        'reject_reason': 'Chaîne bannie',
+      });
+      expect(analyzed.reason, 'Tuto FR validé');
+      expect(analyzed.verdict, AiVerdict.recommended);
+
+      // reason vide → fallback actif ; les deux absentes → chaîne vide
+      // (comportement d'avant le fix, inchangé).
+      final emptyReason = AiRecommendation.fromJson(const {
+        'reason': '',
+        'reject_reason': 'Chaîne bannie',
+      });
+      expect(emptyReason.reason, 'Chaîne bannie');
+      final nothing = AiRecommendation.fromJson(const {'verdict': 'caution'});
+      expect(nothing.reason, '');
+    });
   });
 }

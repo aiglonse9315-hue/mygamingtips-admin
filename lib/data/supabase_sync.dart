@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../domain/models/admin_user_account.dart';
+import '../domain/models/banned_channel.dart';
 import '../domain/models/category.dart';
 import '../domain/models/content.dart';
 import '../domain/models/game.dart';
@@ -1167,6 +1168,78 @@ class SupabaseSync {
   /// et le jeu ne sont pas touchés).
   Future<void> deleteTrustedChannel(String id) async {
     await _post('trusted-channels/delete', {'id': id});
+  }
+
+  // ===========================================================================
+  // CHAÎNES YOUTUBE BANNIES (routes EF channels/* — chantier B, migration
+  // 0064, contrat §70.3)
+  // ===========================================================================
+
+  /// Liste paginée des chaînes bannies (route EF `channels/banned-list`).
+  ///
+  /// [page] : index de la page (0-based) ; [pageSize] borné à 100 côté
+  /// serveur. Retourne les entrées de la page + le total serveur.
+  Future<({List<BannedChannel> items, int total})> fetchBannedChannels({
+    int page = 0,
+    int pageSize = 20,
+  }) async {
+    final Map<String, dynamic> data = await _post('channels/banned-list', {
+      'page': page,
+      'pageSize': pageSize.clamp(1, 100),
+    });
+    final List<dynamic> rows = data['channels'] as List? ?? [];
+    return (
+      items: rows
+          .whereType<Map<String, dynamic>>()
+          .map(BannedChannel.fromJson)
+          .toList(),
+      total: (data['total'] as num?)?.toInt() ?? rows.length,
+    );
+  }
+
+  /// Bannit une chaîne YouTube (route EF `channels/ban`) : [handleOrUrl]
+  /// accepte un handle nu (avec ou sans '@') ou une URL de chaîne
+  /// (…/@xxx, …/channel/UC…, …/c/…) — la normalisation est faite côté
+  /// serveur. La file pending de la chaîne est purgée automatiquement
+  /// (motif « Chaîne bannie ») ; le rapport liste les contenus déjà
+  /// publiés (retrait manuel via [unpublishByChannel]).
+  Future<BanChannelReport> banChannel({
+    required String handleOrUrl,
+    required String reason,
+    String? displayName,
+  }) async {
+    final Map<String, dynamic> data = await _post('channels/ban', {
+      'handle': handleOrUrl,
+      'reason': reason,
+      if (displayName != null && displayName.trim().isNotEmpty)
+        'display_name': displayName.trim(),
+    });
+    return BanChannelReport.fromJson(data);
+  }
+
+  /// Lève un bannissement (route EF `channels/unban`) — [id] = bigserial
+  /// de la ligne `banned_channels`.
+  Future<void> unbanChannel(int id) async {
+    await _post('channels/unban', {'id': id});
+  }
+
+  /// Retire les contenus DÉJÀ publiés d'une chaîne (route EF
+  /// `contents/unpublish-by-channel`) — appelé UNIQUEMENT au clic manuel
+  /// du rapport de bannissement (jamais automatique, contrat §70.3).
+  /// Retourne le nombre de contenus supprimés et leur liste {id,title,url}.
+  Future<({int deleted, List<Map<String, dynamic>> removed})>
+      unpublishByChannel(String handle) async {
+    final Map<String, dynamic> data = await _post(
+      'contents/unpublish-by-channel',
+      {'handle': handle},
+    );
+    return (
+      deleted: (data['deleted'] as num?)?.toInt() ?? 0,
+      removed: (data['removed'] as List?)
+              ?.whereType<Map<String, dynamic>>()
+              .toList() ??
+          const [],
+    );
   }
 
   // ===========================================================================
