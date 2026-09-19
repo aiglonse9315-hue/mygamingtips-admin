@@ -1859,7 +1859,11 @@ class StoreController extends ChangeNotifier {
         : _cleanTitle(s);
     final game = gameName?.trim();
     if (game == null || game.isEmpty) return base;
-    return _cleanTitleForInsertion(base, gameName: game);
+    // D1.4 — titres traduits du jeu (cache best-effort du StoreController ;
+    // null si non chargé — comportement antérieur inchangé).
+    return _cleanTitleForInsertion(base,
+        gameName: game,
+        translatedNames: _gameTranslationsCache[_normalizeGameName(game)]);
   }
 
   /// Titre d'insertion effectif : l'override saisi par l'admin (colonne
@@ -2025,10 +2029,21 @@ class StoreController extends ChangeNotifier {
       _romanPattern,
       (m) => '${m.group(1)}${_romanToArabic[m.group(2)]!}',
     );
-    // Suffixes d'édition courants.
+    // Suffixes d'édition courants. D1.8 : « remaster », « remastered » et
+    // « remake » (formes avec espace ou « : ») sont désormais retirés AU
+    // MATCHING — « Elden Ring Remaster » rattache à « Elden Ring » — MAIS
+    // la mention d'édition n'est jamais une forme retirée du titre pour
+    // insertion (normalize l'enlève du canonique : elle reste VISIBLE dans
+    // le titre proposé, choix du brief item 6).
     const suffixesToRemove = [
       ': wild hunt',
       ': enhanced edition',
+      ' remaster',
+      ' remastered',
+      ' remake',
+      ': remaster',
+      ': remastered',
+      ': remake',
       ' game of the year edition',
       ' goty edition',
       ' definitive edition',
@@ -2224,8 +2239,10 @@ class StoreController extends ChangeNotifier {
         buffer.write("['’]?");
       }
     }
-    // Préposition de lieu optionnelle AVANT la mention (règle 12/09/2026).
-    final prep = withPreposition ? r'(dans|in|sur|on)[\W_]+' : '';
+    // Préposition/fragment optionnel AVANT la mention (règle 12/09/2026,
+    // liste étendue D1.3 = [_orphanPreps]) — consommé UNIQUEMENT s'il
+    // PRÉCÈDE directement la mention du jeu (jamais de retrait agressif).
+    final prep = withPreposition ? '($_orphanPrepAlt)[\\W_]+' : '';
     return RegExp(
       '(^|[^\\p{L}\\p{N}])$prep$buffer(?![\\p{L}\\p{N}])',
       caseSensitive: false,
@@ -2235,25 +2252,41 @@ class StoreController extends ChangeNotifier {
 
   /// Nettoie un titre avant insertion (copie autonome de
   /// SentinelleRunner.cleanTitleForInsertion, tools/vision) :
-  /// (a) retire les hashtags (règle 11/09/2026) ;
+  /// (a) retire les hashtags (règle 11/09/2026) — D1.1 : les hashtags
+  ///     NUMÉRIQUES (`#328` — suites/séries) sont conservés ;
   /// (b) retire TOUTES les mentions du jeu [gameName] — nom canonique ET
   ///     chaque alias connu pointant vers lui (règle 12/09/2026 : le contenu
-  ///     est déjà associé au jeu dans l'app, répéter le nom est inutile) ;
-  /// (c) nettoie les artefacts du retrait (espaces multiples, séparateurs
-  ///     orphelins en bordure, séparateurs doublés au milieu) ;
+  ///     est déjà associé au jeu dans l'app, répéter le nom est inutile) —
+  ///     D1.4 : [translatedNames] (titres `game_translations` du jeu, cache
+  ///     best-effort du StoreController) ajoutés aux formes retirées ;
+  ///     D1.5 : formes partielles (préfixe avant « : » ≥ 10 car. et ≥ 2
+  ///     mots) ; D1.2 : mention encadrée de `()`/`[]` → encadrement retiré ;
+  /// (c) nettoie les artefacts du retrait (espaces multiples, paires vides,
+  ///     prépositions orphelines BORNÉES aux bordures/après séparateur
+  ///     (D1.3, [_orphanPreps]) ET conditionnées à un retrait effectif
+  ///     (B-002), mentions de langue (D1.6, [_stripLanguageMentions]),
+  ///     séparateurs orphelins en bordure, séparateurs doublés au milieu) ;
+  ///     D1.7 : première lettre en majuscule.
+  ///     Révision D1 (correctifs de revue prouvés par exécution) : B-001
+  ///     (`()`/`[]` retirés des classes de bordure — la purge D1.2 des
+  ///     paires vides suffit), B-002 (orphelins seulement si une mention du
+  ///     jeu a été retirée — cicatrice de retrait), I-001 (re-collapse des
+  ///     espaces après la passe après-séparateur) ;
   /// (d) garde-fou : si le résultat fait moins de 3 caractères ou est vide,
   ///     retourne le titre seulement dé-hashtagué (jamais de titre vide).
-  static String _cleanTitleForInsertion(String title, {String? gameName}) {
+  static String _cleanTitleForInsertion(String title,
+      {String? gameName, List<String>? translatedNames}) {
     // (a) Hashtags — SAUF pour les jeux d'exception (12/09/2026 : Roblox
     // contient de nombreux jeux/modes en son sein, les hashtags les
     // différencient — même règle que les bots, cf. _keepHashtagsGames).
+    // D1.1 : les hashtags numériques (#328) sont conservés pour tous.
     final game = gameName?.trim();
     final keepHashtags = game != null &&
         _keepHashtagsGames.contains(_normalizeGameName(game));
     final withoutHashtags = keepHashtags
         ? title.replaceAll(RegExp(r'\s+'), ' ').trim()
         : title
-            .replaceAll(RegExp(r'#\S+'), '')
+            .replaceAll(_hashtagPattern, '')
             .replaceAll(RegExp(r'\s+'), ' ')
             .trim();
 
@@ -2270,45 +2303,320 @@ class StoreController extends ChangeNotifier {
         forms.add(entry.key);
       }
     }
+    // D1.4 — titres TRADUITS du jeu (table game_translations), fournis par
+    // l'appelant depuis le cache (null = non disponibles : comportement
+    // antérieur inchangé).
+    if (translatedNames != null) {
+      for (final t in translatedNames) {
+        final norm = _normalizeGameName(t);
+        if (norm.length >= 3) forms.add(norm);
+      }
+    }
+    // D1.5 — formes PARTIELLES : préfixe avant « : » du nom canonique brut
+    // et de chaque traduction brute (« Horizon Forbidden West » pour
+    // « Horizon Forbidden West: Burning Shores »).
+    _addColonPrefixForm(game, forms);
+    if (translatedNames != null) {
+      for (final t in translatedNames) {
+        _addColonPrefixForm(t, forms);
+      }
+    }
 
-    // Retrait sur le titre dé-hashtagué (accents conservés), insensible à
-    // la casse, aux accents et à la ponctuation. Formes les plus longues
-    // d'abord pour éviter les retraits partiels.
-    var result = withoutHashtags;
+    // Retrait sur le titre dé-hashtagué ET débarrassé des mentions de langue
+    // (D1.6 — accents conservés), insensible à la casse, aux accents et à
+    // la ponctuation. Formes les plus longues d'abord pour éviter les
+    // retraits partiels.
+    var result = _stripLanguageMentions(withoutHashtags);
     final sorted = forms.toList()..sort((a, b) => b.length.compareTo(a.length));
+    // B-002 : vrai dès qu'au moins une mention du jeu a été retirée — les
+    // passes orphelines (D1.3) ne nettoient que la cicatrice d'un retrait.
+    var removedAny = false;
     for (final form in sorted) {
-      // Règle prépositions (12/09/2026) : mention PRÉCÉDÉE de « dans »,
-      // « in », « sur », « on » → retirée avec le nom du jeu (« Comment
-      // jouer son nécromancien Dans Albion » → « Comment jouer son
-      // nécromancien »).
+      // Règle prépositions (12/09/2026, liste étendue D1.3) : mention
+      // PRÉCÉDÉE d'une préposition/fragment de [_orphanPreps] (« dans »,
+      // « in », « pour », « for »…) → retirée avec le nom du jeu
+      // (« Comment jouer son nécromancien Dans Albion » → « Comment jouer
+      // son nécromancien » ; « Best build for Elden Ring » → « Best build »).
       final prepPattern = _gameMentionPattern(form, withPreposition: true);
       final pattern = _gameMentionPattern(form);
       if (prepPattern != null && prepPattern.hasMatch(result)) {
         result = result.replaceAllMapped(prepPattern, (m) => m.group(1) ?? '');
+        removedAny = true;
       } else if (pattern != null) {
         // Le caractère de limite avant la mention (groupe 1) est réinséré.
+        final before = result;
         result = result.replaceAllMapped(pattern, (m) => m.group(1) ?? '');
+        if (result != before) removedAny = true;
       }
     }
 
     // (c) Nettoyage post-retrait.
+    // D1.2 — purge des paires vides laissées par une mention encadrée du jeu
+    // (« Guide complet () » → « Guide complet ») ; en boucle pour les
+    // imbrications (« ( []) »).
+    var prevPairs = '';
+    while (prevPairs != result) {
+      prevPairs = result;
+      result = result
+          .replaceAll(RegExp(r'\(\s*\)'), '')
+          .replaceAll(RegExp(r'\[\s*\]'), '');
+    }
     result = result.replaceAll(RegExp(r'\s+'), ' ');
-    // Préposition orpheline en fin de titre (« Astuces Dans » → « Astuces »).
-    result = result.replaceAll(
-        RegExp(r'\s+(dans|in|sur|on)$', caseSensitive: false), '');
+    // D1.3 — prépositions/fragments orphelins (liste partagée
+    // [_orphanPreps]) — BORNÉS : en FIN de titre (en boucle), en DÉBUT de
+    // titre, et juste après un séparateur. JAMAIS en milieu de phrase
+    // (« Guide de survie » intact).
+    // B-002 : ces passes ne s'exécutent QUE si une mention du jeu a été
+    // retirée ([removedAny]) — un orphelin est la cicatrice d'un retrait ;
+    // sans retrait, « DO it yourself build » serait massacré.
+    if (removedAny) {
+      var prevEnd = '';
+      while (prevEnd != result) {
+        prevEnd = result;
+        result = result.replaceAll(_orphanPrepEnd, '');
+      }
+      var prevStart = '';
+      while (prevStart != result) {
+        prevStart = result;
+        result = result.replaceAll(_orphanPrepStart, '');
+      }
+      result = result
+          .replaceAllMapped(_orphanPrepAfterSep, (m) => '${m.group(1)} ');
+      // I-001 : la passe après-séparateur ajoute un espace alors que le
+      // lookahead en conserve déjà un → double espace résiduel (« Zelda :
+      // bons conseils ») ; re-collapse immédiat.
+      result = result.replaceAll(RegExp(r'\s+'), ' ');
+    }
     // Séparateurs doublés au milieu (« - - » → « - », « - : » → « - »).
     result = result.replaceAllMapped(
       RegExp(r'\s*([-–:|•])(?:\s*[-–:|•])+\s*'),
       (m) => ' ${m.group(1)} ',
     );
     // Séparateurs orphelins en bordure (« - Ep 1 » → « Ep 1 »).
-    result = result.replaceAll(RegExp(r'^[\s\-–:|•]+'), '');
-    result = result.replaceAll(RegExp(r'[\s\-–:|•]+$'), '');
+    // B-001 : `()` et `[]` RETIRÉS de la classe (ils mangeaient les
+    // encadrements légitimes, ex. « boss (spoiler) » → « boss (spoiler ») —
+    // la purge D1.2 des paires vides couvre « Guide complet () »/« [] Guide ».
+    result = result.replaceAll(RegExp(r'^[\s\-–:|•/]+'), '');
+    result = result.replaceAll(RegExp(r'[\s\-–:|•/]+$'), '');
     result = result.trim();
+
+    // D1.7 — normalisation finale : première lettre en majuscule (correction
+    // de casse minimale et sûre — le reste du titre n'est pas touché).
+    if (result.isNotEmpty) {
+      final first = result[0].toUpperCase();
+      if (first != result[0]) result = first + result.substring(1);
+    }
 
     // (d) Garde-fou : jamais de titre vide ou quasi vide en base.
     if (result.length < 3) return withoutHashtags;
     return result;
+  }
+
+  // ── D1 — listes partagées et helpers du nettoyage de titre ──────────────
+
+  /// D1.1 — hashtag NON numérique : `#BOTW` est retiré, `#328` (suite/série)
+  /// est conservé. Le lookahead exige que le hashtag ne soit pas composé
+  /// uniquement de chiffres (`#328abc` est retiré, `#328` ou `#328,` gardés).
+  static final RegExp _hashtagPattern = RegExp(
+    r'#(?!\d+(?![\p{L}\p{N}_]))\S+',
+    unicode: true,
+  );
+
+  /// D1.3 — prépositions/fragments orphelins supprimés après retrait du jeu
+  /// (liste partagée : variante `withPreposition` de [_gameMentionPattern]
+  /// ET nettoyage post-retrait). Le tiret isolé « - » est couvert par les
+  /// séparateurs orphelins de bordure (étape c). Ordre : les formes longues
+  /// (« in the ») AVANT leurs préfixes (« in ») pour l'alternation regex.
+  static const List<String> _orphanPreps = [
+    'in the',
+    'for',
+    'em',
+    'at',
+    'de',
+    'à',
+    'to',
+    'en',
+    "'s",
+    'pour',
+    'of',
+    'do',
+    'dans',
+    'in',
+    'sur',
+    'on',
+  ];
+
+  /// Alternation regex de [_orphanPreps] : espaces = `\s+`, « 's » accepte
+  /// l'apostrophe droite ou typographique.
+  static final String _orphanPrepAlt = _orphanPreps.map((p) {
+    if (p == "'s") return r"['’]s";
+    return p.split(' ').map(RegExp.escape).join(r'\s+');
+  }).join('|');
+
+  /// D1.3 — préposition orpheline en FIN de titre (bouclée par l'appelant).
+  static final RegExp _orphanPrepEnd = RegExp(
+    '\\s+(?:$_orphanPrepAlt)\$',
+    caseSensitive: false,
+  );
+
+  /// D1.3 — préposition orpheline en DÉBUT de titre (bouclée).
+  static final RegExp _orphanPrepStart = RegExp(
+    '^(?:$_orphanPrepAlt)\\s+',
+    caseSensitive: false,
+  );
+
+  /// D1.3 — préposition orpheline juste APRÈS un séparateur (le séparateur,
+  /// groupe 1, est conservé).
+  static final RegExp _orphanPrepAfterSep = RegExp(
+    '([-–:|•/])\\s+(?:$_orphanPrepAlt)(?=\\s)',
+    caseSensitive: false,
+  );
+
+  /// D1.5 — ajoute à [forms] la forme PARTIELLE d'un nom brut contenant
+  /// « : » : le préfixe avant les deux-points (« Horizon Forbidden West:
+  /// Burning Shores » → « horizon forbidden west »), SEULEMENT s'il fait
+  /// ≥ 10 caractères ET ≥ 2 mots (anti « diablo » pour « diablo 4 »).
+  static void _addColonPrefixForm(String rawName, Set<String> forms) {
+    final colon = rawName.indexOf(':');
+    if (colon <= 0) return;
+    final prefix = rawName.substring(0, colon).trim();
+    if (prefix.length < 10) return;
+    if (prefix.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length < 2) {
+      return;
+    }
+    final norm = _normalizeGameName(prefix);
+    if (norm.length >= 3) forms.add(norm);
+  }
+
+  /// D1.6 — les 12 langues de l'app : formes longues/natives retirées des
+  /// titres (bordures, après séparateur, encadrement).
+  static const List<String> _languageLongForms = [
+    'español',
+    'français',
+    'english',
+    'deutsch',
+    'português',
+    'italiano',
+    'русский',
+    '日本語',
+    '中文',
+    '한국어',
+    'العربية',
+    'हिन्दी',
+  ];
+
+  /// D1.6 — codes langue : 2 lettres (codes canoniques du pack) + variantes
+  /// ISO-3 fréquentes dans les titres YouTube ([ESP], (FRA)…). Retirés
+  /// uniquement en MAJUSCULES, entre crochets/parenthèses ou accolés à un
+  /// séparateur en bordure — JAMAIS nus en milieu de titre.
+  static const List<String> _languageCodes = [
+    'FR', 'EN', 'ES', 'PT', 'DE', 'IT', 'RU', 'JA', 'ZH', 'KO', 'AR', 'HI',
+    'ESP', 'FRA', 'ENG', 'DEU', 'POR', 'ITA', 'RUS', 'JPN', 'KOR', 'ARA',
+    'HIN',
+  ];
+
+  static final String _langLongAlt =
+      _languageLongForms.map(RegExp.escape).join('|');
+  static final String _langCodeAlt = _languageCodes.join('|');
+
+  /// Mention de langue entre crochets/parenthèses : codes (MAJUSCULES
+  /// seulement) ou formes longues (casse insensible) — retirés AVEC
+  /// l'encadrement.
+  static final RegExp _langBracketedCode =
+      RegExp('[\\(\\[]\\s*(?:$_langCodeAlt)\\s*[\\)\\]]');
+  static final RegExp _langBracketedLong = RegExp(
+      '[\\(\\[]\\s*(?:$_langLongAlt)\\s*[\\)\\]]',
+      caseSensitive: false);
+
+  /// Grappe de mentions de langue en FIN de titre (formes longues et/ou
+  /// codes, séparés par espaces/séparateurs).
+  static final RegExp _langEndCluster = RegExp(
+      '(?:[\\s\\-–:|/]+(?:$_langLongAlt|$_langCodeAlt))+[\\s\\-–:|/]*\$',
+      caseSensitive: false);
+
+  /// Test « contient une forme longue » pour une grappe de fin.
+  static final RegExp _langLongWord =
+      RegExp(_langLongAlt, caseSensitive: false);
+
+  /// Forme(s) longue(s) en DÉBUT de titre (« Español Guide… »).
+  static final RegExp _langStartCluster = RegExp(
+      '^(?:$_langLongAlt)(?:[\\s\\-–:|/]+(?:$_langLongAlt))*(?=[\\s\\-–:|/]|\$)',
+      caseSensitive: false);
+
+  /// Code MAJUSCULE en bordure accolé à un séparateur (« | EN », « EN - »).
+  static final RegExp _langCodeEndSep =
+      RegExp('\\s*[-–:|/]+\\s*(?:$_langCodeAlt)\\s*\$');
+  static final RegExp _langCodeStartSep =
+      RegExp('^(?:$_langCodeAlt)\\s*[-–:|/]+\\s*');
+
+  /// Forme longue juste APRÈS un séparateur (milieu de titre).
+  static final RegExp _langLongAfterSep = RegExp(
+      '([-–:|/])\\s+(?:$_langLongAlt)(?=\\s|\$)',
+      caseSensitive: false);
+
+  /// D1.6 — retire les mentions de langue résiduelles d'un titre (le contenu
+  /// est déjà classé par langue dans l'app) : formes longues/natives des 12
+  /// langues et codes MAJUSCULES, BORNÉS aux bordures du titre, après un
+  /// séparateur ou entre crochets/parenthèses. Une grappe de fin n'est
+  /// retirée que si elle contient au moins une forme longue — un code court
+  /// nu en bordure (« act 1 walkthrough FR ») est CONSERVÉ.
+  static String _stripLanguageMentions(String input) {
+    var out = input;
+    // 1. Encadrements : [ESP], (FR), (Español)…
+    out = out.replaceAll(_langBracketedCode, '');
+    out = out.replaceAll(_langBracketedLong, '');
+    // 2. Grappe en fin de titre (« Guide complet EN Español ») — retirée si
+    //    elle contient au moins une forme longue ; bouclée par sécurité.
+    var prev = '';
+    while (prev != out) {
+      prev = out;
+      out = out.replaceAllMapped(_langEndCluster,
+          (m) => _langLongWord.hasMatch(m.group(0)!) ? '' : m.group(0)!);
+    }
+    // 3. Forme(s) longue(s) en début de titre.
+    out = out.replaceAll(_langStartCluster, '');
+    // 4. Code MAJUSCULE en bordure accolé à un séparateur.
+    out = out.replaceAll(_langCodeEndSep, '');
+    out = out.replaceAll(_langCodeStartSep, '');
+    // 5. Forme longue juste après un séparateur (milieu de titre).
+    out = out.replaceAllMapped(_langLongAfterSep, (m) => m.group(1)!);
+    return out.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  // ── D1.4 — cache des traductions de titres pour le nettoyage local ──
+
+  /// Cache nom de jeu normalisé → titres traduits (table game_translations),
+  /// utilisé par [_cleanTitleForInsertion] via [_titleForInsertion].
+  /// Chargé UNE fois par session en best-effort ([_loadGameTranslationsCache])
+  /// — l'admin ne recalcule les titres que pour le pré-remplissage et la
+  /// validation : le titre stocké en base est déjà nettoyé par les bots
+  /// (vision/CLI), cette couche aligne juste le calcul local.
+  static Map<String, List<String>> _gameTranslationsCache = const {};
+
+  /// Une seule tentative de chargement par session (best-effort).
+  static bool _gameTranslationsCacheTried = false;
+
+  /// Charge (best-effort, PostgREST anon paginé) les traductions de titres
+  /// de jeux dans [_gameTranslationsCache] — D1.4. Appelée en fire-and-
+  /// forget à la fin du sync du catalogue ([_syncGames]) ; un échec laisse
+  /// le cache vide (nettoyage sans traductions = comportement antérieur).
+  Future<void> _loadGameTranslationsCache() async {
+    if (_gameTranslationsCacheTried || sync == null) return;
+    _gameTranslationsCacheTried = true;
+    try {
+      final all = await sync!.fetchGameTranslationsAll();
+      if (all == null) return;
+      final byName = <String, List<String>>{};
+      for (final g in _games) {
+        final titles = all[g.id]?.values.toList();
+        if (titles != null && titles.isNotEmpty) {
+          byName[_normalizeGameName(g.name)] = titles;
+        }
+      }
+      _gameTranslationsCache = byName;
+    } catch (_) {
+      // Best-effort : sans traductions, le nettoyage reste celui d'avant.
+    }
   }
 
   /// Détermine la date de publication pour l'insertion d'un contenu.
@@ -3416,6 +3724,9 @@ class StoreController extends ChangeNotifier {
     _saveCursorFor(SyncDataset.games, maxUp);
     _markDatasetLoaded(SyncDataset.games);
     _store.saveGames(_games);
+    // D1.4 — charge (best-effort, fire-and-forget, une fois par session) les
+    // traductions de titres pour le nettoyage local des titres d'insertion.
+    unawaited(_loadGameTranslationsCache());
   }
 
   /// Dataset `contents` : full (count HEAD + pages ∥) ou incrémental

@@ -648,6 +648,51 @@ class SupabaseSync {
     return result;
   }
 
+  /// Récupère TOUTES les traductions de titres via PostgREST anon
+  /// (pagination 1000/page — même protocole que le GameTranslationsLoader
+  /// des bots) — D1.4. Retourne `{game_id: {lang: title}}`.
+  ///
+  /// Sert au cache de traductions du StoreController (nettoyage local des
+  /// titres d'insertion Sentinelle). BEST-EFFORT : retourne null en cas
+  /// d'erreur (réseau, statut non 200, parsing) — l'appelant garde alors un
+  /// cache vide (comportement antérieur, jamais de fetch par titre).
+  Future<Map<String, Map<String, String>>?> fetchGameTranslationsAll() async {
+    final out = <String, Map<String, String>>{};
+    const int pageSize = 1000;
+    try {
+      for (var page = 0;; page++) {
+        final res = await _withRetry(
+          () => http
+              .get(
+                Uri.parse(
+                  '$supabaseUrl/rest/v1/game_translations'
+                  '?select=game_id,lang,title'
+                  '&limit=$pageSize&offset=${page * pageSize}',
+                ),
+                headers: {'apikey': anonKey, 'Authorization': 'Bearer $anonKey'},
+              )
+              .timeout(requestTimeout),
+        );
+        if (res.statusCode != 200) return null;
+        final List<dynamic> rows = jsonDecode(res.body) as List? ?? [];
+        for (final row in rows) {
+          if (row is! Map) continue;
+          final gameId = row['game_id'];
+          final lang = row['lang'];
+          final title = row['title'];
+          if (gameId is! String || lang is! String || title is! String) {
+            continue;
+          }
+          out.putIfAbsent(gameId, () => {})[lang.toUpperCase().trim()] = title;
+        }
+        if (rows.length < pageSize) break;
+      }
+      return out;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Sauvegarde (upsert batch) les traductions du titre d'un jeu via la route
   /// `games/translate` (service_role).
   ///
