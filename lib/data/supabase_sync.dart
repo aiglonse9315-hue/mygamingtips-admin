@@ -951,6 +951,23 @@ class SupabaseSync {
         'granularity': granularity,
       });
 
+  /// Activité quotidienne réelle {from, to} (EF v77, migration 0067) :
+  /// [{day, dau, sessions, content_views, game_views}].
+  Future<Map<String, dynamic>> fetchAnalyticsActivity({
+    required DateTime from,
+    required DateTime to,
+  }) =>
+      _post('analytics/activity', {
+        'from': from.toIso8601String(),
+        'to': to.toIso8601String(),
+      });
+
+  /// Cohortes hebdomadaires de rétention (EF v77) : weeks borné 4-26
+  /// côté serveur ; retourne {weeks, cohorts: [{cohort_start, size, d1, d7,
+  /// d30, d1_pct, d7_pct, d30_pct}]}.
+  Future<Map<String, dynamic>> fetchAnalyticsRetention({int weeks = 8}) =>
+      _post('analytics/retention', {'weeks': weeks});
+
   Future<List<Map<String, dynamic>>> fetchPricing() async {
     final data = await _post('pricing/list', <String, dynamic>{});
     final list = data['pricing'] as List? ?? [];

@@ -411,4 +411,142 @@ void main() {
       expect(exportPrice(ctxFee, 'monthly'), 3.53);
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Chantier F2 — événements d'usage + rétention (EF v77, migration 0067)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  group('retentionPct (F2)', () {
+    test('division par zéro évitée (cohorte vide)', () {
+      expect(retentionPct(0, 0), 0);
+      expect(retentionPct(5, 0), 0);
+    });
+
+    test('arrondi à 0,1 point', () {
+      expect(retentionPct(1, 3), 33.3);
+      expect(retentionPct(2, 3), 66.7);
+      expect(retentionPct(10, 10), 100.0);
+      expect(retentionPct(0, 42), 0);
+    });
+  });
+
+  group('retentionBand (repères 40/20/10 %, §78)', () {
+    test('bornes exactes', () {
+      expect(retentionBand(40), RetentionBand.excellent);
+      expect(retentionBand(41.2), RetentionBand.excellent);
+      expect(retentionBand(39.9), RetentionBand.good);
+      expect(retentionBand(20), RetentionBand.good);
+      expect(retentionBand(19.9), RetentionBand.watch);
+      expect(retentionBand(10), RetentionBand.watch);
+      expect(retentionBand(9.9), RetentionBand.low);
+      expect(retentionBand(0), RetentionBand.low);
+    });
+  });
+
+  group('avgSessionsPerUserPerDay (F2)', () {
+    test('aucun utilisateur actif → 0 (division par zéro évitée)', () {
+      expect(avgSessionsPerUserPerDay(0, 0), 0);
+      expect(avgSessionsPerUserPerDay(120, 0), 0);
+    });
+
+    test('sessions ÷ actifs ÷ 30 jours', () {
+      // 900 sessions / 10 actifs / 30 j = 3 utilisations/utilisateur/jour.
+      expect(avgSessionsPerUserPerDay(900, 10), closeTo(3.0, 1e-9));
+      expect(avgSessionsPerUserPerDay(30, 30), closeTo(1 / 30, 1e-9));
+    });
+  });
+
+  group('isCohortMeasurable (fenêtre écoulée pour TOUTE la cohorte)', () {
+    // Cohorte du lundi 07/09/2026 → dernier inscrit possible : dimanche 13/09.
+    final cohortStart = DateTime(2026, 9, 7); // un lundi
+
+    test('D1 mesurable dès le 15/09 (13/09 + 1 jour, écoulé)', () {
+      expect(isCohortMeasurable(cohortStart, 1, DateTime(2026, 9, 14)), isFalse);
+      expect(isCohortMeasurable(cohortStart, 1, DateTime(2026, 9, 15)), isTrue);
+    });
+
+    test('D7 mesurable dès le 21/09, D30 dès le 14/10', () {
+      expect(isCohortMeasurable(cohortStart, 7, DateTime(2026, 9, 20)), isFalse);
+      expect(isCohortMeasurable(cohortStart, 7, DateTime(2026, 9, 21)), isTrue);
+      expect(
+        isCohortMeasurable(cohortStart, 30, DateTime(2026, 10, 13)),
+        isFalse,
+      );
+      expect(
+        isCohortMeasurable(cohortStart, 30, DateTime(2026, 10, 14)),
+        isTrue,
+      );
+    });
+
+    test('cohorte de la semaine courante : rien n\'est mesurable', () {
+      expect(isCohortMeasurable(cohortStart, 1, DateTime(2026, 9, 8)), isFalse);
+      expect(isCohortMeasurable(cohortStart, 7, DateTime(2026, 9, 12)), isFalse);
+    });
+  });
+
+  group('Modèles F2 (fromJson tolérant)', () {
+    test('ActivityDay : champs complets + défauts à 0', () {
+      final d = ActivityDay.fromJson(const {
+        'day': '2026-09-20',
+        'dau': 5,
+        'sessions': 12,
+        'content_views': 34,
+        'game_views': 8,
+      });
+      expect(d.day, '2026-09-20');
+      expect(d.dau, 5);
+      expect(d.sessions, 12);
+      expect(d.contentViews, 34);
+      expect(d.gameViews, 8);
+      final empty = ActivityDay.fromJson(const {});
+      expect(empty.day, '');
+      expect(empty.dau, 0);
+    });
+
+    test('RetentionCohort : compteurs + pourcentages dérivés', () {
+      final c = RetentionCohort.fromJson(const {
+        'cohort_start': '2026-09-07',
+        'size': 20,
+        'd1': 9,
+        'd7': 5,
+        'd30': 2,
+      });
+      expect(c.cohortStart, DateTime(2026, 9, 7));
+      expect(c.size, 20);
+      expect(c.d1Pct, 45.0);
+      expect(c.d7Pct, 25.0);
+      expect(c.d30Pct, 10.0);
+    });
+
+    test('AnalyticsOverview : bloc usage (défaut 0 si absent)', () {
+      final o = AnalyticsOverview.fromJson(const {
+        'usage': {
+          'dau_today': 3,
+          'mau_30d': 18,
+          'sessions_30d': 90,
+          'active_users_30d': 15,
+        },
+      });
+      expect(o.dauToday, 3);
+      expect(o.mau30d, 18);
+      expect(o.sessions30d, 90);
+      expect(o.activeUsers30d, 15);
+      // Sans bloc usage (EF v76 encore déployée) : pas d'erreur, 0 partout.
+      final legacy = AnalyticsOverview.fromJson(const {});
+      expect(legacy.dauToday, 0);
+      expect(legacy.mau30d, 0);
+    });
+  });
+
+  group('Libellés F2', () {
+    test('formatCohortWeek : lundi de la semaine ISO', () {
+      expect(formatCohortWeek(DateTime(2026, 9, 7)), '7 sept.');
+      expect(formatCohortWeek(DateTime(2026, 1, 26)), '26 janv.');
+    });
+
+    test('formatDayLabel : JJ/MM depuis YYYY-MM-DD', () {
+      expect(formatDayLabel('2026-09-20'), '20/09');
+      expect(formatDayLabel('invalide'), 'invalide');
+    });
+  });
 }

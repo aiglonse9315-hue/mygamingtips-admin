@@ -164,6 +164,12 @@ class AnalyticsOverview {
   final double revenueEstimatedTtc; // achats réels × prix catalogue
   final String currency;
 
+  // ── Bloc `usage` (EF v77, migration 0067 — chantier F2) ──
+  final int dauToday; // utilisateurs actifs du jour (jour UTC)
+  final int mau30d; // utilisateurs actifs sur 30 jours glissants
+  final int sessions30d; // session_start sur 30 jours glissants
+  final int activeUsers30d; // utilisateurs distincts sur 30 jours glissants
+
   const AnalyticsOverview({
     this.accountsTotal = 0,
     this.accountsNew = 0,
@@ -179,6 +185,10 @@ class AnalyticsOverview {
     this.newPaidYearly = 0,
     this.revenueEstimatedTtc = 0,
     this.currency = 'EUR',
+    this.dauToday = 0,
+    this.mau30d = 0,
+    this.sessions30d = 0,
+    this.activeUsers30d = 0,
   });
 
   factory AnalyticsOverview.fromJson(Map<String, dynamic> json) {
@@ -186,6 +196,7 @@ class AnalyticsOverview {
     final fresh = json['new_subscriptions'] as Map<String, dynamic>? ?? {};
     final paid = fresh['paid'] as Map<String, dynamic>? ?? {};
     final revenue = json['revenue'] as Map<String, dynamic>? ?? {};
+    final usage = json['usage'] as Map<String, dynamic>? ?? {};
     final bySource = <String, int>{};
     (json['subscribers_by_source'] as Map<String, dynamic>? ?? {})
         .forEach((k, v) {
@@ -207,6 +218,10 @@ class AnalyticsOverview {
       revenueEstimatedTtc:
           (revenue['estimated_ttc'] as num?)?.toDouble() ?? 0,
       currency: (revenue['currency'] as String?) ?? 'EUR',
+      dauToday: (usage['dau_today'] as num?)?.toInt() ?? 0,
+      mau30d: (usage['mau_30d'] as num?)?.toInt() ?? 0,
+      sessions30d: (usage['sessions_30d'] as num?)?.toInt() ?? 0,
+      activeUsers30d: (usage['active_users_30d'] as num?)?.toInt() ?? 0,
     );
   }
 }
@@ -380,4 +395,128 @@ String formatMonthKey(String key) {
   final m = int.tryParse(parts[1]);
   if (m == null || m < 1 || m > 12) return key;
   return '${months[m - 1]} ${parts[0]}';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chantier F2 — événements d'usage (EF v77, migration 0067)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Un jour d'activité (route EF `analytics/activity`).
+class ActivityDay {
+  final String day; // 'YYYY-MM-DD' (jour calendaire UTC côté serveur)
+  final int dau; // utilisateurs distincts du jour
+  final int sessions; // events session_start
+  final int contentViews; // events content_viewed
+  final int gameViews; // events game_viewed
+
+  const ActivityDay({
+    required this.day,
+    this.dau = 0,
+    this.sessions = 0,
+    this.contentViews = 0,
+    this.gameViews = 0,
+  });
+
+  factory ActivityDay.fromJson(Map<String, dynamic> json) => ActivityDay(
+        day: (json['day'] as String?) ?? '',
+        dau: (json['dau'] as num?)?.toInt() ?? 0,
+        sessions: (json['sessions'] as num?)?.toInt() ?? 0,
+        contentViews: (json['content_views'] as num?)?.toInt() ?? 0,
+        gameViews: (json['game_views'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// Une cohorte hebdomadaire d'inscription (route EF `analytics/retention`).
+///
+/// [d1]/[d7]/[d30] = nombre d'inscrits de la semaine ayant AU MOINS un event
+/// au jour calendaire inscription + N. Les pourcentages sont des getters
+/// calculés depuis les compteurs (source de vérité unique côté client — la
+/// formule est testée, cf. analytics_calc_test.dart).
+class RetentionCohort {
+  final DateTime cohortStart; // lundi de la semaine ISO d'inscription
+  final int size; // inscrits de la semaine
+  final int d1;
+  final int d7;
+  final int d30;
+
+  const RetentionCohort({
+    required this.cohortStart,
+    required this.size,
+    this.d1 = 0,
+    this.d7 = 0,
+    this.d30 = 0,
+  });
+
+  double get d1Pct => retentionPct(d1, size);
+  double get d7Pct => retentionPct(d7, size);
+  double get d30Pct => retentionPct(d30, size);
+
+  factory RetentionCohort.fromJson(Map<String, dynamic> json) =>
+      RetentionCohort(
+        cohortStart:
+            DateTime.tryParse((json['cohort_start'] as String?) ?? '') ??
+                DateTime(1970),
+        size: (json['size'] as num?)?.toInt() ?? 0,
+        d1: (json['d1'] as num?)?.toInt() ?? 0,
+        d7: (json['d7'] as num?)?.toInt() ?? 0,
+        d30: (json['d30'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// Pourcentage de retournés (arrondi à 0,1 pt). 0 si cohorte vide.
+double retentionPct(int retained, int size) {
+  if (size <= 0) return 0;
+  return (retained / size * 1000).round() / 10;
+}
+
+/// Utilisations moyennes par utilisateur actif et par jour, sur 30 jours
+/// glissants (sessions ÷ utilisateurs actifs ÷ 30). 0 si aucun actif.
+double avgSessionsPerUserPerDay(int sessions30d, int activeUsers30d) {
+  if (activeUsers30d <= 0) return 0;
+  return sessions30d / activeUsers30d / 30;
+}
+
+/// Niveau qualitatif d'un taux de rétention (repères produit, §78 :
+/// lignes de référence 40 % / 20 % / 10 % du graphique de rétention).
+enum RetentionBand { excellent, good, watch, low }
+
+/// Classe un pourcentage de rétention : excellent ≥ 40 %, bon ≥ 20 %,
+/// à surveiller ≥ 10 %, faible sinon.
+RetentionBand retentionBand(double pct) {
+  if (pct >= 40) return RetentionBand.excellent;
+  if (pct >= 20) return RetentionBand.good;
+  if (pct >= 10) return RetentionBand.watch;
+  return RetentionBand.low;
+}
+
+/// Vrai si TOUS les inscrits de la cohorte ont eu le temps d'atteindre
+/// J+[offsetDays] ET que ce jour est entièrement écoulé : la semaine court
+/// jusqu'à cohortStart + 6 jours, le dernier inscrit atteint J+N à
+/// cohortStart + 6 + N, et le taux n'est complet qu'à partir du lendemain.
+/// En deçà, le taux affiché serait sous-estimé (une partie de la cohorte
+/// n'a pas encore eu sa chance) → l'UI affiche « — ».
+bool isCohortMeasurable(DateTime cohortStart, int offsetDays, DateTime today) {
+  final deadline = DateTime(
+    cohortStart.year,
+    cohortStart.month,
+    cohortStart.day + 6 + offsetDays,
+  );
+  final t = DateTime(today.year, today.month, today.day);
+  return t.isAfter(deadline);
+}
+
+/// Libellé court d'une cohorte (« 14 sept. » = lundi de la semaine).
+String formatCohortWeek(DateTime cohortStart) {
+  const months = [
+    'janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin',
+    'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.',
+  ];
+  return '${cohortStart.day} ${months[cohortStart.month - 1]}';
+}
+
+/// Libellé d'axe jour « JJ/MM » depuis une clé 'YYYY-MM-DD'.
+String formatDayLabel(String day) {
+  final parts = day.split('-');
+  if (parts.length != 3) return day;
+  return '${parts[2]}/${parts[1]}';
 }

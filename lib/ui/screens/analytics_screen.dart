@@ -86,6 +86,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   /// couvrant la période (from étendu au 1er du mois, to au dernier jour) :
   /// le graphique « Revenus mensuels » affiche des mois complets, libellés
   /// « sept. 2026 » (documenté dans le sous-titre de la carte).
+  /// Chantier F2 : charge aussi l'activité quotidienne (période exacte) et
+  /// les cohortes de rétention (8 semaines glissantes, indépendantes de la
+  /// période).
   Future<void> _reloadData() async {
     final store = context.read<StoreController>();
     final seriesFrom = DateTime(_from.year, _from.month, 1);
@@ -97,6 +100,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         to: seriesTo,
         granularity: 'month',
       ),
+      store.fetchAnalyticsActivity(from: _from, to: _to),
+      store.fetchAnalyticsRetention(),
     ]);
   }
 
@@ -299,6 +304,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           const SizedBox(height: 16),
           _buildCharts(theme, store),
           const SizedBox(height: 16),
+          // Chantier F2 (EF v77, migration 0067) : usage réel de l'app.
+          _buildActivitySection(theme, store),
+          const SizedBox(height: 16),
+          _buildRetentionSection(theme, store),
+          const SizedBox(height: 16),
           _buildPricingSection(theme, store),
           const SizedBox(height: 16),
           // Frais de société + exports comptables (qui exposent les frais) :
@@ -468,21 +478,38 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               'Comptes créés pendant la période sélectionnée '
               '(profiles.created_at).',
         ),
-        const _KpiCard(
-          label: 'DAU',
-          value: '—',
-          disabled: true,
+        // Chantier F2 (EF v77, migration 0067) : cartes d'usage RÉELLES —
+        // avant F2, deux cartes grisées « — » occupaient ces emplacements.
+        _KpiCard(
+          label: 'DAU (aujourd\'hui)',
+          value: o == null ? '…' : '${o.dauToday}',
+          subtitle: 'utilisateurs actifs du jour (jour UTC)',
           tooltip:
-              'Utilisateurs actifs quotidiens — disponibles après '
-              'instrumentation de l\'app (chantier F2).',
+              'Daily Active Users : comptes distincts ayant émis au moins '
+              'un événement (session, contenu ou jeu) aujourd\'hui. '
+              'Source : instrumentation de l\'app (chantier F2).',
         ),
-        const _KpiCard(
-          label: 'MAU',
-          value: '—',
-          disabled: true,
+        _KpiCard(
+          label: 'MAU (30 j glissants)',
+          value: o == null ? '…' : '${o.mau30d}',
+          subtitle: 'utilisateurs distincts sur 30 jours',
           tooltip:
-              'Utilisateurs actifs mensuels — disponibles après '
-              'instrumentation de l\'app (chantier F2).',
+              'Monthly Active Users : comptes distincts ayant émis au moins '
+              'un événement sur les 30 derniers jours glissants.',
+        ),
+        _KpiCard(
+          label: 'Utilisations moyennes / utilisateur / jour',
+          value: o == null
+              ? '…'
+              : avgSessionsPerUserPerDay(o.sessions30d, o.activeUsers30d)
+                  .toStringAsFixed(1),
+          subtitle: o == null
+              ? null
+              : '${o.sessions30d} sessions ÷ ${o.activeUsers30d} actifs ÷ 30 j',
+          tooltip:
+              'Sessions (ouvertures/reprises de l\'app) sur 30 jours '
+              'glissants, divisées par les utilisateurs actifs de la même '
+              'fenêtre puis par 30. Mesure l\'assiduité moyenne.',
         ),
       ],
     );
@@ -850,6 +877,375 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  // ── Chantier F2 : activité quotidienne + rétention (EF v77, 0067) ──
+
+  /// Message d'état vide commun aux sections F2 : l'instrumentation démarre
+  /// avec la prochaine version de l'app, aucune donnée n'existe avant.
+  static const String _f2EmptyMessage =
+      'L\'instrumentation démarre avec la prochaine version de l\'app — '
+      'aucune donnée pour l\'instant';
+
+  Widget _buildActivitySection(ThemeData theme, StoreController store) {
+    final days = store.analyticsActivity;
+    final hasData = days.any(
+      (d) =>
+          d.dau > 0 || d.sessions > 0 || d.contentViews > 0 || d.gameViews > 0,
+    );
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Activité quotidienne (usage réel de l\'app)',
+              style: theme.textTheme.titleMedium,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Événements remontés par l\'app sur la période sélectionnée '
+              '(jours calendaires UTC). L\'agrégat historique survit à la '
+              'purge des événements bruts (90 jours).',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            if (!hasData)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 40),
+                child: Center(
+                  child: Text(
+                    _f2EmptyMessage,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              )
+            else
+              SizedBox(height: 260, child: _activityChart(days)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 16,
+              runSpacing: 8,
+              children: [
+                _legendDot(Colors.cyan.shade300, 'Sessions'),
+                _legendDot(Colors.purple.shade300, 'Contenus visionnés'),
+                _legendDot(Colors.amber.shade300, 'Jeux consultés'),
+                _legendDot(Colors.greenAccent.shade200, 'Utilisateurs actifs'),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 4 courbes (sessions / contenus / jeux / utilisateurs actifs) sur la
+  /// période. Les jours sans événement valent 0 (continuité des courbes).
+  Widget _activityChart(List<ActivityDay> days) {
+    final byDay = {for (final d in days) d.day: d};
+    final n = _to.difference(_from).inDays + 1;
+    final labels = <String>[];
+    final sessions = <FlSpot>[];
+    final contents = <FlSpot>[];
+    final games = <FlSpot>[];
+    final dau = <FlSpot>[];
+    var maxY = 0.0;
+    double y(int v) => v.toDouble();
+    for (var i = 0; i < n; i++) {
+      final date = _from.add(Duration(days: i));
+      final key =
+          '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+      labels.add(key);
+      final d = byDay[key];
+      sessions.add(FlSpot(i.toDouble(), y(d?.sessions ?? 0)));
+      contents.add(FlSpot(i.toDouble(), y(d?.contentViews ?? 0)));
+      games.add(FlSpot(i.toDouble(), y(d?.gameViews ?? 0)));
+      dau.add(FlSpot(i.toDouble(), y(d?.dau ?? 0)));
+      for (final v in [
+        d?.sessions ?? 0,
+        d?.contentViews ?? 0,
+        d?.gameViews ?? 0,
+        d?.dau ?? 0,
+      ]) {
+        if (v > maxY) maxY = v.toDouble();
+      }
+    }
+    maxY = maxY <= 0 ? 1 : maxY * 1.2;
+    // Un libellé d'axe toutes les ~N divisions pour rester lisible.
+    final labelEvery = (n / 8).ceil();
+
+    LineChartBarData line(List<FlSpot> spots, Color color) => LineChartBarData(
+          spots: spots,
+          isCurved: false,
+          color: color,
+          barWidth: 2,
+          dotData: const FlDotData(show: false),
+        );
+
+    return LineChart(
+      LineChartData(
+        minY: 0,
+        maxY: maxY,
+        lineBarsData: [
+          line(sessions, Colors.cyan.shade300),
+          line(contents, Colors.purple.shade300),
+          line(games, Colors.amber.shade300),
+          line(dau, Colors.greenAccent.shade200),
+        ],
+        borderData: FlBorderData(show: false),
+        gridData: const FlGridData(show: true, drawVerticalLine: false),
+        lineTouchData: const LineTouchData(enabled: false),
+        titlesData: FlTitlesData(
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 36,
+              getTitlesWidget: (value, meta) => Text(
+                '${value.toInt()}',
+                style: const TextStyle(fontSize: 10),
+              ),
+            ),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 30,
+              interval: 1,
+              getTitlesWidget: (value, meta) {
+                final i = value.toInt();
+                if (i < 0 || i >= labels.length || i % labelEvery != 0) {
+                  return const SizedBox.shrink();
+                }
+                return Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    formatDayLabel(labels[i]),
+                    style: const TextStyle(fontSize: 10),
+                  ),
+                );
+              },
+            ),
+          ),
+          topTitles:
+              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles:
+              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRetentionSection(ThemeData theme, StoreController store) {
+    final cohorts = store.analyticsRetention;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Rétention par cohorte (inscriptions hebdomadaires)',
+              style: theme.textTheme.titleMedium,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Part des inscrits de la semaine revenus à J+1 / J+7 / J+30 '
+              '(jour calendaire après l\'inscription). « — » = fenêtre pas '
+              'encore écoulée pour toute la cohorte (taux non mesurable).',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            if (cohorts.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 40),
+                child: Center(
+                  child: Text(
+                    _f2EmptyMessage,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              )
+            else ...[
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: DataTable(
+                  columns: const [
+                    DataColumn(label: Text('Semaine')),
+                    DataColumn(label: Text('Inscrits'), numeric: true),
+                    DataColumn(label: Text('D1 %'), numeric: true),
+                    DataColumn(label: Text('D7 %'), numeric: true),
+                    DataColumn(label: Text('D30 %'), numeric: true),
+                  ],
+                  rows: [
+                    for (final c in cohorts)
+                      DataRow(
+                        cells: [
+                          DataCell(Text(
+                              'Sem. du ${formatCohortWeek(c.cohortStart)}')),
+                          DataCell(Text('${c.size}')),
+                          DataCell(
+                              _retentionPctCell(c.cohortStart, 1, c.d1Pct)),
+                          DataCell(
+                              _retentionPctCell(c.cohortStart, 7, c.d7Pct)),
+                          DataCell(
+                              _retentionPctCell(c.cohortStart, 30, c.d30Pct)),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(height: 240, child: _retentionChart(cohorts)),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 16,
+                runSpacing: 8,
+                children: [
+                  _legendDot(Colors.cyan.shade300, 'D1 %'),
+                  _legendDot(Colors.purple.shade300, 'D7 %'),
+                  _legendDot(Colors.amber.shade300, 'D30 %'),
+                  _legendDash(
+                      Colors.greenAccent.shade200, 'excellent ≥ 40 %'),
+                  _legendDash(Colors.orange.shade300, 'bon ≥ 20 %'),
+                  _legendDash(Colors.red.shade300, 'à surveiller ≥ 10 %'),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Cellule de % colorée selon le niveau de rétention (« — » si la fenêtre
+  /// de mesure n'est pas écoulée pour toute la cohorte).
+  Widget _retentionPctCell(DateTime cohortStart, int offsetDays, double pct) {
+    if (!isCohortMeasurable(cohortStart, offsetDays, DateTime.now())) {
+      return const Text('—', style: TextStyle(color: Colors.grey));
+    }
+    final color = switch (retentionBand(pct)) {
+      RetentionBand.excellent => Colors.greenAccent.shade200,
+      RetentionBand.good => Colors.cyan.shade300,
+      RetentionBand.watch => Colors.orange.shade300,
+      RetentionBand.low => Colors.red.shade300,
+    };
+    return Text(
+      '${pct.toStringAsFixed(1)} %',
+      style: TextStyle(color: color, fontWeight: FontWeight.w600),
+    );
+  }
+
+  /// Tirets de légende pour les lignes de référence horizontales.
+  Widget _legendDash(Color color, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(width: 14, height: 2, color: color),
+        const SizedBox(width: 6),
+        Text(label, style: const TextStyle(fontSize: 12)),
+      ],
+    );
+  }
+
+  /// Courbes D1/D7/D30 par cohorte (de la plus ancienne à la plus récente)
+  /// + lignes de référence horizontales à 40 % / 20 % / 10 % (repères
+  /// produit : excellent / bon / à surveiller).
+  Widget _retentionChart(List<RetentionCohort> cohorts) {
+    // SQL retourne les cohortes les plus récentes d'abord → on inverse.
+    final ordered = cohorts.reversed.toList();
+    final today = DateTime.now();
+    List<FlSpot> spots(int offsetDays, double Function(RetentionCohort) pct) {
+      final result = <FlSpot>[];
+      for (var i = 0; i < ordered.length; i++) {
+        final c = ordered[i];
+        if (!isCohortMeasurable(c.cohortStart, offsetDays, today)) continue;
+        result.add(FlSpot(i.toDouble(), pct(c)));
+      }
+      return result;
+    }
+
+    final labelEvery = (ordered.length / 8).ceil();
+    LineChartBarData line(List<FlSpot> s, Color color) => LineChartBarData(
+          spots: s,
+          isCurved: false,
+          color: color,
+          barWidth: 2,
+          dotData: const FlDotData(show: true),
+        );
+
+    HorizontalLine refLine(double y, Color color, String label) =>
+        HorizontalLine(
+          y: y,
+          color: color.withValues(alpha: 0.55),
+          strokeWidth: 1,
+          dashArray: [6, 4],
+          label: HorizontalLineLabel(
+            show: true,
+            alignment: Alignment.topRight,
+            style: TextStyle(fontSize: 10, color: color),
+            labelResolver: (_) => label,
+          ),
+        );
+
+    return LineChart(
+      LineChartData(
+        minY: 0,
+        maxY: 100,
+        lineBarsData: [
+          line(spots(1, (c) => c.d1Pct), Colors.cyan.shade300),
+          line(spots(7, (c) => c.d7Pct), Colors.purple.shade300),
+          line(spots(30, (c) => c.d30Pct), Colors.amber.shade300),
+        ],
+        extraLinesData: ExtraLinesData(
+          horizontalLines: [
+            refLine(40, Colors.greenAccent.shade200, 'excellent ≥ 40 %'),
+            refLine(20, Colors.orange.shade300, 'bon ≥ 20 %'),
+            refLine(10, Colors.red.shade300, 'à surveiller ≥ 10 %'),
+          ],
+        ),
+        borderData: FlBorderData(show: false),
+        gridData: const FlGridData(show: true, drawVerticalLine: false),
+        lineTouchData: const LineTouchData(enabled: false),
+        titlesData: FlTitlesData(
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 36,
+              interval: 20,
+              getTitlesWidget: (value, meta) => Text(
+                '${value.toInt()} %',
+                style: const TextStyle(fontSize: 10),
+              ),
+            ),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 30,
+              interval: 1,
+              getTitlesWidget: (value, meta) {
+                final i = value.toInt();
+                if (i < 0 || i >= ordered.length || i % labelEvery != 0) {
+                  return const SizedBox.shrink();
+                }
+                return Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    formatCohortWeek(ordered[i].cohortStart),
+                    style: const TextStyle(fontSize: 10),
+                  ),
+                );
+              },
+            ),
+          ),
+          topTitles:
+              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles:
+              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
         ),
       ),
     );
@@ -1526,70 +1922,58 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
 /// Carte KPI du menu Analytics (style aligné sur _countCard de
 /// limites_screen : fond noir 25 %, bord blanc 10 %, radius 8) + infobulle
-/// de définition. [disabled] = carte grisée « disponible après F2 ».
+/// de définition. (Le mode grisé « placeholder » de F1 a disparu avec la
+/// livraison F2 : toutes les cartes affichent des données réelles.)
 class _KpiCard extends StatelessWidget {
   final String label;
   final String value;
   final String? subtitle;
   final String tooltip;
-  final bool disabled;
 
   const _KpiCard({
     required this.label,
     required this.value,
     this.subtitle,
     required this.tooltip,
-    this.disabled = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final opacity = disabled ? 0.45 : 1.0;
     return Tooltip(
       message: tooltip,
-      child: Opacity(
-        opacity: opacity,
-        child: SizedBox(
-          width: 240,
-          child: Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.25),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+      child: SizedBox(
+        width: 240,
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.25),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                value,
+                style: theme.textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: Colors.cyan.shade300,
                 ),
+              ),
+              if (subtitle != null) ...[
                 const SizedBox(height: 4),
                 Text(
-                  value,
-                  style: theme.textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: disabled ? Colors.grey : Colors.cyan.shade300,
-                  ),
+                  subtitle!,
+                  style: const TextStyle(fontSize: 10, color: Colors.grey),
                 ),
-                if (subtitle != null) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    subtitle!,
-                    style: const TextStyle(fontSize: 10, color: Colors.grey),
-                  ),
-                ],
-                if (disabled) ...[
-                  const SizedBox(height: 4),
-                  const Text(
-                    'chantier F2',
-                    style: TextStyle(fontSize: 10, color: Colors.grey),
-                  ),
-                ],
               ],
-            ),
+            ],
           ),
         ),
       ),

@@ -3611,6 +3611,13 @@ class StoreController extends ChangeNotifier {
   /// Dernière série `analytics/series` (buckets jour ou mois).
   List<SeriesBucket> analyticsSeries = const [];
 
+  /// Dernière activité quotidienne `analytics/activity` (chantier F2 — EF
+  /// v77, migration 0067). Vide si l'instrumentation n'a encore rien remonté.
+  List<ActivityDay> analyticsActivity = const [];
+
+  /// Dernières cohortes de rétention `analytics/retention` (chantier F2).
+  List<RetentionCohort> analyticsRetention = const [];
+
   /// Prix catalogue (pricing_config) — alimenté par overview ET pricing/list.
   List<PricingConfig> pricingConfigs = const [];
 
@@ -3679,6 +3686,48 @@ class StoreController extends ChangeNotifier {
       analyticsError = 'Chargement des séries impossible : $e';
     } finally {
       analyticsLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Charge l'activité quotidienne réelle (chantier F2 — EF v77) sur la
+  /// période [from, to]. Sans spinner propre : suit l'état partagé
+  /// [analyticsLoading] (convention existante overview/series, cf. §78).
+  Future<void> fetchAnalyticsActivity({
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    if (sync == null) return;
+    try {
+      final data = await sync!.fetchAnalyticsActivity(from: from, to: to);
+      final raw = data['days'] as List? ?? [];
+      analyticsActivity = raw
+          .map((e) => ActivityDay.fromJson(e as Map<String, dynamic>))
+          .toList();
+      notifyListeners();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      analyticsError = 'Chargement de l\'activité impossible : $e';
+      notifyListeners();
+    }
+  }
+
+  /// Charge les cohortes hebdomadaires de rétention (chantier F2 — EF v77).
+  /// [weeks] est borné 4-26 côté serveur.
+  Future<void> fetchAnalyticsRetention({int weeks = 8}) async {
+    if (sync == null) return;
+    try {
+      final data = await sync!.fetchAnalyticsRetention(weeks: weeks);
+      final raw = data['cohorts'] as List? ?? [];
+      analyticsRetention = raw
+          .map((e) => RetentionCohort.fromJson(e as Map<String, dynamic>))
+          .toList();
+      notifyListeners();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      analyticsError = 'Chargement de la rétention impossible : $e';
       notifyListeners();
     }
   }
