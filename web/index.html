@@ -41,7 +41,7 @@
         content="default-src 'self';
                  script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://www.gstatic.com;
                  style-src 'self' 'unsafe-inline';
-                 img-src 'self' data: https:;
+                 img-src 'self' data: blob: https:;
                  font-src 'self' data: https://*.gstatic.com;
                  connect-src 'self' https://odqbazwyjdpppbameype.supabase.co https://*.gstatic.com;
                  object-src 'none';
@@ -83,8 +83,10 @@
 
     // ⚠️ MODE INVESTIGATION (20/09/2026) : protections DÉSACTIVÉES temporairement
     // pour le diagnostic des aperçus (F12 / DevTools accessibles).
-    // ⚠️ RÉACTIVER APRÈS L'INVESTIGATION : remettre PANEL_DEBUG à false.
-    const PANEL_DEBUG = true;
+    // CAUSE TROUVÉE le 20/09 : le CSP img-src bloquait les URLs blob: utilisées
+    // par CanvasKit pour afficher les images → PANEL_DEBUG remis à false
+    // (protection réactivée), l'investigation est terminée.
+    const PANEL_DEBUG = false;
 
     if (!PANEL_DEBUG) {
       // Désactive le menu contextuel (clic droit).
