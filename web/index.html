@@ -81,48 +81,55 @@
     // mais elles s'ajoutent au CSP et aux headers de sécurité (defense-in-depth).
     // ==========================================================================
 
-    // Désactive le menu contextuel (clic droit).
-    document.addEventListener('contextmenu', function(e) {
-      e.preventDefault();
-      return false;
-    });
+    // ⚠️ MODE INVESTIGATION (20/09/2026) : protections DÉSACTIVÉES temporairement
+    // pour le diagnostic des aperçus (F12 / DevTools accessibles).
+    // ⚠️ RÉACTIVER APRÈS L'INVESTIGATION : remettre PANEL_DEBUG à false.
+    const PANEL_DEBUG = true;
 
-    // Désactive les raccourcis clavier développeur.
-    document.addEventListener('keydown', function(e) {
-      // F12 (Developer Tools).
-      if (e.keyCode === 123) { e.preventDefault(); return false; }
-      // Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C (DevTools).
-      if (e.ctrlKey && e.shiftKey && (e.keyCode === 73 || e.keyCode === 74 || e.keyCode === 67)) {
-        e.preventDefault(); return false;
-      }
-      // Ctrl+U (View Source).
-      if (e.ctrlKey && e.keyCode === 85) { e.preventDefault(); return false; }
-    });
+    if (!PANEL_DEBUG) {
+      // Désactive le menu contextuel (clic droit).
+      document.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+        return false;
+      });
 
-    // Désactive la sélection de texte (rend le copier-coller difficile).
-    document.addEventListener('selectstart', function(e) {
-      e.preventDefault();
-      return false;
-    });
+      // Désactive les raccourcis clavier développeur.
+      document.addEventListener('keydown', function(e) {
+        // F12 (Developer Tools).
+        if (e.keyCode === 123) { e.preventDefault(); return false; }
+        // Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C (DevTools).
+        if (e.ctrlKey && e.shiftKey && (e.keyCode === 73 || e.keyCode === 74 || e.keyCode === 67)) {
+          e.preventDefault(); return false;
+        }
+        // Ctrl+U (View Source).
+        if (e.ctrlKey && e.keyCode === 85) { e.preventDefault(); return false; }
+      });
 
-    // Désactive le glisser-déposer d'images (évite l'inspection visuelle).
-    document.addEventListener('dragstart', function(e) {
-      e.preventDefault();
-      return false;
-    });
+      // Désactive la sélection de texte (rend le copier-coller difficile).
+      document.addEventListener('selectstart', function(e) {
+        e.preventDefault();
+        return false;
+      });
 
-    // Détecte l'ouverture des DevTools (méthode dimension fenêtre).
-    // Si les DevTools sont ouverts, on masque le contenu.
-    setInterval(function() {
-      const threshold = 160;
-      const widthDiff = window.outerWidth - window.innerWidth > threshold;
-      const heightDiff = window.outerHeight - window.innerHeight > threshold;
-      if (widthDiff || heightDiff) {
-        document.body.style.display = 'none';
-      } else {
-        document.body.style.display = '';
-      }
-    }, 1000);
+      // Désactive le glisser-déposer d'images (évite l'inspection visuelle).
+      document.addEventListener('dragstart', function(e) {
+        e.preventDefault();
+        return false;
+      });
+
+      // Détecte l'ouverture des DevTools (méthode dimension fenêtre).
+      // Si les DevTools sont ouverts, on masque le contenu.
+      setInterval(function() {
+        const threshold = 160;
+        const widthDiff = window.outerWidth - window.innerWidth > threshold;
+        const heightDiff = window.outerHeight - window.innerHeight > threshold;
+        if (widthDiff || heightDiff) {
+          document.body.style.display = 'none';
+        } else {
+          document.body.style.display = '';
+        }
+      }, 1000);
+    }
   </script>
 </head>
 <body>
