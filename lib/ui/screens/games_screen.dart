@@ -507,6 +507,7 @@ class _GameEditDialogState extends State<GameEditDialog> {
   late final TextEditingController _name;
   late final TextEditingController _publisher;
   late final TextEditingController _cover;
+  late final TextEditingController _releaseDate;
   bool _active = true;
 
   @override
@@ -515,6 +516,7 @@ class _GameEditDialogState extends State<GameEditDialog> {
     _name = TextEditingController(text: widget.game?.name ?? '');
     _publisher = TextEditingController(text: widget.game?.publisher ?? '');
     _cover = TextEditingController(text: widget.game?.coverUrl ?? '');
+    _releaseDate = TextEditingController(text: widget.game?.releaseDate ?? '');
     _active = widget.game?.active ?? true;
   }
 
@@ -523,18 +525,38 @@ class _GameEditDialogState extends State<GameEditDialog> {
     _name.dispose();
     _publisher.dispose();
     _cover.dispose();
+    _releaseDate.dispose();
     super.dispose();
+  }
+
+  /// Normalise la date saisie : accepte `yyyy`, `yyyy-MM` ou `yyyy-MM-dd`
+  /// (complétée en `yyyy-01-01` / `yyyy-MM-01`). null si vide/invalide —
+  /// jamais de valeur inventée.
+  static String? _normalizeReleaseDate(String raw) {
+    final s = raw.trim();
+    if (s.isEmpty) return null;
+    final m = RegExp(r'^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$').firstMatch(s);
+    if (m == null) return null;
+    final y = int.parse(m.group(1)!);
+    if (y < 1970 || y > DateTime.now().year + 2) return null;
+    final mo = m.group(2) ?? '01';
+    final d = m.group(3) ?? '01';
+    final month = int.parse(mo), day = int.parse(d);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    return '$y-${mo.padLeft(2, '0')}-${d.padLeft(2, '0')}';
   }
 
   void _save() {
     final StoreController store = context.read<StoreController>();
     final String name = _name.text.trim();
     if (name.isEmpty) return;
+    final String? releaseDate = _normalizeReleaseDate(_releaseDate.text);
     if (widget.game == null) {
       store.addGame(
         name: name,
         publisher: _publisher.text,
         coverUrl: _cover.text,
+        releaseDate: releaseDate,
         active: _active,
       );
     } else {
@@ -542,6 +564,7 @@ class _GameEditDialogState extends State<GameEditDialog> {
         name: name,
         publisher: () => _publisher.text.trim(),
         coverUrl: () => _cover.text.trim(),
+        releaseDate: () => releaseDate,
         active: _active,
       ));
     }
@@ -604,6 +627,20 @@ class _GameEditDialogState extends State<GameEditDialog> {
               decoration: const InputDecoration(
                   labelText: 'URL de la pochette (optionnel)',
                   helperText: 'Lien direct vers l\'image'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _releaseDate,
+              decoration: const InputDecoration(
+                labelText: 'Date de sortie (optionnel)',
+                helperText:
+                    'AAAA, AAAA-MM ou AAAA-MM-JJ — aide Sentinelle à '
+                    'différencier les éditions homonymes (ex. CoD MW3 2011 '
+                    'vs MW III 2023) : une vidéo plus ancienne que la date '
+                    'est rattachée à l\'édition précédente.',
+                helperMaxLines: 3,
+              ),
+              keyboardType: TextInputType.datetime,
             ),
             const SizedBox(height: 12),
             SwitchListTile(

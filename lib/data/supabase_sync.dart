@@ -156,6 +156,8 @@ class SupabaseSync {
           out['coverUrl'] = value;
         case 'created_at':
           out['createdAt'] = value;
+        case 'release_date':
+          out['releaseDate'] = value;
         case 'game_id':
           out['gameId'] = value;
         case 'title_source':
@@ -579,6 +581,7 @@ class SupabaseSync {
       'name': game.name,
       'publisher': game.publisher,
       'cover_url': game.coverUrl,
+      'release_date': game.releaseDate,
       'active': game.active,
     });
     // L'Edge Function renvoie la ligne Supabase brute (snake_case) → on

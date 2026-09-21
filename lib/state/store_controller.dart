@@ -568,6 +568,7 @@ class StoreController extends ChangeNotifier {
     required String name,
     String? publisher,
     String? coverUrl,
+    String? releaseDate,
     bool active = true,
   }) async {
     final Game game = Game(
@@ -575,6 +576,8 @@ class StoreController extends ChangeNotifier {
       name: name.trim(),
       publisher: publisher?.trim().isEmpty == true ? null : publisher?.trim(),
       coverUrl: coverUrl?.trim().isEmpty == true ? null : coverUrl?.trim(),
+      releaseDate:
+          releaseDate?.trim().isEmpty == true ? null : releaseDate?.trim(),
       active: active,
       createdAt: DateTime.now(),
     );

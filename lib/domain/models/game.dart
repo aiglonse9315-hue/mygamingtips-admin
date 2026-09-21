@@ -10,6 +10,13 @@ class Game {
   final bool active;
   final DateTime createdAt;
 
+  /// Date de sortie officielle du jeu (optionnelle, format ISO `yyyy-MM-dd`
+  /// — colonne `games.release_date`, migration 0071 / chantier §98).
+  /// Aide les bots à différencier les éditions homonymes (CoD MW3 2011 vs
+  /// MW III 2023) : une vidéo publiée avant appartient à l'édition
+  /// antérieure. null = non renseignée (comportement historique).
+  final String? releaseDate;
+
   /// Traductions du titre du jeu, chargées à la demande depuis la table
   /// `game_translations` (route `games/translations-list`).
   ///
@@ -28,6 +35,7 @@ class Game {
     this.active = true,
     required this.createdAt,
     this.nameTranslations,
+    this.releaseDate,
   });
 
   factory Game.fromJson(Map<String, dynamic> json) {
@@ -51,6 +59,9 @@ class Game {
       createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ??
           DateTime.now(),
       nameTranslations: translations,
+      releaseDate: (json['releaseDate'] as String?)?.isNotEmpty == true
+          ? json['releaseDate'] as String?
+          : null,
     );
   }
 
@@ -61,6 +72,7 @@ class Game {
         'publisher': publisher,
         'active': active,
         'createdAt': createdAt.toIso8601String(),
+        'releaseDate': releaseDate,
       };
 
   Game copyWith({
@@ -69,6 +81,7 @@ class Game {
     ValueGetter<String?>? publisher,
     bool? active,
     ValueGetter<Map<String, String>?>? nameTranslations,
+    ValueGetter<String?>? releaseDate,
   }) {
     return Game(
       id: id,
@@ -80,6 +93,7 @@ class Game {
       nameTranslations: nameTranslations != null
           ? nameTranslations()
           : this.nameTranslations,
+      releaseDate: releaseDate != null ? releaseDate() : this.releaseDate,
     );
   }
 
