@@ -3460,8 +3460,10 @@ class StoreController extends ChangeNotifier {
   ///
   /// Idempotent : un second appel ne crée PAS de doublon. Chaque tick
   /// resynchronise UNIQUEMENT le dataset [SyncDataset.sentinelleAnalyzing],
-  /// en incrémental (curseur) et SANS passe globale : pas d'`isSyncing`,
-  /// pas de spinner global, aucun impact sur les autres boards.
+  /// en REMPLACEMENT COMPLET (toujours — voir _syncSuggestionMode : une ligne
+  /// qui quitte ce mode n'apparaît dans aucun delta incrémental) et SANS
+  /// passe globale : pas d'`isSyncing`, pas de spinner global, aucun impact
+  /// sur les autres boards.
   void startAnalyzingPolling() {
     if (_analyzingPollingTimer != null) return; // déjà actif
     _analyzingPollingTimer = Timer.periodic(
@@ -3935,10 +3937,6 @@ class StoreController extends ChangeNotifier {
     if (_inFlightDatasets.contains(SyncDataset.sentinelleAnalyzing)) return;
     _inFlightDatasets.add(SyncDataset.sentinelleAnalyzing);
     try {
-      // On ne notifie QUE si le contenu a réellement changé : la fusion
-      // incrémentale ne réassigne pas la liste quand le delta est vide
-      // (voir _mergeSuggestionsIncremental) ; en full sync (curseur absent
-      // ou > 24 h), la liste est réassignée → la référence change aussi.
       final List<Suggestion> before = _sentinelleAnalyzing;
       await _syncSuggestionMode(
         SyncDataset.sentinelleAnalyzing,
@@ -3954,7 +3952,13 @@ class StoreController extends ChangeNotifier {
       _analyzingPollOtherFailures = 0;
       _analyzingPollErrorSignaled = false;
       _setOffline(false); // au moins une requête a abouti → en ligne
-      if (!identical(before, _sentinelleAnalyzing)) notifyListeners();
+      // Le dataset analyzing est TOUJOURS remplacé (référence neuve à chaque
+      // tick — voir _syncSuggestionMode) : on ne notifie que si le CONTENU a
+      // réellement changé, sinon l'écran se reconstruirait toutes les 30 s
+      // pour rien.
+      if (!_sameAnalyzingContent(before, _sentinelleAnalyzing)) {
+        notifyListeners();
+      }
     } on AdminAuthException {
       // 401 pendant une lecture service_role → logout forcé (comme partout).
       onAuthError?.call();
@@ -3991,6 +3995,21 @@ class StoreController extends ChangeNotifier {
     } finally {
       _inFlightDatasets.remove(SyncDataset.sentinelleAnalyzing);
     }
+  }
+
+  /// Compare le CONTENU de deux listes « Analyse en cours » (ids + statut +
+  /// horodatage de début d'analyse), ordre indifférent. Utilisé par le tick
+  /// de polling : le dataset analyzing étant toujours remplacé (référence
+  /// neuve), seule cette comparaison évite un rebuild gratuit toutes les 30 s.
+  static bool _sameAnalyzingContent(
+    List<Suggestion> a,
+    List<Suggestion> b,
+  ) {
+    if (a.length != b.length) return false;
+    String key(Suggestion s) =>
+        '${s.id}|${s.status.name}|${s.sentinelleStartedAt?.toIso8601String() ?? ''}';
+    final Set<String> ka = a.map(key).toSet();
+    return b.every((s) => ka.contains(key(s)));
   }
 
   /// Effectue réellement la sync (sans la garde ni le timeout — appelé par
@@ -4341,6 +4360,16 @@ class StoreController extends ChangeNotifier {
 
   /// Dataset suggestions d'un mode : full (remplacement de la liste) ou
   /// incrémental (`since` propagé à l'EF v63, fusion multi-modes par id).
+  ///
+  /// ⚠️ Le mode `sentinelleAnalyzing` est TOUJOURS synchronisé en
+  /// REMPLACEMENT COMPLET (jamais en incrémental) : une ligne qui QUITTE ce
+  /// mode (Sentinelle a rendu son verdict → elle bascule sur un autre board)
+  /// ne matche plus le filtre « analyzing » côté serveur — elle n'apparaît
+  /// donc dans AUCUN delta de ce mode, et la fusion incrémentale ne la
+  /// retirerait JAMAIS de la liste locale (le board « Analyse en cours »
+  /// s'allongerait indéfiniment). Coût nul : Sentinelle analyse un contenu
+  /// à la fois, le dataset tient en quelques lignes — l'économie du curseur
+  /// est sans objet ici.
   Future<void> _syncSuggestionMode(
     SyncDataset dataset,
     Future<({List<Suggestion> items, DateTime? maxUpdatedAt})> Function({
@@ -4353,7 +4382,9 @@ class StoreController extends ChangeNotifier {
     required Set<SyncDataset> fullModeSyncs,
   }) async {
     const int pageSize = 500;
-    final String? cursor = forceFull ? null : _validCursorFor(dataset);
+    final bool fullReplace =
+        forceFull || dataset == SyncDataset.sentinelleAnalyzing;
+    final String? cursor = fullReplace ? null : _validCursorFor(dataset);
     final r = await _fetchPaged<Suggestion>(
       (p) => fetcher(page: p, pageSize: pageSize, since: cursor),
       pageSize,
