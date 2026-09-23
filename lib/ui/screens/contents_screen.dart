@@ -686,8 +686,23 @@ class _LanguageFilterButton extends StatelessWidget {
 
 /// Dialog d'ajout / édition d'un contenu.
 class ContentEditDialog extends StatefulWidget {
-  const ContentEditDialog({super.key, this.content});
+  const ContentEditDialog({
+    super.key,
+    this.content,
+    this.initialUrl,
+    this.initialCategory,
+    this.initialGameId,
+  });
   final Content? content;
+
+  /// Pré-remplissage OPTIONNEL (ajout uniquement) — utilisé par l'annuaire
+  /// du menu Scruteur (bouton « Ajouter un contenu » d'un domaine découvert,
+  /// plan Scruteur V3 §4.4). Ignoré dès qu'un [content] est fourni (édition :
+  /// les valeurs existantes priment). Sans ces paramètres, le comportement
+  /// est STRICTEMENT identique à avant leur introduction.
+  final String? initialUrl;
+  final ContentCategory? initialCategory;
+  final String? initialGameId;
 
   @override
   State<ContentEditDialog> createState() => _ContentEditDialogState();
@@ -706,12 +721,15 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
   @override
   void initState() {
     super.initState();
-    _url = TextEditingController(text: widget.content?.url ?? '');
+    _url = TextEditingController(
+        text: widget.content?.url ?? widget.initialUrl ?? '');
     _title = TextEditingController(
         text: widget.content?.titleAdmin ?? widget.content?.titleSource ?? '');
     _image = TextEditingController(text: widget.content?.imageUrl ?? '');
-    _gameId = widget.content?.gameId;
-    _category = widget.content?.category ?? ContentCategory.video;
+    _gameId = widget.content?.gameId ?? widget.initialGameId;
+    _category = widget.content?.category ??
+        widget.initialCategory ??
+        ContentCategory.video;
     _publishedAt = widget.content?.publishedAt;
     _createdAt = widget.content?.createdAt;
     _videoLanguage = widget.content?.videoLanguage;

@@ -3921,6 +3921,140 @@ class StoreController extends ChangeNotifier {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // ANNUAIRE DE SITES (menu Scruteur — plan Scruteur V3 §4.4, EF v85)
+  // ─────────────────────────────────────────────────────────────────────
+  // État LAZY STRICT : RIEN n'est chargé au démarrage ni à l'ouverture du
+  // menu Scruteur — uniquement au clic sur le bouton « 📂 Annuaire » de
+  // l'en-tête de l'écran (exigence propriétaire). Pas de polling, pas de
+  // persistance locale : l'annuaire vit uniquement en mémoire, le temps du
+  // dialog. Les lignes restent BRUTES (snake_case, colonnes de l'EF).
+
+  /// Lignes de la vue courante de l'annuaire (page + filtre courants).
+  List<Map<String, dynamic>> annuaireRows = const [];
+
+  /// Total serveur de la vue courante (toutes pages du filtre en cours) —
+  /// sert à la pagination du dialog.
+  int annuaireTotal = 0;
+
+  /// Total TOUT STATUT confondu — alimente le badge « (N sites) » du bouton
+  /// d'en-tête. Mis à jour UNIQUEMENT par les chargements non filtrés, pour
+  /// ne pas être écrasé par le total de l'onglet « Protégés anti-bot ».
+  int annuaireTotalAll = 0;
+
+  /// Page courante (0-based) de la vue affichée dans le dialog.
+  int annuairePage = 0;
+
+  /// Filtre statut de la vue courante : null = tous statuts (onglet
+  /// « Annuaire »), 'bot_protected' = onglet « Protégés anti-bot ».
+  String? annuaireStatus;
+
+  /// true pendant un fetch annuaire (spinner du dialog).
+  bool annuaireLoading = false;
+
+  /// true dès qu'un premier chargement a abouti — condition d'affichage du
+  /// badge « (N sites) » du bouton d'en-tête (lazy load strict : aucun appel
+  /// réseau avant le premier clic).
+  bool annuaireEverLoaded = false;
+
+  /// Charge une page de l'annuaire (EF annuaire/list, 50/page, tri serveur
+  /// par `frequence` desc). Gardes : sync null ou fetch déjà en vol.
+  Future<void> loadAnnuaire({int page = 0, String? status}) async {
+    if (sync == null || annuaireLoading) return;
+    annuaireLoading = true;
+    notifyListeners();
+    try {
+      final result = await sync!.fetchAnnuaire(page: page, status: status);
+      annuaireRows = result.rows;
+      annuaireTotal = result.total;
+      annuairePage = page;
+      annuaireStatus = status;
+      annuaireEverLoaded = true;
+      if (status == null) annuaireTotalAll = result.total;
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      reportActionError('Annuaire non chargé (erreur serveur) : $e');
+    } finally {
+      annuaireLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Change le statut d'une entrée (✅ activer / ⚪ ignorer / Re-tester un
+  /// domaine protégé → candidat) puis recharge la vue courante.
+  Future<void> annuaireSetStatus(
+    Map<String, dynamic> row,
+    String newStatus,
+  ) async {
+    if (sync == null) return;
+    try {
+      await sync!.upsertAnnuaire({
+        'root_domain': row['root_domain'],
+        'status': newStatus,
+      });
+      // Si la ligne QUITTE le filtre courant (ex. Re-tester depuis l'onglet
+      // « Protégés anti-bot ») et que c'était la dernière de la page, on
+      // recule d'une page pour ne pas afficher une page vide.
+      final bool quitteFiltre =
+          annuaireStatus != null && annuaireStatus != newStatus;
+      final int page =
+          quitteFiltre && annuaireRows.length <= 1 && annuairePage > 0
+              ? annuairePage - 1
+              : annuairePage;
+      await loadAnnuaire(page: page, status: annuaireStatus);
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      reportActionError(
+          'Statut annuaire non enregistré (erreur serveur) : $e');
+    }
+  }
+
+  /// Supprime une entrée de l'annuaire puis recharge la vue courante.
+  Future<void> annuaireDelete(String id) async {
+    if (sync == null) return;
+    try {
+      await sync!.deleteAnnuaireEntry(id);
+      // Dernière ligne de la page supprimée → recule d'une page.
+      final int page = annuaireRows.length <= 1 && annuairePage > 0
+          ? annuairePage - 1
+          : annuairePage;
+      await loadAnnuaire(page: page, status: annuaireStatus);
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      reportActionError(
+          'Entrée annuaire non supprimée (erreur serveur) : $e');
+    }
+  }
+
+  /// Ajoute MANUELLEMENT un domaine à l'annuaire (statut actif, source
+  /// 'manuel') puis recharge la vue courante. [domain] est normalisé :
+  /// lowercase, sans schéma (« https:// ») ni chemin (« /… »).
+  Future<void> annuaireAdd(String domain) async {
+    if (sync == null) return;
+    String d = domain.trim().toLowerCase();
+    d = d.replaceFirst(RegExp(r'^[a-z][a-z0-9+.-]*://'), ''); // schéma
+    d = d.split('/').first; // chemin / query éventuels
+    if (d.isEmpty) {
+      reportActionError('Domaine invalide : « ${domain.trim()} »');
+      return;
+    }
+    try {
+      await sync!.upsertAnnuaire({
+        'root_domain': d,
+        'status': 'actif',
+        'source': 'manuel',
+      });
+      await loadAnnuaire(page: annuairePage, status: annuaireStatus);
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      reportActionError('Domaine non ajouté (erreur serveur) : $e');
+    }
+  }
+
   @override
   void dispose() {
     // Filet de sécurité : le store vit racine de l'app (jamais disposé en

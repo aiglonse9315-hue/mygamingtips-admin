@@ -13,6 +13,12 @@
 //     guides peut couvrir plusieurs jeux ; l'admin choisit), là où Sentinelle
 //     devine le jeu depuis le titre de la vidéo.
 //   - Catégorie forcée 'links', is_video=false, video_language=langue détectée.
+//
+// Annuaire de sites (plan Scruteur V3 §4.4, EF v85) : le bouton
+// « 📂 Annuaire (N sites) » EN HAUT de l'écran (exigence propriétaire) ouvre
+// le dialog de gestion des domaines découverts (candidats / actifs / ignorés
+// / protégés anti-bot). Lazy load STRICT : aucun fetch au démarrage ni à
+// l'ouverture du menu — uniquement au premier clic sur le bouton.
 // ============================================================================
 
 import 'package:flutter/material.dart';
@@ -21,10 +27,12 @@ import 'package:url_launcher/url_launcher.dart' as ul;
 
 import '../../core/theme/colors.dart';
 import '../../core/i18n/language_chip.dart' show LanguageBadge, BadgeSize;
+import '../../domain/models/category.dart';
 import '../../domain/models/suggestion.dart';
 import '../../state/store_controller.dart';
 import '../widgets/admin_data_table.dart';
 import '../widgets/confirm_dialog.dart';
+import 'contents_screen.dart' show ContentEditDialog;
 
 class ScruteurScreen extends StatefulWidget {
   const ScruteurScreen({super.key});
@@ -99,6 +107,21 @@ class _ScruteurScreenState extends State<ScruteurScreen> {
                       style: const TextStyle(color: Colors.grey, fontSize: 13),
                     ),
                   ],
+                ),
+              ),
+              const SizedBox(width: 16),
+              // Bouton « 📂 Annuaire (N sites) » EN HAUT de l'écran (exigence
+              // propriétaire — plan Scruteur V3 §4.4). Lazy load STRICT : le
+              // premier clic déclenche le chargement ; le badge n'apparaît
+              // qu'après un chargement réussi (annuaireTotalAll = total tous
+              // statuts, jamais écrasé par l'onglet « Protégés anti-bot »).
+              FilledButton.icon(
+                onPressed: () => _openAnnuaire(store),
+                icon: const Icon(Icons.folder_open_rounded, size: 18),
+                label: Text(
+                  store.annuaireEverLoaded
+                      ? '📂 Annuaire (${store.annuaireTotalAll} sites)'
+                      : '📂 Annuaire',
                 ),
               ),
             ],
@@ -203,6 +226,19 @@ class _ScruteurScreenState extends State<ScruteurScreen> {
   }
 
   // --- Actions ---
+
+  /// Ouvre le dialog « Annuaire de sites ». Le premier clic déclenche le
+  /// premier chargement (lazy load strict) ; les clics suivants réutilisent
+  /// l'état en mémoire (le dialog recharge si besoin selon l'onglet actif).
+  void _openAnnuaire(StoreController store) {
+    if (!store.annuaireEverLoaded && !store.annuaireLoading) {
+      store.loadAnnuaire();
+    }
+    showDialog<void>(
+      context: context,
+      builder: (_) => const _AnnuaireAdminDialog(),
+    );
+  }
 
   /// Valide UN site : ouvre un dialog de choix du jeu cible.
   Future<void> _validateOne(StoreController store, Suggestion s) async {
@@ -539,5 +575,456 @@ Future<void> _openUrl(String url) async {
   if (uri == null) return;
   if (await ul.canLaunchUrl(uri)) {
     await ul.launchUrl(uri, mode: ul.LaunchMode.externalApplication);
+  }
+}
+
+// ===========================================================================
+// Dialog « Annuaire de sites » (plan Scruteur V3 §4.4, EF v85)
+// ===========================================================================
+// Gestion des domaines découverts par le Scruteur, en 2 onglets :
+//   - « Annuaire » : tous statuts (candidat / actif / ignoré / anti-bot) —
+//     ajout manuel de domaine + liste paginée (50/page, tri serveur par
+//     frequence desc) avec actions par ligne (activer / ignorer / ajouter un
+//     contenu / supprimer).
+//   - « Protégés anti-bot » : filtre status='bot_protected', chargé au
+//     premier clic sur l'onglet ; bouton « Re-tester » (repasse en candidat,
+//     Vision.exe retentera via le fallback Jina).
+// L'état vit dans le StoreController (lazy load strict — rien n'est chargé
+// avant le premier clic sur le bouton d'en-tête) : ce dialog ne fait
+// qu'afficher et déléguer ; il rebuild via context.watch à chaque action.
+class _AnnuaireAdminDialog extends StatefulWidget {
+  const _AnnuaireAdminDialog();
+
+  @override
+  State<_AnnuaireAdminDialog> createState() => _AnnuaireAdminDialogState();
+}
+
+class _AnnuaireAdminDialogState extends State<_AnnuaireAdminDialog>
+    with SingleTickerProviderStateMixin {
+  /// Taille de page — DOIT rester alignée sur le défaut de
+  /// `SupabaseSync.fetchAnnuaire` (50/page, recommandé par le backend v85).
+  static const int _pageSize = 50;
+
+  late final TabController _tabController;
+  final TextEditingController _domaineCtrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(_onTabChanged);
+    // Cohérence de la vue partagée : si le dialog précédent a été fermé sur
+    // l'onglet « Protégés anti-bot », la vue courante du store est filtrée —
+    // on recharge la vue complète pour l'onglet principal. Post-frame :
+    // jamais de notifyListeners pendant la phase de build du dialog.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final store = context.read<StoreController>();
+      if (store.annuaireStatus != null && !store.annuaireLoading) {
+        store.loadAnnuaire();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _tabController.removeListener(_onTabChanged);
+    _tabController.dispose();
+    _domaineCtrl.dispose();
+    super.dispose();
+  }
+
+  /// Chargement à la demande au changement d'onglet (listener du
+  /// TabController) : l'onglet « Protégés anti-bot » est chargé au premier
+  /// clic ; le retour à l'onglet principal recharge la vue non filtrée.
+  void _onTabChanged() {
+    if (_tabController.indexIsChanging) return;
+    final store = context.read<StoreController>();
+    if (_tabController.index == 1) {
+      if (store.annuaireStatus != 'bot_protected' && !store.annuaireLoading) {
+        store.loadAnnuaire(status: 'bot_protected');
+      }
+    } else if (store.annuaireStatus != null && !store.annuaireLoading) {
+      store.loadAnnuaire();
+    }
+  }
+
+  /// Ajout manuel d'un domaine (champ + bouton ➕ de l'onglet principal).
+  void _ajouterDomaine(StoreController store) {
+    final String domain = _domaineCtrl.text;
+    if (domain.trim().isEmpty) return;
+    store.annuaireAdd(domain);
+    _domaineCtrl.clear();
+  }
+
+  /// « ➕ Ajouter un contenu » : ouvre le ContentEditDialog pré-rempli
+  /// (URL = sample_url ou racine du domaine, catégorie links, jeu
+  /// présélectionné si jeux_detectes contient EXACTEMENT un nom qui matche
+  /// un jeu du catalogue, insensible à la casse).
+  void _ajouterContenu(StoreController store, Map<String, dynamic> row) {
+    final String domain = row['root_domain']?.toString() ?? '';
+    final String sampleUrl = row['sample_url']?.toString() ?? '';
+    final String url = sampleUrl.isNotEmpty ? sampleUrl : 'https://$domain';
+    String? gameId;
+    final List<dynamic> jeux =
+        row['jeux_detectes'] as List? ?? const <dynamic>[];
+    if (jeux.length == 1) {
+      final String nom = jeux.first?.toString() ?? '';
+      for (final g in store.games) {
+        if (g.name.toLowerCase() == nom.toLowerCase()) {
+          gameId = g.id;
+          break;
+        }
+      }
+    }
+    showDialog<void>(
+      context: context,
+      builder: (_) => ContentEditDialog(
+        initialUrl: url,
+        initialCategory: ContentCategory.links,
+        initialGameId: gameId,
+      ),
+    );
+  }
+
+  /// « 🗑️ » : confirmation explicite puis suppression de l'entrée.
+  void _supprimer(StoreController store, Map<String, dynamic> row) {
+    final String domain = row['root_domain']?.toString() ?? '?';
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => ConfirmDialog(
+        title: 'Supprimer « $domain » ?',
+        message: 'L\'entrée sera retirée de l\'annuaire. Le Scruteur pourra '
+            'la redécouvrir lors d\'un prochain passage.',
+        confirmLabel: 'Supprimer',
+        destructive: true,
+        onConfirm: () => store.annuaireDelete(row['id']?.toString() ?? ''),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Le dialog rebuild à chaque action (loadAnnuaire / annuaireSetStatus /
+    // annuaireDelete / annuaireAdd notifient tous le store).
+    final store = context.watch<StoreController>();
+    return AlertDialog(
+      title: const Text('📂 Annuaire de sites'),
+      content: SizedBox(
+        width: 720,
+        height: 560,
+        child: Column(
+          children: [
+            TabBar(
+              controller: _tabController,
+              tabs: [
+                Tab(
+                  text: store.annuaireEverLoaded
+                      ? 'Annuaire (${store.annuaireTotalAll})'
+                      : 'Annuaire',
+                ),
+                Tab(
+                  text: store.annuaireStatus == 'bot_protected'
+                      ? 'Protégés anti-bot (${store.annuaireTotal})'
+                      : 'Protégés anti-bot',
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  _buildOngletAnnuaire(store),
+                  _buildOngletProteges(store),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Fermer'),
+        ),
+      ],
+    );
+  }
+
+  /// Onglet 1 « Annuaire » : ajout manuel + liste paginée tous statuts.
+  Widget _buildOngletAnnuaire(StoreController store) {
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _domaineCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Ajouter un domaine manuellement',
+                  hintText: 'ex. gamefaqs.gamespot.com',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+                onSubmitted: (_) => _ajouterDomaine(store),
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton(
+              tooltip: 'Ajouter (statut actif, source manuelle)',
+              icon: const Icon(Icons.add_circle_rounded,
+                  color: AppColors.neonGreen),
+              onPressed: () => _ajouterDomaine(store),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Expanded(child: _buildListe(store, filtreAttendu: null)),
+        _buildPagination(store, filtreAttendu: null),
+      ],
+    );
+  }
+
+  /// Onglet 2 « Protégés anti-bot » : liste filtrée status='bot_protected',
+  /// chargée au premier clic sur l'onglet (listener du TabController).
+  Widget _buildOngletProteges(StoreController store) {
+    return Column(
+      children: [
+        Expanded(child: _buildListe(store, filtreAttendu: 'bot_protected')),
+        _buildPagination(store, filtreAttendu: 'bot_protected'),
+      ],
+    );
+  }
+
+  /// Liste paginée de la vue dont le filtre est [filtreAttendu]. Si la vue
+  /// courante du store ne correspond PAS à cet onglet (changement d'onglet
+  /// en cours de chargement), on affiche un spinner — ou un bouton de
+  /// (re)chargement explicite si aucun fetch n'est en vol (auto-récupération,
+  /// jamais de boucle de retry automatique).
+  Widget _buildListe(StoreController store, {required String? filtreAttendu}) {
+    if (store.annuaireStatus != filtreAttendu) {
+      return _chargementOuFallback(store, filtreAttendu);
+    }
+    if (store.annuaireLoading && store.annuaireRows.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (!store.annuaireEverLoaded) {
+      // Filet de sécurité : normalement le bouton d'en-tête a déjà déclenché
+      // le premier chargement (lazy load strict).
+      return Center(
+        child: TextButton.icon(
+          onPressed: () => store.loadAnnuaire(status: filtreAttendu),
+          icon: const Icon(Icons.download_rounded, size: 16),
+          label: const Text('Clique pour charger'),
+        ),
+      );
+    }
+    if (store.annuaireRows.isEmpty) {
+      return const _EmptyHint(text: 'Aucun site dans cette vue.');
+    }
+    return ListView.separated(
+      itemCount: store.annuaireRows.length,
+      separatorBuilder: (_, _) =>
+          Divider(height: 1, color: Colors.grey.withValues(alpha: 0.15)),
+      itemBuilder: (_, i) => filtreAttendu == 'bot_protected'
+          ? _buildLigneProtege(store, store.annuaireRows[i])
+          : _buildLigne(store, store.annuaireRows[i]),
+    );
+  }
+
+  /// Vue transitoire : spinner si un fetch est en vol, sinon bouton de
+  /// chargement explicite (ex. premier affichage de l'onglet « Protégés »
+  /// avant que le listener n'ait déclenché le fetch).
+  Widget _chargementOuFallback(StoreController store, String? filtreAttendu) {
+    if (store.annuaireLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return Center(
+      child: TextButton.icon(
+        onPressed: () => store.loadAnnuaire(status: filtreAttendu),
+        icon: const Icon(Icons.refresh_rounded, size: 16),
+        label: const Text('Charger cette vue'),
+      ),
+    );
+  }
+
+  /// Ligne de l'onglet « Annuaire » : badge statut, domaine, icônes méthode,
+  /// frequence, trust_tier, puis les actions (✅ ⚪ ➕ 🗑️).
+  Widget _buildLigne(StoreController store, Map<String, dynamic> row) {
+    final String domain = row['root_domain']?.toString() ?? '?';
+    final String status = row['status']?.toString() ?? 'candidat';
+    final String? trustTier = row['trust_tier']?.toString();
+    final int frequence = (row['frequence'] as num?)?.toInt() ?? 0;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          _badgeStatut(status),
+          const SizedBox(width: 8),
+          Expanded(
+            child:
+                SelectableText(domain, style: const TextStyle(fontSize: 13)),
+          ),
+          _iconesMethode(row),
+          const SizedBox(width: 8),
+          // Indice de fréquence (pertinence estimée par le Scruteur).
+          Text('×$frequence',
+              style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(width: 8),
+          _badgeConfiance(trustTier),
+          const SizedBox(width: 8),
+          if (status != 'actif')
+            IconButton(
+              tooltip: 'Activer',
+              visualDensity: VisualDensity.compact,
+              icon: const Text('✅', style: TextStyle(fontSize: 16)),
+              onPressed: () => store.annuaireSetStatus(row, 'actif'),
+            ),
+          if (status != 'ignore')
+            IconButton(
+              tooltip: 'Ignorer',
+              visualDensity: VisualDensity.compact,
+              icon: const Text('⚪', style: TextStyle(fontSize: 16)),
+              onPressed: () => store.annuaireSetStatus(row, 'ignore'),
+            ),
+          IconButton(
+            tooltip: 'Ajouter un contenu (lien pré-rempli)',
+            visualDensity: VisualDensity.compact,
+            icon: const Text('➕', style: TextStyle(fontSize: 16)),
+            onPressed: () => _ajouterContenu(store, row),
+          ),
+          IconButton(
+            tooltip: 'Supprimer de l\'annuaire',
+            visualDensity: VisualDensity.compact,
+            icon: const Text('🗑️', style: TextStyle(fontSize: 16)),
+            onPressed: () => _supprimer(store, row),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Ligne de l'onglet « Protégés anti-bot » : domaine + bouton
+  /// « Re-tester » (repasse le domaine en candidat).
+  Widget _buildLigneProtege(StoreController store, Map<String, dynamic> row) {
+    final String domain = row['root_domain']?.toString() ?? '?';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child:
+                SelectableText(domain, style: const TextStyle(fontSize: 13)),
+          ),
+          Tooltip(
+            message: 'Vision.exe re-testera ce domaine via le fallback Jina '
+                'au prochain passage',
+            child: OutlinedButton.icon(
+              onPressed: () => store.annuaireSetStatus(row, 'candidat'),
+              icon: const Icon(Icons.refresh_rounded, size: 16),
+              label: const Text('Re-tester'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Badge de statut coloré : candidat ambre, actif vert, ignoré gris,
+  /// bot_protected rouge.
+  Widget _badgeStatut(String status) {
+    final (Color color, String label) = switch (status) {
+      'actif' => (AppColors.neonGreen, 'actif'),
+      'ignore' => (Colors.grey, 'ignoré'),
+      'bot_protected' => (AppColors.categoryVideo, 'anti-bot'),
+      _ => (AppColors.plusGold, 'candidat'),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+            color: color, fontSize: 11, fontWeight: FontWeight.bold),
+      ),
+    );
+  }
+
+  /// Icônes de méthode de récupération : 🔌 feed (feed_url), 🗺️ sitemap
+  /// (sitemap_url), 🔎 recherche interne, 📚 API MediaWiki.
+  Widget _iconesMethode(Map<String, dynamic> row) {
+    final List<String> icones = <String>[];
+    if (row['feed_url'] != null) icones.add('🔌');
+    if (row['sitemap_url'] != null) icones.add('🗺️');
+    final String? method = row['search_method']?.toString();
+    if (method == 'internal_search') icones.add('🔎');
+    if (method == 'mediawiki_api') icones.add('📚');
+    if (icones.isEmpty) return const SizedBox.shrink();
+    return Tooltip(
+      message: 'feed_url : ${row['feed_url'] ?? '—'}\n'
+          'sitemap_url : ${row['sitemap_url'] ?? '—'}\n'
+          'search_method : ${method ?? '—'}',
+      child: Text(icones.join(' '), style: const TextStyle(fontSize: 13)),
+    );
+  }
+
+  /// Trust tier : 🔒 sure_99 / ❓ a_verifier / — si null ou inconnu.
+  Widget _badgeConfiance(String? trustTier) {
+    final (String emoji, String message) = switch (trustTier) {
+      'sure_99' => ('🔒', 'Domaine sûr (sure_99)'),
+      'a_verifier' => ('❓', 'Domaine à vérifier'),
+      _ => ('—', 'Confiance inconnue'),
+    };
+    return Tooltip(
+      message: message,
+      child: Text(emoji, style: const TextStyle(fontSize: 13)),
+    );
+  }
+
+  /// Pagination partagée des 2 onglets : ‹ › + « page X / Y ». Masquée tant
+  /// que la vue affichée ne correspond pas à l'onglet (filtre transitoire)
+  /// ou qu'il n'y a rien à paginer.
+  Widget _buildPagination(StoreController store,
+      {required String? filtreAttendu}) {
+    if (store.annuaireStatus != filtreAttendu ||
+        !store.annuaireEverLoaded ||
+        store.annuaireTotal == 0) {
+      return const SizedBox(height: 40);
+    }
+    final int totalPages = (store.annuaireTotal + _pageSize - 1) ~/ _pageSize;
+    final int pageCourante = store.annuairePage + 1;
+    return SizedBox(
+      height: 40,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          IconButton(
+            tooltip: 'Page précédente',
+            icon: const Icon(Icons.chevron_left_rounded),
+            onPressed: store.annuairePage > 0 && !store.annuaireLoading
+                ? () => store.loadAnnuaire(
+                    page: store.annuairePage - 1, status: store.annuaireStatus)
+                : null,
+          ),
+          Text('page $pageCourante / $totalPages',
+              style: const TextStyle(fontSize: 12)),
+          IconButton(
+            tooltip: 'Page suivante',
+            icon: const Icon(Icons.chevron_right_rounded),
+            onPressed:
+                store.annuairePage < totalPages - 1 && !store.annuaireLoading
+                    ? () => store.loadAnnuaire(
+                        page: store.annuairePage + 1,
+                        status: store.annuaireStatus)
+                    : null,
+          ),
+        ],
+      ),
+    );
   }
 }

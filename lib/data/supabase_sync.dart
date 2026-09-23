@@ -1047,6 +1047,57 @@ class SupabaseSync {
     return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
   }
 
+  // ===========================================================================
+  // ANNUAIRE DE SITES (routes EF annuaire/* — plan Scruteur V3 §4.4, EF v85)
+  // ===========================================================================
+  // Répertoire des domaines découverts par le Scruteur (statuts : candidat,
+  // actif, ignore, bot_protected). Chargement LAZY STRICT côté store : aucun
+  // appel au démarrage ni à l'ouverture du menu — uniquement au clic sur le
+  // bouton « 📂 Annuaire » de l'en-tête Scruteur (exigence propriétaire).
+  // Les lignes sont retournées BRUTES (snake_case) : id, root_domain, status,
+  // trust_tier, tags[], langs[], frequence, search_method,
+  // search_url_template, feed_url, feed_type, feed_langs[], sitemap_url,
+  // sample_url, jeux_detectes[], source, sentinelle_id, updated_at.
+
+  /// Liste paginée de l'annuaire (route EF `annuaire/list`).
+  ///
+  /// [page] : index de la page (0-based) ; [pageSize] 50 recommandé (tri
+  /// serveur par `frequence` desc). [status] filtre optionnel
+  /// ('candidat' | 'actif' | 'ignore' | 'bot_protected').
+  ///
+  /// Retourne les lignes de la page + le total serveur (pagination). Les
+  /// exceptions sont PROPAGÉES (AdminAuthException incluse) : c'est le
+  /// StoreController qui gère (logout forcé / reportActionError).
+  Future<({List<Map<String, dynamic>> rows, int total})> fetchAnnuaire({
+    int page = 0,
+    int pageSize = 50,
+    String? status,
+  }) async {
+    final Map<String, dynamic> data = await _post('annuaire/list', {
+      'page': page,
+      'pageSize': pageSize,
+      // Élément null-aware : omis quand status est null (= tous statuts).
+      'status': ?status,
+    });
+    final List<dynamic> rows = data['rows'] as List? ?? [];
+    return (
+      rows: rows.whereType<Map<String, dynamic>>().toList(),
+      total: (data['total'] as num?)?.toInt() ?? rows.length,
+    );
+  }
+
+  /// Crée ou met à jour une entrée de l'annuaire (route EF
+  /// `annuaire/upsert`). Clé métier : `root_domain`. Seuls les champs
+  /// présents dans [body] sont modifiés (le serveur conserve la valeur
+  /// existante des colonnes absentes) : status, trust_tier, tags[], langs[],
+  /// search_method, feed_url, source ('auto' | 'manuel')…
+  Future<void> upsertAnnuaire(Map<String, dynamic> body) =>
+      _post('annuaire/upsert', body);
+
+  /// Supprime une entrée de l'annuaire (route EF `annuaire/delete`).
+  Future<void> deleteAnnuaireEntry(String id) =>
+      _post('annuaire/delete', {'id': id});
+
   /// Récupère la liste des utilisateurs bannis depuis Supabase (via Edge
   /// Function `profiles/banned-list`).
   ///
