@@ -3638,6 +3638,10 @@ class StoreController extends ChangeNotifier {
   /// Frais de société (company_expenses).
   List<ExpenseEntry> companyExpenses = const [];
 
+  /// Coûts mensuels des moteurs de recherche des bots (usage_monthly —
+  /// plan V3 Phase 2b). Réservé owner (comme les frais de société).
+  List<Map<String, dynamic>> usageMonthly = const [];
+
   /// true pendant un fetch analytics (spinner de l'écran).
   bool analyticsLoading = false;
 
@@ -3781,6 +3785,10 @@ class StoreController extends ChangeNotifier {
           sync!.fetchExpenses()
         else
           Future.value(const <Map<String, dynamic>>[]),
+        if (isOwner)
+          sync!.fetchUsageMonthly()
+        else
+          Future.value(const <Map<String, dynamic>>[]),
       ]);
       pricingConfigs = results[0]
           .map((e) => PricingConfig.fromJson(e))
@@ -3789,6 +3797,7 @@ class StoreController extends ChangeNotifier {
       companyExpenses = results[2]
           .map((e) => ExpenseEntry.fromJson(e))
           .toList();
+      usageMonthly = results[3];
       notifyListeners();
     } on AdminAuthException {
       onAuthError?.call();
@@ -3797,6 +3806,7 @@ class StoreController extends ChangeNotifier {
       // affichée pour une section que le compte ne doit de toute façon
       // pas voir — on se contente d'une liste de frais vide.
       companyExpenses = const [];
+      usageMonthly = const [];
       notifyListeners();
     } catch (e) {
       analyticsError = 'Chargement de la configuration impossible : $e';

@@ -2049,6 +2049,78 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                 ],
               ),
             ),
+            // Plan V3 Phase 2b : coûts mensuels des moteurs de recherche des
+            // bots Vision (usage_monthly — comptage local remonté par
+            // Vision.exe à chaque mois clos, rien en temps réel).
+            if (store.usageMonthly.isNotEmpty) ...[
+              const Divider(height: 32),
+              Text('Coûts moteurs de recherche (bots Vision)',
+                  style: theme.textTheme.titleSmall),
+              const SizedBox(height: 4),
+              Text(
+                'Requêtes comptées localement par Vision.exe (Brave / Mojeek '
+                '/ DuckDuckGo / Jina), remontées à chaque mois clos. Mojeek '
+                'est payant (2,33 € / 1 000 requêtes) ; le coût estimé = '
+                'requêtes × prix unitaire configuré dans le bot.',
+                style: theme.textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: DataTable(
+                  columns: const [
+                    DataColumn(label: Text('Mois')),
+                    DataColumn(label: Text('Brave'), numeric: true),
+                    DataColumn(label: Text('Mojeek'), numeric: true),
+                    DataColumn(label: Text('DuckDuckGo'), numeric: true),
+                    DataColumn(label: Text('Jina'), numeric: true),
+                    DataColumn(label: Text('Total req.'), numeric: true),
+                    DataColumn(label: Text('Coût estimé'), numeric: true),
+                  ],
+                  rows: [
+                    for (final r in store.usageMonthly)
+                      DataRow(
+                        cells: [
+                          DataCell(Text(r['month']?.toString() ?? '—')),
+                          DataCell(Text(
+                              '${(r['engines'] as Map?)?['brave'] ?? 0}')),
+                          DataCell(Text(
+                              '${(r['engines'] as Map?)?['mojeek'] ?? 0}')),
+                          DataCell(Text(
+                              '${(r['engines'] as Map?)?['duckduckgo'] ?? 0}')),
+                          DataCell(Text(
+                              '${(r['engines'] as Map?)?['jina'] ?? 0}')),
+                          DataCell(Text('${r['total_requests'] ?? 0}')),
+                          DataCell(Text(
+                              '${(r['total_cost_eur'] as num?)?.toDouble().toStringAsFixed(2) ?? '0.00'} €')),
+                        ],
+                      ),
+                    // Ligne de total (tous mois affichés confondus).
+                    DataRow(
+                      cells: [
+                        const DataCell(Text('Total',
+                            style:
+                                TextStyle(fontWeight: FontWeight.bold))),
+                        const DataCell(Text('')),
+                        const DataCell(Text('')),
+                        const DataCell(Text('')),
+                        const DataCell(Text('')),
+                        DataCell(Text(
+                          '${store.usageMonthly.fold<int>(0, (s, r) => s + ((r['total_requests'] as num?)?.toInt() ?? 0))}',
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold),
+                        )),
+                        DataCell(Text(
+                          '${store.usageMonthly.fold<double>(0, (s, r) => s + ((r['total_cost_eur'] as num?)?.toDouble() ?? 0)).toStringAsFixed(2)} €',
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold),
+                        )),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
         ),
       ),

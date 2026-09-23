@@ -1038,6 +1038,15 @@ class SupabaseSync {
   Future<void> deleteExpense(int id) =>
       _post('expenses/delete', {'id': id});
 
+  /// Coûts mensuels des moteurs de recherche des bots (plan Scruteur V3
+  /// Phase 2b — table `usage_monthly`, remontée par Vision.exe au changement
+  /// de mois). Réservé owner (comme expenses/*) : 24 derniers mois max.
+  Future<List<Map<String, dynamic>>> fetchUsageMonthly() async {
+    final data = await _post('usage-monthly/list', <String, dynamic>{});
+    final list = data['rows'] as List? ?? [];
+    return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
   /// Récupère la liste des utilisateurs bannis depuis Supabase (via Edge
   /// Function `profiles/banned-list`).
   ///
