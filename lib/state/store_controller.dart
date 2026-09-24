@@ -645,36 +645,45 @@ class StoreController extends ChangeNotifier {
   ///
   /// Lit directement les traductions du jeu via PostgREST anon (12 lignes max)
   /// plutôt que de charger toutes les traductions via l'Edge Function (qui
-  /// peut être limitée par la pagination à 1000 lignes).
-  Future<Map<String, String>> loadTranslationsForGame(String gameId) async {
-    if (sync == null) return <String, String>{};
+  /// peut être limitée par la pagination à 1000 lignes). Inclut les AUTRES
+  /// NOMS par langue (§119).
+  Future<({Map<String, String> titles, Map<String, List<String>> altTitles})>
+      loadTranslationsForGame(String gameId) async {
+    const empty = (
+      titles: <String, String>{},
+      altTitles: <String, List<String>>{},
+    );
+    if (sync == null) return empty;
     try {
       return await sync!.fetchTranslationsForGame(gameId);
     } on AdminAuthException {
       rethrow;
     } catch (e) {
       debugPrint('loadTranslationsForGame échoué: $e');
-      return <String, String>{};
+      return empty;
     }
   }
 
   /// Sauvegarde les traductions du titre d'un jeu. [translations] contient
-  /// uniquement les langues non vides (filtrées par le caller).
+  /// uniquement les langues non vides (filtrées par le caller) ;
+  /// [altTitles] leurs AUTRES NOMS (§119 — liste vide = effacés).
   ///
   /// Pas de mise à jour du `Game` en mémoire : les traductions ne sont pas
   /// affichées dans la liste principale des jeux. En cas d'échec serveur,
   /// `lastActionError` est positionnée (le dialog affiche l'erreur).
   Future<bool> updateGameTranslations(
     Game game,
-    Map<String, String> translations,
-  ) async {
+    Map<String, String> translations, {
+    Map<String, List<String>>? altTitles,
+  }) async {
     if (sync == null) {
       lastActionError = 'Mode aperçu : traductions non persistées.';
       notifyListeners();
       return false;
     }
     try {
-      final ok = await sync!.updateGameTranslations(game.id, translations);
+      final ok = await sync!.updateGameTranslations(game.id, translations,
+          altTitles: altTitles);
       if (!ok) {
         lastActionError = 'Traductions non enregistrées (erreur serveur).';
         notifyListeners();

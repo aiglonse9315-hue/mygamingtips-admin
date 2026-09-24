@@ -181,6 +181,16 @@ class AiRecommendation {
   /// n'a pas pu être rattaché.
   final AiAliasCandidate? aliasCandidate;
 
+  /// §119 — jeu que Vision CHERCHAIT quand il a trouvé ce contenu (clés
+  /// `target_game`, `search_language`, `found_via` écrites à l'insertion) :
+  /// repère les recherches qui ramènent du hors-sujet. Null = inconnu
+  /// (contenus d'avant §119, liens du Scruteur, suggestions des joueurs).
+  final String? targetGame;
+  final String? searchLanguage;
+
+  /// 'search' (recherche générique) | 'trusted_channel' (chaîne de confiance).
+  final String? foundVia;
+
   const AiRecommendation({
     required this.verdict,
     required this.confidence,
@@ -195,7 +205,22 @@ class AiRecommendation {
     this.needsGameCreation = false,
     this.youtubeLanguage,
     this.aliasCandidate,
+    this.targetGame,
+    this.searchLanguage,
+    this.foundVia,
   });
+
+  /// « 🔎 Vision cherchait : Raft · RU » (+ « · chaîne de confiance »), null
+  /// si le jeu cherché est inconnu.
+  String? get visionSearchLabel {
+    final game = targetGame?.trim();
+    if (game == null || game.isEmpty) return null;
+    return '🔎 Vision cherchait : ${[
+      game,
+      ?searchLanguage,
+      if (foundVia == 'trusted_channel') 'chaîne de confiance',
+    ].join(' · ')}';
+  }
 
   factory AiRecommendation.fromJson(Map<String, dynamic> json) {
     return AiRecommendation(
@@ -226,6 +251,9 @@ class AiRecommendation {
       // D3.2 — alias candidat (rattachement assisté) : lu depuis la clé
       // `alias_candidate` du jsonb. Entrées vides → null (défensif).
       aliasCandidate: _parseAliasCandidate(json['alias_candidate']),
+      targetGame: json['target_game'] as String?,
+      searchLanguage: json['search_language'] as String?,
+      foundVia: json['found_via'] as String?,
     );
   }
 
@@ -263,5 +291,8 @@ class AiRecommendation {
         if (needsGameCreation) 'needs_game_creation': true,
         if (youtubeLanguage != null) 'youtube_language': youtubeLanguage,
         if (aliasCandidate != null) 'alias_candidate': aliasCandidate!.toJson(),
+        'target_game': ?targetGame,
+        'search_language': ?searchLanguage,
+        'found_via': ?foundVia,
       };
 }

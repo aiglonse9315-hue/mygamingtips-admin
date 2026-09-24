@@ -1684,13 +1684,7 @@ class _TrustedTableState extends State<_TrustedTable> {
                   ),
                 ),
               ),
-              Text(
-                _cleanTitle(s),
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13,
-                ),
-              ),
+              _titleCell(context, s),
               // Titre pour insertion (éditable) : pré-rempli avec le titre
               // calculé (titre YouTube IA sinon texte partagé nettoyé) —
               // c'est le titre enregistré en base (title_admin) à la
@@ -1999,10 +1993,7 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
             ),
           ),
         ),
-      Text(
-        _cleanTitle(s),
-        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
-      ),
+      _titleCell(context, s),
       // Titre pour insertion (éditable) : pré-rempli avec le titre calculé
       // (titre YouTube IA sinon texte partagé nettoyé). La saisie est
       // transmise au dialogue « Ajouter manuellement » comme titre initial —
@@ -2409,6 +2400,33 @@ String _cleanTitle(Suggestion s) {
     return cleaned.isEmpty ? shared : cleaned;
   }
   return s.url;
+}
+
+/// Cellule « Titre » des tableaux de revue : titre + (§119) le jeu que
+/// Vision cherchait quand il a trouvé le contenu — repère les recherches qui
+/// ramènent du hors-sujet (« 🔎 Vision cherchait : Raft · RU »).
+Widget _titleCell(BuildContext context, Suggestion s) {
+  final title = Text(
+    _cleanTitle(s),
+    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+  );
+  final search = s.aiRecommendation?.visionSearchLabel;
+  if (search == null) return title;
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      title,
+      const SizedBox(height: 2),
+      Text(
+        search,
+        style: TextStyle(
+          fontSize: 11,
+          color: Theme.of(context).textTheme.bodySmall?.color,
+        ),
+      ),
+    ],
+  );
 }
 
 /// Catégorie effective d'insertion pour une suggestion « 99% sûr ».

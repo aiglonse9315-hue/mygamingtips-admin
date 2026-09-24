@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../core/i18n/app_languages.dart';
 import '../../core/theme/colors.dart';
 import '../../data/supabase_sync.dart';
+import '../../domain/alt_titles_input.dart';
 import '../../domain/models/game.dart';
 import '../../domain/models/game_alias.dart';
 import '../../state/store_controller.dart';
@@ -676,6 +677,10 @@ class _GameEditDialogState extends State<GameEditDialog> {
 ///
 /// Le dialog est scrollable (12 langues = grand). Les champs vides ne sont
 /// pas envoyés au serveur (filtre côté caller).
+///
+/// §119 : sous chaque titre, un champ « Autres noms » (un par ligne) —
+/// variantes employées par les vidéos, pour la seule RECONNAISSANCE du jeu
+/// (jamais affichées dans l'app, jamais recherchées).
 class GameTranslationsDialog extends StatefulWidget {
   const GameTranslationsDialog({super.key, required this.game});
   final Game game;
@@ -687,6 +692,9 @@ class GameTranslationsDialog extends StatefulWidget {
 class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
   /// Un TextEditingController par langue (code majuscule).
   late final Map<String, TextEditingController> _controllers;
+
+  /// Autres noms par langue (§119) — un nom par ligne.
+  late final Map<String, TextEditingController> _altControllers;
 
   /// État de chargement des traductions existantes.
   bool _loading = true;
@@ -709,12 +717,16 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
       for (final lang in kSupportedLanguages)
         lang.code: TextEditingController(),
     };
+    _altControllers = {
+      for (final lang in kSupportedLanguages)
+        lang.code: TextEditingController(),
+    };
     _loadTranslations();
   }
 
   @override
   void dispose() {
-    for (final c in _controllers.values) {
+    for (final c in [..._controllers.values, ..._altControllers.values]) {
       c.dispose();
     }
     super.dispose();
@@ -729,8 +741,10 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
       // nom du jeu par défaut (l'admin peut ainsi traduire rapidement sans
       // repartir de zéro, ou vider le champ s'il ne veut pas de traduction).
       for (final lang in kSupportedLanguages) {
-        final value = existing[lang.code] ?? widget.game.name;
+        final value = existing.titles[lang.code] ?? widget.game.name;
         _controllers[lang.code]!.text = value;
+        _altControllers[lang.code]!.text =
+            (existing.altTitles[lang.code] ?? const <String>[]).join('\n');
       }
       setState(() => _loading = false);
     } catch (e) {
@@ -749,26 +763,46 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
   }
 
   Future<void> _save() async {
-    // Filtre les valeurs non vides (on ne persiste pas les titres vides).
+    // Filtre les valeurs non vides (on ne persiste pas les titres vides) ;
+    // autres noms envoyés pour CHAQUE langue titrée (liste vide = effacés).
     final Map<String, String> translations = {};
+    final Map<String, List<String>> altTitles = {};
+    String? altWithoutTitle;
     for (final entry in _controllers.entries) {
       final value = entry.value.text.trim();
-      if (value.isNotEmpty) {
-        translations[entry.key] = value;
+      final alts = parseAltTitlesInput(
+        _altControllers[entry.key]!.text,
+        title: value,
+      );
+      if (value.isEmpty) {
+        if (alts.isNotEmpty) altWithoutTitle ??= entry.key;
+        continue;
       }
+      translations[entry.key] = value;
+      altTitles[entry.key] = alts;
     }
+    if (altWithoutTitle != null) {
+      setState(() {
+        _statusMessage =
+            'Renseigne le titre $altWithoutTitle avant ses autres noms.';
+        _statusError = true;
+      });
+      return;
+    }
+    final altCount = altTitles.values.fold(0, (n, l) => n + l.length);
     setState(() {
       _saving = true;
       _statusMessage = null;
     });
     final StoreController store = context.read<StoreController>();
-    final ok =
-        await store.updateGameTranslations(widget.game, translations);
+    final ok = await store.updateGameTranslations(widget.game, translations,
+        altTitles: altTitles);
     if (!mounted) return;
     setState(() {
       _saving = false;
       _statusMessage = ok
-          ? 'Traductions enregistrées (${translations.length}).'
+          ? 'Traductions enregistrées (${translations.length})'
+              '${altCount > 0 ? ' + $altCount autre(s) nom(s)' : ''}.'
           : (store.lastActionError ?? 'Erreur lors de l\'enregistrement.');
       _statusError = !ok;
     });
@@ -821,7 +855,21 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
               : SingleChildScrollView(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      Text(
+                        '« Autres noms » : variantes employées par les vidéos '
+                        '(ex. 发薪日3 pour Payday 3), un par ligne. Elles '
+                        'servent uniquement à reconnaître le jeu — jamais '
+                        'affichées dans l\'app ni utilisées pour les '
+                        'recherches. Vision les récupère à la prochaine '
+                        '« 🔄 Sync Total ».',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).textTheme.bodySmall?.color,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
                       for (final lang in kSupportedLanguages) ...[
                         TextField(
                           controller: _controllers[lang.code],
@@ -834,7 +882,23 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
                             if (!_dirty) setState(() => _dirty = true);
                           },
                         ),
-                        const SizedBox(height: 8),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 16),
+                          child: TextField(
+                            controller: _altControllers[lang.code],
+                            minLines: 1,
+                            maxLines: 4,
+                            style: const TextStyle(fontSize: 12),
+                            decoration: const InputDecoration(
+                              labelText: 'Autres noms (un par ligne)',
+                              isDense: true,
+                            ),
+                            onChanged: (_) {
+                              if (!_dirty) setState(() => _dirty = true);
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 12),
                       ],
                       if (_statusMessage != null) ...[
                         const SizedBox(height: 4),

@@ -622,34 +622,47 @@ class SupabaseSync {
     return byGame;
   }
 
-  /// Récupère les traductions d'UN seul jeu via PostgREST anon.
+  /// Récupère les traductions d'UN seul jeu via PostgREST anon, avec ses
+  /// AUTRES NOMS par langue (`alt_titles`, migration 0080 — §119) dans la
+  /// même requête.
   ///
   /// Contrairement à [fetchAllTranslations] (qui charge tout et peut être
   /// limité par la pagination), cette méthode ne récupère que les 12 lignes
   /// max du jeu concerné — aucun cutoff possible.
-  Future<Map<String, String>> fetchTranslationsForGame(String gameId) async {
+  Future<({Map<String, String> titles, Map<String, List<String>> altTitles})>
+      fetchTranslationsForGame(String gameId) async {
+    final titles = <String, String>{};
+    final altTitles = <String, List<String>>{};
     final res = await _withRetry(
       () => http
           .get(
             Uri.parse(
-              '$supabaseUrl/rest/v1/game_translations?select=lang,title&game_id=eq.$gameId',
+              '$supabaseUrl/rest/v1/game_translations'
+              '?select=lang,title,alt_titles&game_id=eq.$gameId',
             ),
             headers: {'apikey': anonKey, 'Authorization': 'Bearer $anonKey'},
           )
           .timeout(requestTimeout),
     );
-    if (res.statusCode != 200) return {};
+    if (res.statusCode != 200) return (titles: titles, altTitles: altTitles);
     final List<dynamic> rows = jsonDecode(res.body) as List? ?? [];
-    final Map<String, String> result = {};
     for (final row in rows) {
       if (row is! Map) continue;
       final lang = row['lang'];
       final title = row['title'];
-      if (lang is String && title is String) {
-        result[lang.toUpperCase()] = title;
+      if (lang is! String || title is! String) continue;
+      final code = lang.toUpperCase();
+      titles[code] = title;
+      final alts = row['alt_titles'];
+      if (alts is List) {
+        final names = [
+          for (final a in alts)
+            if (a is String && a.trim().isNotEmpty) a.trim(),
+        ];
+        if (names.isNotEmpty) altTitles[code] = names;
       }
     }
-    return result;
+    return (titles: titles, altTitles: altTitles);
   }
 
   /// Récupère TOUTES les traductions de titres via PostgREST anon
@@ -704,11 +717,16 @@ class SupabaseSync {
   /// `{LANG: title}` — les entrées vides sont ignorées côté caller (filtre
   /// avant l'appel) pour ne pas insérer de titres vides.
   ///
+  /// [altTitles] (§119) : AUTRES NOMS par langue `{LANG: [noms]}` — une
+  /// langue absente ou vide EFFACE ses autres noms ; null = colonne
+  /// inchangée (comportement d'avant).
+  ///
   /// Retourne `true` en cas de succès, `false` sinon.
   Future<bool> updateGameTranslations(
     String gameId,
-    Map<String, String> translations,
-  ) async {
+    Map<String, String> translations, {
+    Map<String, List<String>>? altTitles,
+  }) async {
     try {
       print(
         '[Sync] updateGameTranslations: gameId=$gameId, '
@@ -717,6 +735,7 @@ class SupabaseSync {
       final data = await _post('games/translate', {
         'game_id': gameId,
         'translations': translations,
+        'alt_titles': ?altTitles,
       });
       print('[Sync] updateGameTranslations succès: ${data['ok']}');
       return true;
