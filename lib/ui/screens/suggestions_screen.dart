@@ -22,6 +22,7 @@ class SuggestionsScreen extends StatefulWidget {
 class _SuggestionsScreenState extends State<SuggestionsScreen> {
   SuggestionStatus? _statusFilter; // null = toutes
   bool _hideVision = false; // true = exclure les suggestions du bot Vision
+  bool _hideScruteur = false; // true = exclure celles du bot Scruteur (§127)
   int _currentPage = 0;
   static const int _pageSize = 500;
 
@@ -29,16 +30,19 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
   Widget build(BuildContext context) {
     final StoreController store = context.watch<StoreController>();
 
-    List<Suggestion> list = store.suggestionsByDate;
+    // Filtres d'origine (colonne `source`) : Vision et / ou Scruteur
+    // masqués — les deux = suggestions des utilisateurs seules. Les
+    // compteurs des onglets de statut portent sur cette liste.
+    final List<Suggestion> bySource = store.suggestionsByDate
+        .where((s) =>
+            !(_hideVision && s.isFromVision) &&
+            !(_hideScruteur && s.isFromScruteur))
+        .toList();
+    int countOf(SuggestionStatus status) =>
+        bySource.where((s) => s.status == status).length;
+    List<Suggestion> list = bySource;
     if (_statusFilter != null) {
       list = list.where((s) => s.status == _statusFilter).toList();
-    }
-    // Filtre Vision : exclut les suggestions du bot Vision pour ne voir
-    // que celles des vrais utilisateurs.
-    if (_hideVision) {
-      list = list
-          .where((s) => s.author.displayName.toLowerCase() != 'vision')
-          .toList();
     }
 
     // Pagination locale : découpe la liste filtrée en pages de 500.
@@ -88,38 +92,43 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
             spacing: 8,
             children: [
               _StatusTab(
-                  label: 'Toutes (${store.suggestions.length})',
+                  label: 'Toutes (${bySource.length})',
                   selected: _statusFilter == null,
                   color: AppColors.neonCyan,
                   onTap: () => setState(() => _statusFilter = null)),
               _StatusTab(
                   label:
-                      'En attente (${store.pendingSuggestionsCount})',
+                      'En attente (${countOf(SuggestionStatus.pending)})',
                   selected: _statusFilter == SuggestionStatus.pending,
                   color: AppColors.plusGold,
                   onTap: () => setState(() =>
                       _statusFilter = SuggestionStatus.pending)),
               _StatusTab(
                   label:
-                      'Acceptées (${store.suggestions.where((s) => s.status == SuggestionStatus.accepted).length})',
+                      'Acceptées (${countOf(SuggestionStatus.accepted)})',
                   selected: _statusFilter == SuggestionStatus.accepted,
                   color: AppColors.neonGreen,
                   onTap: () => setState(() =>
                       _statusFilter = SuggestionStatus.accepted)),
               _StatusTab(
                   label:
-                      'Refusées (${store.suggestions.where((s) => s.status == SuggestionStatus.rejected).length})',
+                      'Refusées (${countOf(SuggestionStatus.rejected)})',
                   selected: _statusFilter == SuggestionStatus.rejected,
                   color: AppColors.categoryVideo,
                   onTap: () => setState(() =>
                       _statusFilter = SuggestionStatus.rejected)),
               _StatusTab(
-                  label: _hideVision
-                      ? 'Réels uniquement (Vision masqué)'
-                      : 'Masquer Vision',
+                  label: _hideVision ? 'Vision masqué' : 'Masquer Vision',
                   selected: _hideVision,
                   color: AppColors.neonViolet,
                   onTap: () => setState(() => _hideVision = !_hideVision)),
+              _StatusTab(
+                  label:
+                      _hideScruteur ? 'Scruteur masqué' : 'Masquer Scruteur',
+                  selected: _hideScruteur,
+                  color: AppColors.neonMagenta,
+                  onTap: () =>
+                      setState(() => _hideScruteur = !_hideScruteur)),
             ],
           ),
           const SizedBox(height: 16),

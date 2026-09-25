@@ -39,6 +39,15 @@ class Suggestion {
   final AiRecommendation? aiRecommendation;
   final DateTime? sentinelleStartedAt;
 
+  /// §127 — origine (colonne `source`, migration 0032) : [sourceUser]
+  /// (partage depuis l'app), [sourceVision] ou [sourceScruteur] (bots).
+  /// Filtres « Masquer Vision » / « Masquer Scruteur » du menu Suggestions.
+  final String source;
+
+  static const String sourceUser = 'user';
+  static const String sourceVision = 'vision';
+  static const String sourceScruteur = 'scruteur';
+
   const Suggestion({
     required this.id,
     required this.url,
@@ -48,7 +57,11 @@ class Suggestion {
     required this.author,
     this.aiRecommendation,
     this.sentinelleStartedAt,
+    this.source = sourceUser,
   });
+
+  bool get isFromVision => source == sourceVision;
+  bool get isFromScruteur => source == sourceScruteur;
 
   factory Suggestion.fromJson(Map<String, dynamic> json) {
     return Suggestion(
@@ -69,7 +82,21 @@ class Suggestion {
           : null,
       sentinelleStartedAt: DateTime.tryParse(
           json['sentinelleStartedAt'] as String? ?? ''),
+      source: _parseSource(json),
     );
+  }
+
+  /// `source` de la ligne ; à défaut (cache local d'avant §127), déduite
+  /// du nom des bots (« Vision » / « Scruteur » — l'ancien filtre), sinon
+  /// [sourceUser].
+  static String _parseSource(Map<String, dynamic> json) {
+    final Object? source = json['source'];
+    if (source is String && source.isNotEmpty) return source;
+    final Object? author = json['author'];
+    final String name = author is Map
+        ? (author['displayName']?.toString() ?? '').toLowerCase()
+        : '';
+    return name == sourceVision || name == sourceScruteur ? name : sourceUser;
   }
 
   Map<String, dynamic> toJson() => {
@@ -80,6 +107,7 @@ class Suggestion {
         'sharedAt': sharedAt.toIso8601String(),
         'author': author.toJson(),
         if (aiRecommendation != null) 'aiRecommendation': aiRecommendation!.toJson(),
+        'source': source,
       };
 
   Suggestion copyWith({SuggestionStatus? status}) {
@@ -91,6 +119,7 @@ class Suggestion {
       sharedAt: sharedAt,
       author: author,
       aiRecommendation: aiRecommendation,
+      source: source,
     );
   }
 
