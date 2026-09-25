@@ -14,6 +14,7 @@ import '../domain/models/suggestion.dart';
 import '../domain/models/sync_status.dart';
 import '../domain/models/trusted_channel.dart';
 import '../domain/plus_paging.dart';
+import '../domain/trusted_channels_paging.dart';
 
 /// Exception levée quand le token admin est expiré ou invalide (HTTP 401).
 ///
@@ -1379,6 +1380,49 @@ class SupabaseSync {
   // ===========================================================================
   // CHAÎNES YOUTUBE DE CONFIANCE (routes EF trusted-channels/*)
   // ===========================================================================
+
+  /// Une page du tableau « Chaînes YT » (route EF `trusted-channels/list`
+  /// en mode page — migration 0088) : les chaînes des [gamesPerPage] jeux
+  /// (5 par défaut, 50 max) de la page [page], recherche [search] appliquée
+  /// en SQL (handle, nom de chaîne ou nom du jeu « contient »), totaux
+  /// exacts de jeux et de chaînes.
+  /// Les exceptions sont PROPAGÉES (AdminAuthException incluse).
+  Future<TrustedChannelsPage> fetchTrustedChannelsPage({
+    String search = '',
+    int page = 0,
+    int gamesPerPage = kTrustedGamesPerPage,
+  }) async {
+    final Map<String, dynamic> data = await _post(
+      'trusted-channels/list',
+      trustedPageRequestBody(
+        search: search,
+        page: page,
+        gamesPerPage: gamesPerPage,
+      ),
+    );
+    return parseTrustedChannelsPage(
+      data,
+      search: search,
+      page: page,
+      gamesPerPage: gamesPerPage,
+    );
+  }
+
+  /// Jeux (identifiants) déjà liés au handle [handle], casse ignorée, sur
+  /// toute la table (route EF `trusted-channels/handle-games`, migration
+  /// 0088) : lus à l'ouverture du dialog « Ajouter un jeu », hors des pages
+  /// de la liste (une chaîne peut être liée à plus de 100 jeux).
+  /// Les exceptions sont PROPAGÉES (AdminAuthException incluse).
+  Future<List<String>> fetchTrustedChannelGameIds(String handle) async {
+    final Map<String, dynamic> data = await _post(
+      'trusted-channels/handle-games',
+      <String, dynamic>{'handle': handle.trim()},
+    );
+    final Object? ids = data['game_ids'];
+    return ids is List
+        ? ids.whereType<String>().where((id) => id.isNotEmpty).toList()
+        : const <String>[];
+  }
 
   /// Liste toutes les chaînes YouTube de confiance (tous jeux confondus),
   /// avec le nom du jeu dénormalisé (`game_name`) par le serveur.

@@ -2032,16 +2032,21 @@ class StoreController extends ChangeNotifier {
     // les alias distants et les noms traduits, domaine du site pour une page
     // web) : affiché tel quel ; re-nettoyé seulement si l'admin a choisi un
     // AUTRE jeu que celui de l'analyse.
+    // §125 — nom de la chaîne (YouTube, bilibili, RUTUBE) retiré s'il est
+    // détaché ; appliqué AUSSI au titre proposé : les analyses d'avant §125
+    // l'y ont laissé (sans effet sur un titre déjà nettoyé).
+    final channel = s.aiRecommendation?.channelName;
     final proposed = s.aiRecommendation?.proposedTitle?.trim();
     if (proposed != null && proposed.isNotEmpty) {
       final aiGame = s.aiRecommendation?.suggestedGame?.trim() ?? '';
       if (game == null ||
           game.isEmpty ||
           _normalizeGameName(game) == _normalizeGameName(aiGame)) {
-        return proposed;
+        return _stripChannelName(proposed, channel,
+            gameName: (game == null || game.isEmpty) ? aiGame : game);
       }
       return _cleanTitleForInsertion(proposed,
-          gameName: game, translatedNames: translated);
+          gameName: game, translatedNames: translated, channelName: channel);
     }
     // Analyse d'avant §123 :
     // 1. Titre YouTube réel (le plus fiable).
@@ -2052,11 +2057,11 @@ class StoreController extends ChangeNotifier {
         : _cleanTitle(s);
     // §123 : entités HTML décodées même sans jeu (« &#039; » → « ' »).
     final cleaned = (game == null || game.isEmpty)
-        ? _decodeHtmlEntities(base)
+        ? _stripChannelName(_decodeHtmlEntities(base), channel)
         // D1.4 — titres traduits du jeu (cache best-effort du StoreController ;
         // null si non chargé — comportement antérieur inchangé).
         : _cleanTitleForInsertion(base,
-            gameName: game, translatedNames: translated);
+            gameName: game, translatedNames: translated, channelName: channel);
     // §123 (A) — page web : domaine du site dans le titre.
     return isVideoPlatformUrl(s.url)
         ? cleaned
@@ -2104,9 +2109,19 @@ class StoreController extends ChangeNotifier {
 
   /// Titre nettoyé pour insertion ([TitleCleaning.cleanTitleForInsertion]).
   static String _cleanTitleForInsertion(String title,
-          {String? gameName, List<String>? translatedNames}) =>
+          {String? gameName,
+          List<String>? translatedNames,
+          String? channelName}) =>
       TitleCleaning.cleanTitleForInsertion(title,
-          gameName: gameName, translatedNames: translatedNames);
+          gameName: gameName,
+          translatedNames: translatedNames,
+          channelName: channelName);
+
+  /// §125 — nom de la chaîne retiré s'il est détaché
+  /// ([TitleCleaning.stripChannelName]).
+  static String _stripChannelName(String title, String? channelName,
+          {String? gameName}) =>
+      TitleCleaning.stripChannelName(title, channelName, gameName: gameName);
 
   /// §123 (G) — entités HTML décodées (« &#039; » → « ' »).
   static String _decodeHtmlEntities(String s) =>

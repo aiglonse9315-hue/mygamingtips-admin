@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -6,9 +8,11 @@ import '../../core/theme/colors.dart';
 import '../../data/supabase_sync.dart';
 import '../../domain/models/game.dart';
 import '../../domain/models/trusted_channel.dart';
+import '../../domain/trusted_channels_paging.dart';
 import '../../state/store_controller.dart';
 import '../widgets/banned_channels_panel.dart';
 import '../widgets/confirm_dialog.dart';
+import '../widgets/trusted_channels_table.dart';
 
 /// Écran « Chaînes YT » — gestion des chaînes YouTube de confiance par jeu,
 /// accessible à **tous les administrateurs**.
@@ -18,10 +22,14 @@ import '../widgets/confirm_dialog.dart';
 /// Une même chaîne (handle) peut être liée à plusieurs jeux (une ligne par
 /// jeu, gérable indépendamment).
 ///
-/// Les données viennent des routes Edge Function `trusted-channels/*`
-/// (service_role). Comme Contributeurs et Comptes, cet écran fait ses propres
-/// appels (pas de dataset synchronisé) : états chargement / erreur / vide /
-/// données, refresh par bouton + tirer-pour-actualiser.
+/// Pagination SERVEUR PAR JEU (migration 0088 — demande propriétaire du
+/// 25/09/2026 : l'écran chargeait les ~1 500 chaînes et construisait ~1 900
+/// cartes d'un coup) : tableau de 5 jeux par page, recherche SERVEUR
+/// (handle, nom de chaîne ou nom du jeu) avec anti-rebond, totaux exacts.
+/// Les données viennent de la route Edge Function `trusted-channels/list`
+/// en mode page (service_role). Comme Contributeurs et Comptes, cet écran
+/// fait ses propres appels (pas de dataset synchronisé) : états chargement /
+/// erreur / vide / données, refresh par bouton + tirer-pour-actualiser.
 class TrustedChannelsScreen extends StatefulWidget {
   const TrustedChannelsScreen({super.key});
 
@@ -30,18 +38,35 @@ class TrustedChannelsScreen extends StatefulWidget {
 }
 
 class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
-  List<TrustedChannel> _channels = <TrustedChannel>[];
+  /// Délai entre la dernière frappe et la recherche serveur.
+  static const Duration _searchDebounce = Duration(milliseconds: 350);
+
+  /// Page affichée (réponse serveur) — null tant qu'aucune page n'a été
+  /// chargée.
+  TrustedChannelsPage? _data;
+
+  /// Recherche correspondant à la page affichée (message de l'état vide).
+  String _shownSearch = '';
 
   bool _loading = false;
   String? _error;
 
-  /// Filtre texte (handle ou nom de jeu).
+  /// Recherche serveur courante (handle, nom de chaîne ou nom du jeu),
+  /// normalisée : rognée, 100 caractères max.
   String _search = '';
   final TextEditingController _searchCtrl = TextEditingController();
+  Timer? _debounce;
+
+  /// Numéro du dernier chargement : seule la réponse la plus récente est
+  /// affichée (frappes rapides, clics de pagination successifs).
+  int _loadSeq = 0;
 
   /// Identifiants des lignes en cours d'opération (switch Actif ou
   /// suppression) — une opération à la fois par ligne.
   final Set<String> _busyIds = <String>{};
+
+  /// Page affichée (0 tant que rien n'est chargé).
+  int get _page => _data?.page ?? 0;
 
   @override
   void initState() {
@@ -51,46 +76,66 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
       // Charge le catalogue de jeux (paresseux : skip si déjà frais) pour le
       // sélecteur de jeu des dialogs d'ajout.
       context.read<StoreController>().ensureDatasets({SyncDataset.games});
-      _load();
+      _load(0);
     });
   }
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _searchCtrl.dispose();
     super.dispose();
   }
 
-  /// Charge la liste des chaînes via la route EF `trusted-channels/list`.
-  Future<void> _load() async {
-    final sync = context.read<StoreController>().sync;
+  /// Charge la page [page] (5 jeux) pour la recherche courante via la route
+  /// EF `trusted-channels/list` en mode page. Si cette page n'existe plus
+  /// (ex. dernière chaîne du dernier jeu de la dernière page retirée), recule
+  /// sur la dernière page existante.
+  Future<void> _load(int page) async {
+    final SupabaseSync? sync = context.read<StoreController>().sync;
     if (sync == null) {
       setState(() => _error = 'Mode démo : pas de connexion Supabase.');
       return;
     }
+    final int seq = ++_loadSeq;
+    final String search = _search;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final channels = await sync.fetchTrustedChannels();
-      if (!mounted) return;
+      final TrustedChannelsPage res = await sync.fetchTrustedChannelsPage(
+        search: search,
+        page: page,
+        gamesPerPage: kTrustedGamesPerPage,
+      );
+      // Réponse obsolète (une recherche ou une page plus récente a été
+      // demandée entre-temps) : ignorée.
+      if (!mounted || seq != _loadSeq) return;
+      final int? fallback = res.fallbackPage;
+      if (fallback != null) {
+        unawaited(_load(fallback));
+        return;
+      }
       setState(() {
-        _channels = channels;
+        _data = res;
+        _shownSearch = search;
         _loading = false;
       });
     } on AdminAuthException {
       // 401 : session expirée → logout forcé (même règle que les écritures).
+      if (!mounted) return;
+      if (seq == _loadSeq) setState(() => _loading = false);
       context.read<StoreController>().onAuthError?.call();
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || seq != _loadSeq) return;
       setState(() {
         _error = _errorMessage(e);
         _loading = false;
       });
-      // Si la liste est déjà affichée, elle reste visible : l'erreur de
+      // Si une page est déjà affichée, elle reste visible : l'erreur de
       // rafraîchissement est signalée par SnackBar, pas en pleine page.
-      if (_channels.isNotEmpty) {
+      if (_data != null) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Rafraîchissement échoué : ${_errorMessage(e)}'),
@@ -100,6 +145,29 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
         );
       }
     }
+  }
+
+  /// Va à la page [page], bornée aux pages existantes de [data].
+  void _goTo(TrustedChannelsPage data, int page) {
+    _load(clampTrustedPage(page, data.totalGames, data.gamesPerPage));
+  }
+
+  /// Recharge la page affichée (après un ajout ou une suppression ; recule
+  /// d'une page si elle est devenue vide — voir [_load]).
+  void _reloadCurrentPage() {
+    if (mounted) _load(_page);
+  }
+
+  /// Recherche serveur, lancée 350 ms après la dernière frappe (retour à la
+  /// première page).
+  void _onSearchChanged(String value) {
+    _debounce?.cancel();
+    _debounce = Timer(_searchDebounce, () {
+      final String q = normalizeTrustedSearch(value);
+      if (!mounted || q == _search) return;
+      _search = q;
+      _load(0);
+    });
   }
 
   /// Extrait un message d'erreur lisible : retire le préfixe « Exception: »
@@ -115,11 +183,11 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
   /// Active/désactive une chaîne (upsert de la ligne existante avec la
   /// nouvelle valeur `active`), puis met à jour la ligne en mémoire.
   Future<void> _toggleActive(TrustedChannel channel, bool active) async {
-    final sync = context.read<StoreController>().sync;
+    final SupabaseSync? sync = context.read<StoreController>().sync;
     if (sync == null || _busyIds.contains(channel.id)) return;
     setState(() => _busyIds.add(channel.id));
     try {
-      final updated = await sync.upsertTrustedChannel(
+      final TrustedChannel updated = await sync.upsertTrustedChannel(
         id: channel.id,
         gameId: channel.gameId,
         channelHandle: channel.channelHandle,
@@ -130,12 +198,12 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
         source: channel.source,
       );
       if (!mounted) return;
-      setState(() {
-        _channels = [
-          for (final c in _channels)
-            if (c.id == channel.id) updated else c,
-        ];
-      });
+      final TrustedChannelsPage? data = _data;
+      if (data != null) {
+        setState(() {
+          _data = data.withChannels(replaceTrustedRow(data.channels, updated));
+        });
+      }
     } on AdminAuthException {
       if (!mounted) return;
       context.read<StoreController>().onAuthError?.call();
@@ -154,7 +222,7 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
   }
 
   /// Demande confirmation puis supprime la ligne (la chaîne YouTube et le
-  /// jeu ne sont pas touchés), puis retire la ligne de la liste.
+  /// jeu ne sont pas touchés).
   void _confirmDelete(TrustedChannel channel) {
     showDialog<void>(
       context: context,
@@ -171,16 +239,24 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
     );
   }
 
+  /// Supprime la ligne : retrait immédiat du tableau, puis rechargement de
+  /// la page courante (totaux à jour, jeu suivant qui remonte ; recul d'une
+  /// page si elle devient vide).
   Future<void> _delete(TrustedChannel channel) async {
-    final sync = context.read<StoreController>().sync;
+    final SupabaseSync? sync = context.read<StoreController>().sync;
     if (sync == null || _busyIds.contains(channel.id)) return;
     setState(() => _busyIds.add(channel.id));
     try {
       await sync.deleteTrustedChannel(channel.id);
       if (!mounted) return;
-      setState(() {
-        _channels = _channels.where((c) => c.id != channel.id).toList();
-      });
+      final TrustedChannelsPage? data = _data;
+      if (data != null) {
+        setState(() {
+          _data = data.withChannels(
+            data.channels.where((c) => c.id != channel.id).toList(),
+          );
+        });
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -190,6 +266,7 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
           duration: const Duration(seconds: 4),
         ),
       );
+      _reloadCurrentPage();
     } on AdminAuthException {
       if (!mounted) return;
       context.read<StoreController>().onAuthError?.call();
@@ -207,33 +284,64 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
     }
   }
 
-  /// Ouvre le dialog d'ajout d'une nouvelle chaîne.
+  /// Ouvre le dialog d'ajout d'une nouvelle chaîne (rechargement de la page
+  /// courante après enregistrement).
   void _showAddDialog() {
     showDialog<void>(
       context: context,
       builder: (_) => ChannelEditDialog(
         linkedGameIds: const <String>{},
-        onSaved: _load,
+        onSaved: _reloadCurrentPage,
       ),
     );
   }
 
   /// Ouvre le dialog « Ajouter un jeu » pour une chaîne existante : même
   /// handle (verrouillé), autre jeu, langues pré-remplies de la chaîne.
-  void _showAddGameDialog(TrustedChannel channel) {
-    // Exclut du sélecteur les jeux déjà liés à CE handle.
-    final linked = _channels
-        .where((c) =>
-            c.channelHandle.toLowerCase() ==
-            channel.channelHandle.toLowerCase())
-        .map((c) => c.gameId)
-        .toSet();
-    showDialog<void>(
+  /// Les jeux déjà liés à ce handle sont lus au serveur à l'OUVERTURE
+  /// (toute la table, hors des pages) ; en cas d'échec, seuls ceux de la
+  /// page sont exclus (le serveur dédoublonne jeu + handle de toute façon).
+  Future<void> _showAddGameDialog(TrustedChannel channel) async {
+    final SupabaseSync? sync = context.read<StoreController>().sync;
+    if (_busyIds.contains(channel.id)) return;
+    List<String> serverIds = const <String>[];
+    if (sync != null) {
+      setState(() => _busyIds.add(channel.id));
+      try {
+        serverIds =
+            await sync.fetchTrustedChannelGameIds(channel.channelHandle);
+      } on AdminAuthException {
+        if (mounted) context.read<StoreController>().onAuthError?.call();
+        return;
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Jeux déjà liés non lus (${_errorMessage(e)}) : seuls '
+                'ceux de la page sont exclus.',
+              ),
+              backgroundColor: Colors.orange.shade700,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _busyIds.remove(channel.id));
+      }
+    }
+    if (!mounted) return;
+    await showDialog<void>(
       context: context,
       builder: (_) => ChannelEditDialog(
         existing: channel,
-        linkedGameIds: linked,
-        onSaved: _load,
+        // Exclut du sélecteur les jeux déjà liés à CE handle.
+        linkedGameIds: linkedGameIdsForHandle(
+          channel,
+          _data?.channels ?? const <TrustedChannel>[],
+          serverGameIds: serverIds,
+        ),
+        onSaved: _reloadCurrentPage,
       ),
     );
   }
@@ -255,7 +363,8 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
               Expanded(
                 child: TextField(
                   controller: _searchCtrl,
-                  onChanged: (v) => setState(() => _search = v),
+                  // Recherche SERVEUR (anti-rebond 350 ms, retour page 1).
+                  onChanged: _onSearchChanged,
                   decoration: InputDecoration(
                     isDense: true,
                     hintText: 'Rechercher une chaîne ou un jeu…',
@@ -269,7 +378,7 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
               const SizedBox(width: 8),
               IconButton(
                 tooltip: 'Actualiser',
-                onPressed: _loading ? null : _load,
+                onPressed: _loading ? null : _reloadCurrentPage,
                 icon: const Icon(Icons.refresh_rounded, size: 20),
               ),
               const SizedBox(width: 8),
@@ -313,8 +422,11 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
       ),
       child: Row(
         children: [
-          const Icon(Icons.video_library_outlined,
-              size: 20, color: AppColors.neonCyan),
+          const Icon(
+            Icons.video_library_outlined,
+            size: 20,
+            color: AppColors.neonCyan,
+          ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
@@ -330,80 +442,43 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
   }
 
   Widget _buildBody(ThemeData theme) {
-    // État erreur — pleine page SEULEMENT s'il n'y a rien à montrer ; sinon
-    // la liste reste visible (l'erreur a été signalée par SnackBar).
-    if (_error != null && _channels.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.orange.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(10),
-                border:
-                    Border.all(color: Colors.orange.withValues(alpha: 0.5)),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.error_outline_rounded,
-                      size: 18, color: Colors.orange.shade300),
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child: Text(
-                      _error!,
-                      style: TextStyle(color: Colors.orange.shade300),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: _load,
-              icon: const Icon(Icons.refresh_rounded, size: 18),
-              label: const Text('Réessayer'),
-            ),
-          ],
-        ),
-      );
-    }
+    final TrustedChannelsPage? data = _data;
 
-    // État chargement initial (aucune donnée à montrer).
-    if (_loading && _channels.isEmpty) {
+    if (data == null) {
+      // État erreur pleine page SEULEMENT s'il n'y a rien à montrer
+      // (premier chargement échoué, mode démo) ; sinon la page reste
+      // visible (l'erreur a été signalée par SnackBar).
+      if (_error != null) return _buildErrorState();
+      // État chargement initial.
       return const Center(child: CircularProgressIndicator(strokeWidth: 3));
     }
 
-    // Filtre texte (handle ou nom de jeu).
-    final String q = _search.trim().toLowerCase();
-    final List<TrustedChannel> filtered = q.isEmpty
-        ? _channels
-        : _channels
-            .where((c) =>
-                c.channelHandle.toLowerCase().contains(q) ||
-                c.gameName.toLowerCase().contains(q) ||
-                (c.channelName?.toLowerCase().contains(q) ?? false))
-            .toList();
+    // Page vidée pendant un rechargement (ex. dernière ligne retirée) :
+    // indicateur plutôt qu'un faux « aucun résultat ».
+    if (data.channels.isEmpty && _loading) {
+      return const Center(child: CircularProgressIndicator(strokeWidth: 3));
+    }
 
     // État vide.
-    if (filtered.isEmpty) {
+    if (data.channels.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.video_library_outlined,
-                size: 40, color: theme.textTheme.bodySmall?.color),
+            Icon(
+              Icons.video_library_outlined,
+              size: 40,
+              color: theme.textTheme.bodySmall?.color,
+            ),
             const SizedBox(height: 12),
             Text(
-              q.isEmpty
+              _shownSearch.isEmpty
                   ? 'Aucune chaîne de confiance pour le moment.'
-                  : 'Aucune chaîne ne correspond à « $_search ».',
+                  : 'Aucune chaîne ne correspond à « $_shownSearch ».',
               style: theme.textTheme.titleMedium,
               textAlign: TextAlign.center,
             ),
-            if (q.isEmpty) ...[
+            if (_shownSearch.isEmpty) ...[
               const SizedBox(height: 4),
               Text(
                 'Ajoutez une chaîne avec le bouton « Ajouter une chaîne ».',
@@ -415,206 +490,122 @@ class _TrustedChannelsScreenState extends State<TrustedChannelsScreen> {
       );
     }
 
-    // Regroupement par jeu (nom trié alphabétiquement), chaînes triées par
-    // handle au sein de chaque groupe.
-    final Map<String, List<TrustedChannel>> byGame =
-        <String, List<TrustedChannel>>{};
-    for (final c in filtered) {
-      byGame.putIfAbsent(c.gameName, () => <TrustedChannel>[]).add(c);
-    }
-    final List<String> gameNames = byGame.keys.toList()
-      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-    for (final list in byGame.values) {
-      list.sort((a, b) => a.channelHandle
-          .toLowerCase()
-          .compareTo(b.channelHandle.toLowerCase()));
-    }
-
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        children: [
-          for (final gameName in gameNames) ...[
-            _buildGameHeader(theme, gameName, byGame[gameName]!),
-            const SizedBox(height: 6),
-            for (final channel in byGame[gameName]!) ...[
-              _buildChannelCard(theme, channel),
-              const SizedBox(height: 6),
-            ],
-            const SizedBox(height: 12),
-          ],
-        ],
-      ),
-    );
-  }
-
-  /// En-tête d'un groupe jeu : nom + nombre de chaînes.
-  Widget _buildGameHeader(
-    ThemeData theme,
-    String gameName,
-    List<TrustedChannel> channels,
-  ) {
-    return Row(
+    // Données : barre de pagination + tableau des 5 jeux de la page.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Icon(Icons.sports_esports_rounded,
-            size: 18, color: theme.textTheme.bodySmall?.color),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            gameName,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
-            overflow: TextOverflow.ellipsis,
-          ),
+        _buildPageBar(data),
+        SizedBox(
+          height: 2,
+          child: _loading ? const LinearProgressIndicator(minHeight: 2) : null,
         ),
-        Text(
-          '${channels.length} chaîne(s)',
-          style: theme.textTheme.bodySmall,
+        const SizedBox(height: 8),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: () => _load(_page),
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: [
+                TrustedChannelsTable(
+                  channels: data.channels,
+                  busyIds: _busyIds,
+                  onToggleActive: _toggleActive,
+                  onAddGame: (TrustedChannel c) =>
+                      unawaited(_showAddGameDialog(c)),
+                  onDelete: _confirmDelete,
+                ),
+              ],
+            ),
+          ),
         ),
       ],
     );
   }
 
-  /// Carte d'une chaîne : handle, nom, chips langues, badge source, switch
-  /// Actif, boutons « Ajouter un jeu » et Supprimer.
-  Widget _buildChannelCard(ThemeData theme, TrustedChannel channel) {
-    final bool busy = _busyIds.contains(channel.id);
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        child: Row(
-          children: [
-            Icon(
-              Icons.smart_display_rounded,
-              size: 28,
-              color: channel.active
-                  ? AppColors.categoryVideo
-                  : theme.textTheme.bodySmall?.color,
+  /// Erreur pleine page (rien à montrer) + bouton « Réessayer ».
+  Widget _buildErrorState() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.orange.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.orange.withValues(alpha: 0.5)),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 4,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      Text(
-                        channel.channelHandle,
-                        style: theme.textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      _sourceBadge(channel.source),
-                      if (!channel.active)
-                        _badge('Inactive', theme.textTheme.bodySmall?.color ??
-                            Colors.grey),
-                    ],
-                  ),
-                  if (channel.channelName != null &&
-                      channel.channelName!.isNotEmpty) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      channel.channelName!,
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ],
-                  const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 4,
-                    runSpacing: 4,
-                    children: [
-                      for (final code in channel.langs) _langChip(code),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            IconButton(
-              tooltip: 'Ajouter un jeu pour cette chaîne',
-              onPressed: busy ? null : () => _showAddGameDialog(channel),
-              icon: const Icon(Icons.playlist_add_rounded, size: 20),
-            ),
-            if (busy)
-              const SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            else ...[
-              Tooltip(
-                message: channel.active ? 'Désactiver' : 'Activer',
-                child: Switch(
-                  value: channel.active,
-                  onChanged: (v) => _toggleActive(channel, v),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.error_outline_rounded,
+                  size: 18,
+                  color: Colors.orange.shade300,
                 ),
-              ),
-              IconButton(
-                tooltip: 'Retirer cette chaîne du jeu',
-                onPressed: () => _confirmDelete(channel),
-                icon: const Icon(Icons.delete_outline_rounded, size: 20),
-                color: AppColors.categoryVideo,
-              ),
-            ],
-          ],
-        ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    _error!,
+                    style: TextStyle(color: Colors.orange.shade300),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _loading ? null : _reloadCurrentPage,
+            icon: const Icon(Icons.refresh_rounded, size: 18),
+            label: const Text('Réessayer'),
+          ),
+        ],
       ),
     );
   }
 
-  /// Chip d'un code langue (drapeau + code si la langue est connue).
-  Widget _langChip(String code) {
-    final AppLanguage? lang = findLanguage(code);
-    final Color color = lang?.color ?? Colors.grey;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: color.withValues(alpha: 0.45)),
-      ),
-      child: Text(
-        lang != null ? '${lang.flag} ${lang.code}' : code,
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          color: color,
+  /// Barre de pagination (même présentation que Contenus / Abonnements) :
+  /// première / précédente / « Page X / N (jeux a-b sur T · C chaînes) » /
+  /// suivante / dernière. Boutons grisés pendant un chargement.
+  Widget _buildPageBar(TrustedChannelsPage data) {
+    final int lastPage = data.pageCount - 1;
+    final bool canBack = data.page > 0 && !_loading;
+    final bool canForward = data.page < lastPage && !_loading;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        IconButton(
+          icon: const Icon(Icons.first_page_rounded),
+          onPressed: canBack ? () => _goTo(data, 0) : null,
+          tooltip: 'Première page',
         ),
-      ),
-    );
-  }
-
-  /// Badge de provenance : `const` (liste initiale), `snifeur` (découverte
-  /// automatique) ou `admin` (ajout manuel).
-  Widget _sourceBadge(String source) {
-    final (String label, Color color) = switch (source) {
-      'const' => ('Const', AppColors.categoryLink),
-      'snifeur' => ('Snifeur', AppColors.neonViolet),
-      'admin' => ('Admin', AppColors.neonCyan),
-      _ => (source, Colors.grey),
-    };
-    return _badge(label, color);
-  }
-
-  Widget _badge(String label, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: 0.5)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          color: color,
+        IconButton(
+          icon: const Icon(Icons.chevron_left_rounded),
+          onPressed: canBack ? () => _goTo(data, data.page - 1) : null,
+          tooltip: 'Page précédente',
         ),
-      ),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            data.label,
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+        ),
+        const SizedBox(width: 8),
+        IconButton(
+          icon: const Icon(Icons.chevron_right_rounded),
+          onPressed: canForward ? () => _goTo(data, data.page + 1) : null,
+          tooltip: 'Page suivante',
+        ),
+        IconButton(
+          icon: const Icon(Icons.last_page_rounded),
+          onPressed: canForward ? () => _goTo(data, lastPage) : null,
+          tooltip: 'Dernière page',
+        ),
+      ],
     );
   }
 }

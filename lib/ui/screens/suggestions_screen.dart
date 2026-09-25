@@ -529,7 +529,7 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
     _image = TextEditingController();
 
     // Auto-remplissage de la catégorie — §123 : page web → Links ; vidéo
-    // (YouTube, bilibili, RUTUBE, Twitch) → Vidéo, ou Patch and Mod si une
+    // (YouTube, bilibili, RUTUBE, Twitch) → Vidéo, ou Patch & MoD si une
     // analyse §123+ l'y a classée (avant, « guides » = guide écrit).
     if (!StoreController.isVideoPlatformUrl(widget.suggestion.url)) {
       _category = ContentCategory.links;

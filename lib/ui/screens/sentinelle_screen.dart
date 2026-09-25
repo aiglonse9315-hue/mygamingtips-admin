@@ -1572,7 +1572,7 @@ class _TrustedTableState extends State<_TrustedTable> {
       message:
           'Catégorie d\'insertion : « ${_categoryLabel(current)} » — '
           'modifiable avant validation. Présélection : page web → Links ; '
-          'vidéo (YouTube, bilibili, RUTUBE) → Vidéo, ou Patch and Mod si '
+          'vidéo (YouTube, bilibili, RUTUBE) → Vidéo, ou Patch & MoD si '
           'l\'IA l\'y a classée.',
       showDuration: const Duration(seconds: 6),
       child: DropdownButtonHideUnderline(
@@ -2509,7 +2509,7 @@ String _smartCategoryFor(Suggestion s, [String? editedCategory]) {
     return editedCategory;
   }
   // §123 : page web → links ; vidéo (YouTube, bilibili, RUTUBE, Twitch) →
-  // video, ou guides (« Patch and Mod ») si une analyse §123+ l'y a classée
+  // video, ou guides (« Patch & MoD ») si une analyse §123+ l'y a classée
   // (avant §123, « guides » sur une vidéo = guide écrit, souvent bilibili
   // mal attribué).
   if (!StoreController.isVideoPlatformUrl(s.url)) return 'links';
@@ -2523,7 +2523,7 @@ String _smartCategoryFor(Suggestion s, [String? editedCategory]) {
 /// §123 : libellé affiché d'une catégorie (valeur stockée → écran).
 String _categoryLabel(String category) => switch (category) {
       'video' => 'Vidéo',
-      'guides' => 'Patch and Mod',
+      'guides' => 'Patch & MoD',
       'links' => 'Links',
       _ => category,
     };
@@ -2722,7 +2722,7 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
       message:
           'Catégorie d\'insertion : « ${_categoryLabel(current)} » — '
           'modifiable avant validation. Présélection : page web → Links ; '
-          'vidéo (YouTube, bilibili, RUTUBE) → Vidéo, ou Patch and Mod si '
+          'vidéo (YouTube, bilibili, RUTUBE) → Vidéo, ou Patch & MoD si '
           'l\'IA l\'y a classée.',
       showDuration: const Duration(seconds: 6),
       child: DropdownButtonHideUnderline(

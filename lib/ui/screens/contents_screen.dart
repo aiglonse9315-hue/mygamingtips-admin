@@ -23,8 +23,16 @@ class ContentsScreen extends StatefulWidget {
 
 class _ContentsScreenState extends State<ContentsScreen> {
   String? _gameFilter; // null = tous
-  /// Filtre catégorie : 'media' = vidéo+guides fusionnés, 'links' = liens, null = toutes.
+  /// Filtre catégorie : valeur stockée (`video`, `links`, `guides`), null =
+  /// toutes. §125 : les trois catégories séparées, dans l'ordre voulu par le
+  /// propriétaire (« Tous », « Vidéo », « Links », « Patch & MoD ») — avant,
+  /// « Vidéos & Guides » fusionnait vidéo et guides.
   String? _catFilter;
+  static const List<ContentCategory> _categoryFilterOptions = [
+    ContentCategory.video,
+    ContentCategory.links,
+    ContentCategory.guides,
+  ];
   /// Filtre langue multi-sélection : codes MAJUSCULES actifs.
   /// Vide = toutes les langues (sauf cas « Sans langue » ci-dessous).
   Set<String> _activeLanguages = <String>{};
@@ -62,13 +70,9 @@ class _ContentsScreenState extends State<ContentsScreen> {
     if (_gameFilter != null) {
       list = list.where((c) => c.gameId == _gameFilter).toList();
     }
-    // Filtre catégorie fusionné : 'media' = vidéo OU guides, 'links' = liens.
-    if (_catFilter == 'media') {
-      list = list.where((c) =>
-          c.category == ContentCategory.video ||
-          c.category == ContentCategory.guides).toList();
-    } else if (_catFilter == 'links') {
-      list = list.where((c) => c.category == ContentCategory.links).toList();
+    // Filtre catégorie : une seule catégorie (valeur stockée).
+    if (_catFilter != null) {
+      list = list.where((c) => c.category.name == _catFilter).toList();
     }
     // Filtre langue multi-sélection.
     // - Si _showNoLanguage est vrai, on inclut les contenus sans langue.
@@ -89,10 +93,11 @@ class _ContentsScreenState extends State<ContentsScreen> {
 
     // ── Pagination locale : découpe la liste filtrée+triée en pages de 100 ──
     final totalPages = (list.length / _pageSize).ceil();
-    if (_currentPage >= totalPages && totalPages > 0) {
-      _currentPage = totalPages - 1;
-    }
-    if (_currentPage < 0) _currentPage = 0;
+    // Page bornée ; une liste filtrée VIDE ramène à la page 0 (avant, une
+    // recherche sans résultat depuis la page 2 levait une RangeError dans
+    // `sublist`).
+    _currentPage =
+        totalPages == 0 ? 0 : _currentPage.clamp(0, totalPages - 1);
     final startIndex = _currentPage * _pageSize;
     final endIndex = startIndex + _pageSize > list.length
         ? list.length
@@ -122,7 +127,10 @@ class _ContentsScreenState extends State<ContentsScreen> {
           // Barre de recherche
           TextField(
             controller: _searchCtrl,
-            onChanged: (v) => setState(() => _search = v),
+            onChanged: (v) => setState(() {
+              _search = v;
+              _currentPage = 0;
+            }),
             decoration: InputDecoration(
               isDense: true,
               hintText: 'Rechercher un contenu…',
@@ -145,19 +153,27 @@ class _ContentsScreenState extends State<ContentsScreen> {
                 items: store.games.map((g) => g.name).toList(),
                 values: store.games.map((g) => g.id).toList(),
                 selectedValue: _gameFilter,
-                onChanged: (v) => setState(() => _gameFilter = v),
+                onChanged: (v) => setState(() {
+                  _gameFilter = v;
+                  _currentPage = 0;
+                }),
               ),
+              // Libellés = ceux de ContentCategory (une seule source) :
+              // « Tous », « Vidéo », « Links », « Patch & MoD ».
               _FilterChip(
                 label: 'Catégorie',
-                value: _catFilter == null
-                    ? 'Toutes'
-                    : _catFilter == 'media'
-                        ? 'Vidéos & Guides'
-                        : 'Liens',
-                items: const ['Vidéos & Guides', 'Liens'],
-                values: const ['media', 'links'],
+                value: _categoryFilterOptions
+                        .where((c) => c.name == _catFilter)
+                        .firstOrNull
+                        ?.label ??
+                    'Tous',
+                items: [for (final c in _categoryFilterOptions) c.label],
+                values: [for (final c in _categoryFilterOptions) c.name],
                 selectedValue: _catFilter,
-                onChanged: (v) => setState(() => _catFilter = v),
+                onChanged: (v) => setState(() {
+                  _catFilter = v;
+                  _currentPage = 0;
+                }),
               ),
               // Filtre langue multi-sélection (dialogue avec checkboxes).
               _LanguageFilterButton(
@@ -795,7 +811,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
     return AlertDialog(
       title: Text(edit
           ? 'Modifier le contenu'
-          : 'Ajouter une vidéo / un guide / un lien'),
+          : 'Ajouter un contenu (Vidéo, Links, Patch & MoD)'),
       content: SizedBox(
         width: 460,
         child: Column(

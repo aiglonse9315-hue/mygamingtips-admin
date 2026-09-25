@@ -4,6 +4,7 @@
 // ni dart:html — exécuté en VM par `flutter test`.
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mgt_admin/domain/models/suggestion.dart';
 import 'package:mgt_admin/domain/title_cleaning.dart';
 
 void main() {
@@ -83,6 +84,52 @@ void main() {
     expect(TitleCleaning.normalizeGameName('GTA 5'), 'grand theft auto 5');
     expect(clean(title, 'GTA 5'),
         'Controversial New Glitch Breaking Speedrun Community');
+  });
+
+  test('§125 — nom de la chaîne retiré quand il est détaché', () {
+    addTearDown(() => TitleCleaning.setRemoteAliases(const []));
+    TitleCleaning.setRemoteAliases(const [
+      (aliasNorm: 'gta 5', gameName: 'Grand Theft Auto V'),
+    ]);
+    // Exemple du propriétaire (titre brut : alias « GTA 5 » + chaîne).
+    expect(
+        TitleCleaning.cleanTitleForInsertion(
+            'Controversial New Glitch Breaking GTA 5 Speedrun Community - '
+            'Director Glitching - DarkViperAU',
+            gameName: 'Grand Theft Auto V',
+            channelName: 'DarkViperAU'),
+        'Controversial New Glitch Breaking Speedrun Community - Director '
+        'Glitching');
+    // Titre PROPOSÉ par une analyse d'avant §125 (chaîne restée dedans).
+    expect(
+        TitleCleaning.stripChannelName(
+            'Secret Forbidden Staircase - DarkViperAU', 'DarkViperAU',
+            gameName: 'Grand Theft Auto V'),
+        'Secret Forbidden Staircase');
+    expect(TitleCleaning.stripChannelName('濟州島還安全嗎？｜志祺七七', '志祺七七'),
+        '濟州島還安全嗎？');
+    // Gardé dans la phrase ; idempotent ; sans chaîne = inchangé.
+    const kept = 'How IGN Won a Team Fighting Game Tournament';
+    expect(TitleCleaning.stripChannelName(kept, 'IGN'), kept);
+    expect(TitleCleaning.stripChannelName('Secret Forbidden Staircase',
+            'DarkViperAU'),
+        'Secret Forbidden Staircase');
+    expect(TitleCleaning.stripChannelName('Boss - DarkViperAU', null),
+        'Boss - DarkViperAU');
+  });
+
+  test('§125 — nom de la chaîne lu pour chaque plateforme', () {
+    AiRecommendation parse(Map<String, dynamic> extra) =>
+        AiRecommendation.fromJson({'verdict': 'recommended', ...extra});
+    expect(parse({'youtube_channel': 'DarkViperAU'}).channelName,
+        'DarkViperAU');
+    expect(parse({'bili_channel': '志祺七七'}).channelName, '志祺七七');
+    expect(parse({'rutube_channel': 'Гайды'}).channelName, 'Гайды');
+    expect(parse({}).channelName, isNull);
+    // Copie locale (toJson → fromJson) : le nom survit.
+    final back = AiRecommendation.fromJson(
+        parse({'bili_channel': '志祺七七'}).toJson());
+    expect(back.channelName, '志祺七七');
   });
 
   test('page web : domaine du site ; plateformes vidéo reconnues', () {

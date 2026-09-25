@@ -197,9 +197,14 @@ class AiRecommendation {
   final String? proposedTitle;
 
   /// §123 : version des règles de catégorie de l'analyse (null = avant
-  /// §123). À partir de 2, « guides » sur une vidéo = « Patch and Mod » ;
+  /// §123). À partir de 2, « guides » sur une vidéo = « Patch & MoD » ;
   /// avant, c'était un « guide écrit » souvent mal attribué (bilibili).
   final int? categoryVersion;
+
+  /// §125 : nom de la chaîne (clés `youtube_channel` / `bili_channel` /
+  /// `rutube_channel` écrites par Sentinelle) — retiré du titre
+  /// d'insertion quand il en est détaché. Null = inconnu (page web…).
+  final String? channelName;
 
   const AiRecommendation({
     required this.verdict,
@@ -220,6 +225,7 @@ class AiRecommendation {
     this.foundVia,
     this.proposedTitle,
     this.categoryVersion,
+    this.channelName,
   });
 
   /// « 🔎 Vision cherchait : Raft · RU » (+ « · chaîne de confiance »), null
@@ -268,6 +274,10 @@ class AiRecommendation {
       foundVia: json['found_via'] as String?,
       proposedTitle: json['proposed_title'] as String?,
       categoryVersion: (json['category_v'] as num?)?.toInt(),
+      channelName: (json['youtube_channel'] ??
+              json['bili_channel'] ??
+              json['rutube_channel'])
+          ?.toString(),
     );
   }
 
@@ -310,5 +320,7 @@ class AiRecommendation {
         'found_via': ?foundVia,
         'proposed_title': ?proposedTitle,
         'category_v': ?categoryVersion,
+        // Relu par fromJson (première clé lue) : copie locale seulement.
+        'youtube_channel': ?channelName,
       };
 }

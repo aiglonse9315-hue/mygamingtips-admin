@@ -325,8 +325,12 @@ abstract final class TitleCleaning {
   /// it, de, ru), particules 的/の/의, mention encadrée retirée avec son
   /// encadrement. Parité vérifiée par tools/vision/test/
   /// admin_title_parity_test.dart.
+  /// §125 : [channelName] (nom de la chaîne) retiré quand il est détaché
+  /// de la phrase — voir [stripChannelName].
   static String cleanTitleForInsertion(String title,
-      {String? gameName, List<String>? translatedNames}) {
+      {String? gameName,
+      List<String>? translatedNames,
+      String? channelName}) {
     // §123 (G) — entités HTML décodées (« &#039; » → « ' ») ; (F) repères
     // techniques 【4K】… et nom de la plateforme (bilibili, 哔哩哔哩) retirés.
     final base = _stripPlatformNoise(decodeHtmlEntities(title));
@@ -336,12 +340,16 @@ abstract final class TitleCleaning {
     final game = gameName?.trim();
     final keepHashtags = game != null &&
         _keepHashtagsGames.contains(normalizeGameName(game));
-    final withoutHashtags = keepHashtags
-        ? base.replaceAll(RegExp(r'\s+'), ' ').trim()
-        : base
-            .replaceAll(_hashtagPattern, '')
-            .replaceAll(RegExp(r'\s+'), ' ')
-            .trim();
+    // §125 — nom de la chaîne retiré s'il est détaché ([stripChannelName]).
+    final withoutHashtags = stripChannelName(
+        keepHashtags
+            ? base.replaceAll(RegExp(r'\s+'), ' ').trim()
+            : base
+                .replaceAll(_hashtagPattern, '')
+                .replaceAll(RegExp(r'\s+'), ' ')
+                .trim(),
+        channelName,
+        gameName: game);
 
     if (game == null || game.isEmpty) return withoutHashtags;
 
@@ -410,6 +418,9 @@ abstract final class TitleCleaning {
     // Mentions de langue retirées (D1.6 — accents conservés).
     result =
         _stripLanguageMentions(result.replaceAll(RegExp(r'\s+'), ' ').trim());
+    // §125 — nom de la chaîne (après les hashtags : « … - Chaîne #jeu » ;
+    // avant les mentions du jeu : « 紫雨carol《jeu》… »).
+    result = stripChannelName(result, channelName, gameName: game);
     // Retrait insensible à la casse, aux accents et à la ponctuation ;
     // formes les plus longues d'abord (jamais de retrait partiel).
     final sorted = forms.toList()..sort((a, b) => b.length.compareTo(a.length));
@@ -599,6 +610,171 @@ abstract final class TitleCleaning {
         ? RegExp(core, unicode: true)
         : RegExp('(?<![\\p{L}\\p{N}])$core(?![\\p{L}\\p{N}])',
             caseSensitive: false, unicode: true);
+  }
+
+  // ── §125 — nom de la CHAÎNE retiré des titres (s'il est détaché) ────────
+
+  /// §125 — retire le NOM DE LA CHAÎNE [channelName] de [title] quand il est
+  /// DÉTACHÉ de la phrase (demande du propriétaire, 25/09/2026 : « … -
+  /// Director Glitching - DarkViperAU » → « … - Director Glitching ») :
+  /// - encadré, crédit compris : « [GOG] », « 【李思明】 », « (by Vman) » ;
+  /// - mention « @Chaîne » n'importe où, crédit compris (« feat. @X ») ;
+  /// - segment complet entre deux séparateurs (« … | Yanni | Arjun
+  ///   Venkatesh | Instrumental » → « … | Yanni | Instrumental ») ;
+  /// - FIN de titre après un séparateur (« … | GameStop »), un crédit
+  ///   (« … (Full) By Vman », « … Outside Xbox on IGN ») ou un espace qui
+  ///   suit une ponctuation / un emoji (« … (Guide) rus199410 ») ;
+  /// - DÉBUT de titre suivi d'un séparateur ou d'un encadrement CJK
+  ///   (« Kayane - … », « 紫雨carol《…》 ») ;
+  /// GARDÉ quand il fait partie de la phrase (« How IGN Won… », « Caedo
+  /// Plays #69 », « … boss guide » pour la chaîne « Guide ») : le retirer la
+  /// casserait. Ignoré : nom de moins de 3 lettres/chiffres (« TV »), ou
+  /// CONTENU dans le nom du jeu [gameName] (chaîne officielle « Call of
+  /// Duty » pour « Call of Duty: Modern Warfare III » : le retrait du jeu,
+  /// plus long, s'en charge). Garde-fou : titre trop court après retrait →
+  /// rendu inchangé ; sans retrait, titre rendu tel quel. PUR.
+  /// ⚠️ Copie à l'identique dans tools/vision/lib/sentinelle_runner.dart (admin_title_parity_test).
+  static String stripChannelName(String title, String? channelName,
+      {String? gameName}) {
+    final name = decodeHtmlEntities(channelName ?? '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim()
+        .replaceFirst(RegExp(r'^@+'), '')
+        .trim();
+    if (_letterOrDigit.allMatches(name).length < 3 ||
+        _channelIsInGameName(name, gameName)) {
+      return title;
+    }
+    final body = _channelNameSource(name);
+    final ch = '@?$body';
+    final credit = '(?:(?<![\\p{L}\\p{N}_])(?:$_channelCreditAlt)\\s*)';
+    RegExp re(String source) =>
+        RegExp(source, caseSensitive: false, unicode: true);
+    var t = title
+        // Encadré, crédit compris : « [GOG] », « (by Vman) », « 【李思明】 ».
+        .replaceAllMapped(
+            re('[(\\[【《「『（]\\s*$credit?$ch\\s*[)\\]】》」』）]'),
+            _channelGap)
+        // Mention « @Chaîne » n'importe où, crédit compris (« feat. @X »).
+        .replaceAllMapped(re('$credit?@$body'), _channelGap)
+        // Segment complet entre deux séparateurs.
+        .replaceAll(re('$_channelSep$ch(?=$_channelSep)'), '')
+        // Fin de titre ; les symboles qui suivent (« ! », emoji) partent aussi.
+        .replaceAll(
+            re('(?:$_channelSep$credit?|\\s+$credit|(?<=[^\\p{L}\\p{N}\\s])\\s+)'
+                '$ch[^\\p{L}\\p{N}]*\$'),
+            '')
+        // Début de titre, suivi d'un séparateur ou d'un encadrement.
+        .replaceAll(
+            re('^[\\s$_gameMark]*$ch'
+                '(?:$_channelSep|\\s*(?=[【《「『]))'),
+            '');
+    if (t == title) return title;
+    // Chaque retrait emporte son séparateur : seuls les espaces et les
+    // bords sont nettoyés (« —— », « ··· » d'origine intacts).
+    t = t
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll(RegExp(r'^[\s\-–—:|•/,·~：｜丨，、]+'), '')
+        .replaceAll(RegExp(r'[\s\-–—:|•/,·~：｜丨，、]+$'), '')
+        .trim();
+    final visible = t.replaceAll(_gameMark, '').trim();
+    if (visible.length < (_isUnspacedScript(visible) ? 2 : 3)) return title;
+    final first = t[0].toUpperCase();
+    return first == t[0] ? t : first + t.substring(1);
+  }
+
+  /// §125 — remplacement d'un retrait au MILIEU du titre (encadré,
+  /// mention) : une espace entre deux mots d'écriture espacée, rien à côté
+  /// d'un caractère CJK ou d'une ponctuation pleine chasse (« 謎團！【頻道】
+  /// 李家名 » → « 謎團！李家名 »).
+  static String _channelGap(Match m) {
+    final s = m.input;
+    bool wordSide(String c) {
+      if (c.trim().isEmpty) return false;
+      final r = c.codeUnitAt(0);
+      return !_isUnspacedScript(c) &&
+          !(r >= 0x3000 && r <= 0x303F) &&
+          !(r >= 0xFF00 && r <= 0xFFEF);
+    }
+
+    final before = m.start > 0 ? s[m.start - 1] : '';
+    final after = m.end < s.length ? s[m.end] : '';
+    return wordSide(before) && wordSide(after) ? ' ' : '';
+  }
+
+  /// §125 — crédit juste avant le nom de la chaîne, retiré avec lui (« by »,
+  /// « feat. », « w/ », « on », « par », « von »…).
+  static const List<String> _channelCredits = [
+    // Anglais.
+    'featuring', 'feat.', 'feat', 'ft.', 'ft', 'w/', 'with', 'by', 'from',
+    'via', 'on', 'of',
+    // Français.
+    'avec', 'par', 'sur', 'chez', 'de',
+    // Espagnol, portugais, italien.
+    'por', 'con', 'com', 'da', 'di', 'per',
+    // Allemand.
+    'von', 'mit', 'bei', 'auf',
+    // Russe.
+    'от', 'с', 'на',
+  ];
+
+  /// Alternation regex de [_channelCredits] (formes longues d'abord).
+  static final String _channelCreditAlt = (List<String>.of(_channelCredits)
+        ..sort((a, b) => b.length.compareTo(a.length)))
+      .map(_escapeRegex)
+      .join('|');
+
+  /// §125 — séparateur de SEGMENT : barres, puces, deux-points, tildes
+  /// (collés ou non) ; tiret et barre oblique seulement avec un espace d'un
+  /// côté au moins (« Spider-Man », « 1/12 » ne séparent rien).
+  static const String _channelSep =
+      r'(?:\s*[|｜丨•·:：~]+\s*|\s+[-–—/]+\s*|\s*[-–—/]+\s+)';
+
+  /// Échappement SÛR en mode `unicode: true` : seuls les caractères de
+  /// syntaxe sont échappés (un échappement inutile, « \- » ou « \: », est
+  /// refusé en mode unicode). Identique en VM et en JavaScript.
+  static String _escapeRegex(String s) => s
+      .split('')
+      .map((c) => r'\^$.*+?()[]{}|'.contains(c) ? '\\$c' : c)
+      .join();
+
+  /// §125 — source regex du nom de chaîne [name] (casse insensible à la
+  /// compilation) : espaces souples, apostrophes interchangeables ; limite
+  /// de mot à chaque bord en écriture ESPACÉE (latin, cyrillique…), aucune
+  /// en écriture sans espaces (« 紫雨carol », « 志祺七七 »).
+  static String _channelNameSource(String name) {
+    bool spacedWord(int rune) {
+      final c = String.fromCharCode(rune);
+      return _letterOrDigit.hasMatch(c) && !_isUnspacedScript(c);
+    }
+
+    final runes = name.runes.toList();
+    final buf = StringBuffer();
+    if (spacedWord(runes.first)) buf.write(r'(?<![\p{L}\p{N}_])');
+    var space = false;
+    for (final rune in runes) {
+      final c = String.fromCharCode(rune);
+      if (c.trim().isEmpty) {
+        space = true;
+        continue;
+      }
+      if (space) buf.write(r'\s*');
+      space = false;
+      buf.write("'’´‘ʼ`".contains(c) ? "['’´‘ʼ`]" : _escapeRegex(c));
+    }
+    if (spacedWord(runes.last)) buf.write(r'(?![\p{L}\p{N}_])');
+    return buf.toString();
+  }
+
+  /// §125 — vrai si le nom de chaîne [channel] est CONTENU (mots entiers)
+  /// dans le nom du jeu [gameName] : chaîne officielle ou de la licence,
+  /// retirée par le nettoyage du jeu lui-même.
+  static bool _channelIsInGameName(String channel, String? gameName) {
+    final game = gameName?.trim() ?? '';
+    final c = normalizeGameNameNoAlias(channel);
+    if (game.isEmpty || c.isEmpty) return false;
+    return ' ${normalizeGameNameNoAlias(game)} '.contains(' $c ') ||
+        ' ${normalizeGameName(game)} '.contains(' $c ');
   }
 
   /// §123 — lettre d'une écriture NON LATINE (chinois, japonais, coréen,
