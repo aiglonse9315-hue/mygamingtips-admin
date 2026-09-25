@@ -131,9 +131,37 @@ abstract final class TitleCleaning {
   /// suffixes d'édition, apostrophes, ponctuation, puis résolution d'alias).
   static String normalizeGameName(String name) {
     final n = normalizeGameNameNoAlias(name);
-    // Résolution d'alias.
-    return gameAliases[n] ?? n;
+    // Résolution d'alias : la base (couche distante) d'abord, comme
+    // GameMatcher.normalize des bots, puis les alias codés en dur.
+    return _remoteAliases[n] ?? gameAliases[n] ?? n;
   }
+
+  /// Couche DISTANTE des alias (§123 — table `game_aliases`, route EF
+  /// `games/aliases/list-all`) : forme clé de l'alias → forme clé du nom du
+  /// jeu, comme `GameMatcher._remoteAliases` des bots. Sans elle, un alias
+  /// ajouté en base (« GTA 5 » pour Grand Theft Auto V) restait dans le
+  /// titre recalculé par le panneau alors que Sentinelle le retire.
+  static Map<String, String> _remoteAliases = const {};
+
+  /// Remplace la couche distante. Chaque côté est re-normalisé SANS
+  /// résolution d'alias (même règle que `GameMatcher._applyRemoteAliases`) ;
+  /// les entrées vides ou identiques au nom du jeu sont ignorées.
+  static void setRemoteAliases(
+      Iterable<({String aliasNorm, String gameName})> entries) {
+    final rebuilt = <String, String>{};
+    for (final e in entries) {
+      final alias = normalizeGameNameNoAlias(e.aliasNorm);
+      final game = normalizeGameNameNoAlias(e.gameName);
+      if (alias.isEmpty || game.isEmpty || alias == game) continue;
+      rebuilt[alias] = game;
+    }
+    _remoteAliases = Map.unmodifiable(rebuilt);
+  }
+
+  /// Alias connus pour le nettoyage des titres : codés en dur ∪ base (la
+  /// base gagne les conflits — `GameMatcher.knownAliases`).
+  static Map<String, String> get knownAliases =>
+      {...gameAliases, ..._remoteAliases};
 
   /// Normalisation SANS résolution d'alias (équivalent du
   /// `_normalizeCore` de GameMatcher côté bots) : la forme CLÉ d'un nom
@@ -325,7 +353,8 @@ abstract final class TitleCleaning {
     final canonical = normalizeGameName(game);
     if (canonical.isEmpty) return withoutHashtags;
     final forms = <String>{canonical};
-    for (final entry in gameAliases.entries) {
+    // §123 : alias codés en dur ET alias de la base ([knownAliases]).
+    for (final entry in knownAliases.entries) {
       if (entry.value == canonical && entry.key.length >= 3) {
         forms.add(entry.key);
       }

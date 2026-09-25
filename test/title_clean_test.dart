@@ -65,6 +65,26 @@ void main() {
     expect(clean('Best build in #d4 #diablo', 'Diablo 4'), 'Best build');
   });
 
+  test('alias de la base (couche distante) retirés comme chez Sentinelle', () {
+    addTearDown(() => TitleCleaning.setRemoteAliases(const []));
+    const title = 'Controversial New Glitch Breaking GTA 5 Speedrun Community';
+    // Sans la base : « GTA 5 » n'est pas un alias codé en dur.
+    expect(clean(title, 'Grand Theft Auto V'), title);
+    TitleCleaning.setRemoteAliases(const [
+      (aliasNorm: 'gta 5', gameName: 'Grand Theft Auto V'),
+      (aliasNorm: 'gta5', gameName: 'Grand Theft Auto V'),
+      (aliasNorm: '', gameName: 'Grand Theft Auto V'), // ignoré
+    ]);
+    expect(clean(title, 'Grand Theft Auto V'),
+        'Controversial New Glitch Breaking Speedrun Community');
+    expect(clean('Best heist in #gta5 #gaming', 'Grand Theft Auto V'),
+        'Best heist');
+    // Résolution d'un nom par la base (jeu proposé sous son alias).
+    expect(TitleCleaning.normalizeGameName('GTA 5'), 'grand theft auto 5');
+    expect(clean(title, 'GTA 5'),
+        'Controversial New Glitch Breaking Speedrun Community');
+  });
+
   test('page web : domaine du site ; plateformes vidéo reconnues', () {
     const url = 'https://gamerant.com/alan-wake-2-walkthrough-chapters/';
     expect(TitleCleaning.webTitleWithDomain('Walkthrough: Chapters', url),

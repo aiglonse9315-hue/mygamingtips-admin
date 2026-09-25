@@ -2317,9 +2317,48 @@ class StoreController extends ChangeNotifier {
         }
       }
       _gameTranslationsCache = byName;
+      _bumpTitleCleaningRevision();
     } catch (_) {
       // Best-effort : sans traductions, le nettoyage reste celui d'avant.
     }
+  }
+
+  /// §123 — une seule tentative de chargement des alias de la base par
+  /// session (best-effort).
+  static bool _remoteAliasesTried = false;
+
+  /// §123 — charge les alias de la base (`game_aliases`, UNE requête
+  /// `games/aliases/list-all`) dans la couche distante du nettoyage des
+  /// titres ([TitleCleaning.setRemoteAliases]) : les titres recalculés par
+  /// le panneau retirent alors les mêmes alias que Sentinelle (« GTA 5 »).
+  /// Fire-and-forget à la fin du sync du catalogue ; un échec laisse les
+  /// seuls alias codés en dur (comportement antérieur).
+  Future<void> _loadRemoteAliasesForTitles() async {
+    if (_remoteAliasesTried || sync == null) return;
+    _remoteAliasesTried = true;
+    try {
+      final all = await sync!.fetchGameAliasesAll();
+      TitleCleaning.setRemoteAliases([
+        for (final e in all)
+          if ((e.gameName ?? '').trim().isNotEmpty)
+            (aliasNorm: e.alias.aliasNorm, gameName: e.gameName!),
+      ]);
+      _bumpTitleCleaningRevision();
+    } catch (_) {
+      // Best-effort : sans la base, alias codés en dur seulement.
+    }
+  }
+
+  /// Révision des références du nettoyage des titres (noms traduits, alias
+  /// de la base), chargées APRÈS le premier affichage : les tableaux
+  /// Sentinelle recalculent alors les titres pré-remplis que l'admin n'a
+  /// pas modifiés (texte affiché == texte appliqué à la validation).
+  int get titleCleaningRevision => _titleCleaningRevision;
+  int _titleCleaningRevision = 0;
+
+  void _bumpTitleCleaningRevision() {
+    _titleCleaningRevision++;
+    notifyListeners();
   }
 
   /// Détermine la date de publication pour l'insertion d'un contenu.
@@ -4058,6 +4097,8 @@ class StoreController extends ChangeNotifier {
     // D1.4 — charge (best-effort, fire-and-forget, une fois par session) les
     // traductions de titres pour le nettoyage local des titres d'insertion.
     unawaited(_loadGameTranslationsCache());
+    // §123 — idem pour les alias de la base (même retrait que Sentinelle).
+    unawaited(_loadRemoteAliasesForTitles());
   }
 
   /// Dataset `contents` : full (count HEAD + pages ∥) ou incrémental

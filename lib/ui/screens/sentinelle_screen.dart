@@ -1269,6 +1269,34 @@ class _TrustedTableState extends State<_TrustedTable> {
     );
   }
 
+  /// Révision du nettoyage déjà appliquée aux titres pré-remplis.
+  int _seenCleaningRevision = -1;
+
+  /// §123 — les références du nettoyage (alias de la base, noms traduits)
+  /// arrivent APRÈS le premier affichage : les titres pré-remplis que
+  /// l'admin n'a PAS modifiés sont recalculés (après la frame : pas de
+  /// notification pendant le build) — texte affiché == texte appliqué.
+  void _refreshUneditedTitles(StoreController store) {
+    final int rev = store.titleCleaningRevision;
+    if (rev == _seenCleaningRevision) return;
+    final bool firstBuild = _seenCleaningRevision < 0;
+    _seenCleaningRevision = rev;
+    if (firstBuild || _titleControllers.isEmpty) return;
+    final List<Suggestion> rows = widget.suggestions;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      for (final s in rows) {
+        final TextEditingController? c = _titleControllers[s.id];
+        if (c == null || widget.editedTitles.containsKey(s.id)) continue;
+        c.text = store.titleForInsertion(
+          s,
+          gameName: widget.editedGames[s.id] ??
+              s.aiRecommendation?.suggestedGame,
+        );
+      }
+    });
+  }
+
   @override
   void dispose() {
     for (final c in _titleControllers.values) {
@@ -1586,6 +1614,7 @@ class _TrustedTableState extends State<_TrustedTable> {
     // F4 : purge des contrôleurs orphelins (ids disparus du board) + cache
     // catalogue (recalcul uniquement si store.games a changé).
     _purgeTitleControllers();
+    _refreshUneditedTitles(store);
     _refreshCatalogCache(store.games);
     final catalogGameNames = _catalogNames;
     // On ne construit que les lignes de la page courante (100 max) pour éviter
@@ -1896,6 +1925,32 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
     );
   }
 
+  /// Révision du nettoyage déjà appliquée aux titres pré-remplis.
+  int _seenCleaningRevision = -1;
+
+  /// §123 — même règle que [_TrustedTableState._refreshUneditedTitles] :
+  /// titres pré-remplis NON modifiés recalculés quand les alias de la base
+  /// ou les noms traduits arrivent.
+  void _refreshUneditedTitles(StoreController store) {
+    final int rev = store.titleCleaningRevision;
+    if (rev == _seenCleaningRevision) return;
+    final bool firstBuild = _seenCleaningRevision < 0;
+    _seenCleaningRevision = rev;
+    if (firstBuild || _titleControllers.isEmpty) return;
+    final List<Suggestion> rows = widget.suggestions;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      for (final s in rows) {
+        final TextEditingController? c = _titleControllers[s.id];
+        if (c == null || widget.editedTitles.containsKey(s.id)) continue;
+        c.text = store.titleForInsertion(
+          s,
+          gameName: s.aiRecommendation?.suggestedGame,
+        );
+      }
+    });
+  }
+
   @override
   void dispose() {
     for (final c in _titleControllers.values) {
@@ -2123,6 +2178,7 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
     // I-002 / R2 : purge des contrôleurs orphelins (ids disparus du board) —
     // même règle que _TrustedTable / _GamesToCreateTable (F4).
     _purgeTitleControllers();
+    _refreshUneditedTitles(store);
     final hasCheckbox = widget.selectedIds != null && widget.onToggle != null;
     final pageItems = _page;
     final totalFiltered = _filtered.length;
