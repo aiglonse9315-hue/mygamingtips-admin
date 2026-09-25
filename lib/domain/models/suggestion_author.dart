@@ -11,11 +11,17 @@ class SuggestionAuthor {
   final String? avatarUrl;
   final String? email;
 
+  /// Auteur abonné Plus ACTIF au moment de la lecture (`author_is_plus` de la
+  /// route EF `suggestions/list`, migration 0085) — badge PLUS et bouton
+  /// « Plus » sans charger la liste complète des abonnés.
+  final bool isPlus;
+
   const SuggestionAuthor({
     required this.id,
     required this.displayName,
     this.avatarUrl,
     this.email,
+    this.isPlus = false,
   });
 
   factory SuggestionAuthor.fromJson(Map<String, dynamic> json) {
@@ -24,6 +30,7 @@ class SuggestionAuthor {
       displayName: json['displayName'] as String,
       avatarUrl: json['avatarUrl'] as String?,
       email: json['email'] as String?,
+      isPlus: (json['isPlus'] as bool?) ?? false,
     );
   }
 
@@ -32,6 +39,7 @@ class SuggestionAuthor {
         'displayName': displayName,
         'avatarUrl': avatarUrl,
         'email': email,
+        'isPlus': isPlus,
       };
 
   SuggestionAuthor copyWith({bool? banned}) => this; // pour compat future

@@ -2,18 +2,28 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme/colors.dart';
+import '../../data/supabase_sync.dart' show AdminAuthException;
 import '../../domain/models/category.dart';
 import '../../domain/models/plus_user.dart';
 import '../../domain/models/suggestion.dart';
+import '../../domain/plus_paging.dart';
 import '../../state/store_controller.dart';
 import '../widgets/limits_alert_card.dart';
 import '../widgets/stat_card.dart';
 
 /// Tableau de bord : vue d'ensemble statistiques + dernières suggestions.
 class DashboardScreen extends StatelessWidget {
-  const DashboardScreen({super.key, required this.onOpenSuggestions});
+  const DashboardScreen({
+    super.key,
+    required this.onOpenSuggestions,
+    this.onOpenAbonnements,
+  });
 
   final VoidCallback onOpenSuggestions;
+
+  /// Ouvre le menu Abonnements (liste complète paginée) — lien de
+  /// l'accordéon « Abonnés Plus ».
+  final VoidCallback? onOpenAbonnements;
 
   @override
   Widget build(BuildContext context) {
@@ -73,16 +83,8 @@ class DashboardScreen extends StatelessWidget {
                   color: AppColors.plusGold,
                 ),
               ),
-              SizedBox(
-                width: 240,
-                child: StatCard(
-                  label: 'Abonnés Plus',
-                  value: '${store.activePlusCount}',
-                  icon: Icons.bolt_rounded,
-                  color: AppColors.plus,
-                  subtitle: '${store.plus.length} au total',
-                ),
-              ),
+              // Compteurs serveur (migration 0085) — plus de liste complète.
+              const SizedBox(width: 240, child: _PlusStatCard()),
             ],
           ),
           const SizedBox(height: 16),
@@ -159,8 +161,8 @@ class DashboardScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 24),
-          // ---------- Utilisateurs Plus (accordéon) ----------
-          _PlusAccordion(),
+          // ---------- Utilisateurs Plus (accordéon : 10 plus récents) ----------
+          _PlusAccordion(onOpenAbonnements: onOpenAbonnements),
           const SizedBox(height: 24),
           // Dernières suggestions
           Row(
@@ -311,25 +313,137 @@ class DashboardScreen extends StatelessWidget {
   }
 }
 
-/// Accordéon « Utilisateurs Plus » : liste + ajout manuel.
+/// Carte « Abonnés Plus » du dashboard : compteurs SERVEUR
+/// (`subscriptions/stats`, migration 0085) relus à l'ouverture du dashboard
+/// et après chaque écriture d'abonnement — plus de liste complète chargée.
+class _PlusStatCard extends StatefulWidget {
+  const _PlusStatCard();
+
+  @override
+  State<_PlusStatCard> createState() => _PlusStatCardState();
+}
+
+class _PlusStatCardState extends State<_PlusStatCard> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) context.read<StoreController>().refreshPlusStats();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final PlusStats? stats = context.watch<StoreController>().plusStats;
+    return StatCard(
+      label: 'Abonnés Plus',
+      value: stats == null ? '…' : formatCount(stats.active),
+      icon: Icons.bolt_rounded,
+      color: AppColors.plus,
+      subtitle: stats == null ? null : '${formatCount(stats.total)} au total',
+    );
+  }
+}
+
+/// Accordéon « Abonnés Plus » : les abonnements les plus RÉCENTS (une page
+/// serveur de [_PlusAccordionState._recentCount] — migration 0085), ajout
+/// manuel, lien vers le menu Abonnements (liste complète paginée, recherche,
+/// filtres). Chargé à la première ouverture, rechargé après chaque écriture.
 class _PlusAccordion extends StatefulWidget {
+  const _PlusAccordion({this.onOpenAbonnements});
+
+  final VoidCallback? onOpenAbonnements;
+
   @override
   State<_PlusAccordion> createState() => _PlusAccordionState();
 }
 
 class _PlusAccordionState extends State<_PlusAccordion> {
+  /// Nombre d'abonnés affichés (les plus récents d'abord).
+  static const int _recentCount = 10;
+
   bool _expanded = false;
+  List<PlusUser> _recent = <PlusUser>[];
+  bool _loading = false;
+  bool _loaded = false;
+  String? _error;
+
+  /// Numéro du dernier chargement (seule la réponse la plus récente compte).
+  int _loadSeq = 0;
+
+  /// Dernière [StoreController.plusRevision] prise en compte.
+  int _seenRevision = 0;
+
+  StoreController? _store;
+
+  @override
+  void initState() {
+    super.initState();
+    final StoreController store = context.read<StoreController>();
+    _store = store;
+    _seenRevision = store.plusRevision;
+    store.addListener(_onStoreChanged);
+  }
+
+  @override
+  void dispose() {
+    _store?.removeListener(_onStoreChanged);
+    super.dispose();
+  }
+
+  /// Écriture d'abonnement réussie (ou « Actualiser ») → recharge la liste
+  /// si elle a déjà été affichée.
+  void _onStoreChanged() {
+    final StoreController? store = _store;
+    if (store == null || !mounted) return;
+    if (store.plusRevision == _seenRevision) return;
+    _seenRevision = store.plusRevision;
+    if (_loaded || _expanded) _loadRecent();
+  }
+
+  Future<void> _loadRecent() async {
+    final StoreController store = context.read<StoreController>();
+    final int seq = ++_loadSeq;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final PlusPage page = await store.fetchPlusPage(
+        const PlusPageQuery(pageSize: _recentCount),
+      );
+      if (!mounted || seq != _loadSeq) return;
+      setState(() {
+        _recent = page.items;
+        _loaded = true;
+        _loading = false;
+      });
+    } on AdminAuthException {
+      // Logout forcé déjà déclenché par le StoreController.
+      if (mounted && seq == _loadSeq) setState(() => _loading = false);
+    } catch (e) {
+      if (!mounted || seq != _loadSeq) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  void _toggleExpanded() {
+    setState(() => _expanded = !_expanded);
+    if (_expanded && !_loaded && !_loading) _loadRecent();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final StoreController store = context.watch<StoreController>();
-    final List<PlusUser> plus = store.plus;
+    final PlusStats? stats = context.watch<StoreController>().plusStats;
 
     return Card(
       child: Column(
         children: [
           ListTile(
-            onTap: () => setState(() => _expanded = !_expanded),
+            onTap: _toggleExpanded,
             leading: Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
@@ -347,7 +461,10 @@ class _PlusAccordionState extends State<_PlusAccordion> {
               style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
             ),
             subtitle: Text(
-              '${store.activePlusCount} actif(s) • ${plus.length} au total',
+              stats == null
+                  ? 'Compteurs en cours de chargement…'
+                  : '${formatCount(stats.active)} actif(s) • '
+                        '${formatCount(stats.total)} au total',
               style: const TextStyle(fontSize: 12),
             ),
             trailing: Row(
@@ -382,24 +499,86 @@ class _PlusAccordionState extends State<_PlusAccordion> {
             firstChild: const SizedBox(width: double.infinity),
             secondChild: Padding(
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 10),
-              child: plus.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.symmetric(
-                        vertical: 16,
-                        horizontal: 16,
-                      ),
-                      child: Text(
-                        'Aucun abonné Plus.',
-                        style: TextStyle(fontSize: 13),
-                      ),
-                    )
-                  : Column(
-                      children: plus.map((n) => _plusTile(context, n)).toList(),
-                    ),
+              child: _recentList(context, stats),
             ),
           ),
         ],
       ),
+    );
+  }
+
+  /// Contenu déplié : chargement / erreur / vide / plus récents + lien vers
+  /// le menu Abonnements.
+  Widget _recentList(BuildContext context, PlusStats? stats) {
+    final Widget body;
+    if (_loading && !_loaded) {
+      body = const Padding(
+        padding: EdgeInsets.all(16),
+        child: Center(
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    } else if (_error != null && _recent.isEmpty) {
+      body = Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Chargement impossible : $_error',
+                style: const TextStyle(fontSize: 12, color: Colors.red),
+              ),
+            ),
+            TextButton(onPressed: _loadRecent, child: const Text('Réessayer')),
+          ],
+        ),
+      );
+    } else if (_recent.isEmpty) {
+      body = const Padding(
+        padding: EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+        child: Text('Aucun abonné Plus.', style: TextStyle(fontSize: 13)),
+      );
+    } else {
+      body = Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+            child: Text(
+              'Les $_recentCount abonnements les plus récents',
+              style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(context).textTheme.bodySmall?.color,
+              ),
+            ),
+          ),
+          ..._recent.map((PlusUser n) => _plusTile(context, n)),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_loading && _loaded) const LinearProgressIndicator(minHeight: 2),
+        body,
+        if (widget.onOpenAbonnements != null)
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: widget.onOpenAbonnements,
+              icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+              label: Text(
+                stats == null
+                    ? 'Voir tous les abonnés'
+                    : 'Voir tous les abonnés (${formatCount(stats.total)})',
+              ),
+            ),
+          ),
+      ],
     );
   }
 
@@ -430,9 +609,9 @@ class _PlusAccordionState extends State<_PlusAccordion> {
               ),
             ),
           ),
-          // Badge BANNI si l'abonné Plus est également banni
-          // (statut synchronisé depuis le serveur via fetchBannedUsers).
-          if (store.isAuthorBanned(n.id)) ...[
+          // Badge BANNI si l'abonné Plus est également banni (is_banned
+          // fourni par la ligne serveur — migration 0085).
+          if (n.isBanned) ...[
             const SizedBox(width: 6),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
@@ -506,7 +685,8 @@ class _PlusAccordionState extends State<_PlusAccordion> {
         ],
       ),
       subtitle: Text(
-        '${n.email ?? "—"} • depuis le ${_shortDate(n.startedAt)}',
+        '${n.email ?? "—"} • depuis le ${_shortDate(n.startedAt)}'
+        '${n.expiresAt != null ? ' • fin le ${_shortDate(n.expiresAt!)}' : ''}',
         style: const TextStyle(fontSize: 11),
       ),
       trailing: Row(
@@ -537,12 +717,15 @@ class _PlusAccordionState extends State<_PlusAccordion> {
                 PopupMenuItem(value: 'yearly', child: Text('Annuel')),
               ],
             ),
-          IconButton(
-            tooltip: 'Supprimer',
-            icon: const Icon(Icons.delete_outline_rounded, size: 20),
-            color: AppColors.categoryVideo,
-            onPressed: () => store.deletePlusUser(n.id),
-          ),
+          // « Supprimer » = désactiver côté serveur (aucune ligne effacée,
+          // l'abonné reste listé « Expiré ») : sans objet s'il est inactif.
+          if (n.active)
+            IconButton(
+              tooltip: 'Supprimer (désactive l\'abonnement)',
+              icon: const Icon(Icons.delete_outline_rounded, size: 20),
+              color: AppColors.categoryVideo,
+              onPressed: () => store.deletePlusUser(n.id),
+            ),
         ],
       ),
     );
@@ -622,21 +805,25 @@ class _AddPlusUserDialogState extends State<AddPlusUserDialog> {
         }
         return;
       }
-      await sync.upsertSubscription(userId: uuid, plan: _plan);
-      // Ajoute l'utilisateur à la liste locale (optimiste) pour qu'il apparaisse
-      // immédiatement dans le dashboard. Sans ça, l'utilisateur est créé côté
-      // Supabase mais invisible dans le panneau admin.
-      store.addPlusByUserId(
+      // UNE seule écriture : abonnement manuel actif, début maintenant, sans
+      // échéance. Les listes paginées et les compteurs se rechargent d'eux-
+      // mêmes (StoreController.plusRevision) — plus d'ajout local optimiste.
+      final bool ok = await store.grantPlus(
         userId: uuid,
         displayName: _name.text.trim().isEmpty ? email : _name.text,
         plan: _plan,
       );
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Abonné Plus ajouté avec succès.')),
-        );
+      if (!mounted) return;
+      if (!ok) {
+        // Erreur déjà signalée (snackbar rouge du shell) : le dialog reste
+        // ouvert pour réessayer.
+        setState(() => _loading = false);
+        return;
       }
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Abonné Plus ajouté avec succès.')),
+      );
     } catch (e) {
       if (mounted) {
         setState(() => _loading = false);

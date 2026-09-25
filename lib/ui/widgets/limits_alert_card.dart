@@ -7,9 +7,11 @@ import '../../state/store_controller.dart';
 /// Bandeau d'alerte de saturation des limites de listes (dashboard admin).
 ///
 /// Compte les lignes en base via HEAD `Prefer: count=exact` (0 ligne
-/// transférée) et compare aux plafonds de prise en compte du panneau :
-///   - Jeux actifs   → plafond 100 000 (maxGames du StoreController)
-///   - Contenus      → plafond 500 000 (maxContents)
+/// transférée) et compare aux gardes anti-boucle de la pagination du panneau
+/// (appliquées quand le comptage exact échoue ou en synchro incrémentale) :
+///   - Jeux actifs   → 1 000 000 (_kRunawayGuardItems du StoreController,
+///                     relevée de 100 000 le 25/09/2026)
+///   - Contenus      → 500 000 (défaut de _fetchPaged)
 ///
 /// Seuils visuels : < 60 % vert (discret), 60–85 % orange (avertissement),
 /// ≥ 85 % rouge (action requise avant saturation silencieuse).
@@ -23,7 +25,7 @@ class LimitsAlertCard extends StatefulWidget {
 }
 
 class _LimitsAlertCardState extends State<LimitsAlertCard> {
-  static const int _maxGames = 100000;
+  static const int _maxGames = 1000000;
   static const int _maxContents = 500000;
 
   bool _loading = false;

@@ -134,7 +134,7 @@ class _LimitesScreenState extends State<LimitesScreen> {
                     spacing: 16,
                     runSpacing: 16,
                     children: [
-                      _countCard('Jeux actifs', _gamesActifs, 100000,
+                      _countCard('Jeux actifs', _gamesActifs, 1000000,
                           subtitle: '${_fmt(_gamesTotal)} au total '
                               '(actifs + inactifs)'),
                       _countCard('Contenus validés', _contents, 500000),
@@ -172,14 +172,20 @@ class _LimitesScreenState extends State<LimitesScreen> {
                             '1 000', 'par requête — pagination obligatoire'),
                         _row('Edge Function admin-catalog', 'pageSize / appel',
                             '1 000', 'pagination interne illimitée'),
-                        _row('Panneau admin', 'Jeux', '100 000',
-                            'pages de 1 000'),
-                        _row('Panneau admin', 'Contenus', '500 000',
-                            'pages de 1 000'),
-                        _row('Panneau admin', 'Abonnés', '100 000',
-                            'pages de 1 000'),
-                        _row('Panneau admin', 'Suggestions', 'Illimité',
-                            'pages de 500'),
+                        _row('Panneau admin', 'Jeux', 'Illimité',
+                            'compte exact + pages de 1 000 (garde '
+                            'anti-boucle ≈ 1 000 000 si le compte échoue '
+                            'ou en synchro incrémentale)'),
+                        _row('Panneau admin', 'Contenus', 'Illimité',
+                            'compte exact + pages de 1 000 (garde '
+                            'anti-boucle ≈ 500 000 si le compte échoue ou '
+                            'en synchro incrémentale)'),
+                        _row('Panneau admin', 'Abonnés', 'Illimité',
+                            'pagination serveur 100/page + total exact'),
+                        _row('Panneau admin', 'Suggestions',
+                            '≈ 1 000 000 par file',
+                            'pages de 500 sans compte (garde anti-boucle), '
+                            'dans le budget de synchro (45/120 s)'),
                         _row('Application mobile', 'Jeux', 'Illimité',
                             'pages de 1 000 + cache SQLite'),
                         _row('Application mobile', 'Contenus par jeu',

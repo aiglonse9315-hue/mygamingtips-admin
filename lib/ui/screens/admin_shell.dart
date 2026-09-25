@@ -161,7 +161,8 @@ class _AdminShellState extends State<AdminShell> {
 
   /// Datasets alimentant le menu courant (badge de fraîcheur). Doit refléter
   /// les besoins déclarés dans [_buildContent]. `null` pour les écrans sans
-  /// dataset synchronisé (Contributeurs, Limite) → pas de badge.
+  /// dataset synchronisé (Contributeurs, Limite, Abonnements — pagination
+  /// serveur, toujours à jour) → pas de badge.
   static Set<SyncDataset>? _datasetsForRoute(String route) => switch (route) {
     '/dashboard' => StoreController.dashboardDatasets,
     '/games' => const {SyncDataset.games},
@@ -174,7 +175,6 @@ class _AdminShellState extends State<AdminShell> {
       SyncDataset.games,
     },
     '/scruteur' => const {SyncDataset.scruteur, SyncDataset.games},
-    '/abonnements' => const {SyncDataset.subscriptions},
     '/banned' => const {SyncDataset.banned},
     _ => null,
   };
@@ -187,7 +187,10 @@ class _AdminShellState extends State<AdminShell> {
       case '/dashboard':
         return _DatasetGate(
           datasets: StoreController.dashboardDatasets,
-          child: DashboardScreen(onOpenSuggestions: () => _go('/suggestions')),
+          child: DashboardScreen(
+            onOpenSuggestions: () => _go('/suggestions'),
+            onOpenAbonnements: () => _go('/abonnements'),
+          ),
         );
       case '/games':
         return const _DatasetGate(
@@ -224,10 +227,9 @@ class _AdminShellState extends State<AdminShell> {
           child: ScruteurScreen(),
         );
       case '/abonnements':
-        return const _DatasetGate(
-          datasets: {SyncDataset.subscriptions},
-          child: AbonnementsScreen(),
-        );
+        // Pagination SERVEUR (migration 0085) : l'écran charge lui-même sa
+        // page de 100 abonnés — plus de chargement complet ni de _DatasetGate.
+        return const AbonnementsScreen();
       case '/analytics':
         // Fetch direct (pattern Contributeurs/Limite) : pas de _DatasetGate,
         // AUCUN dataset synchronisé → ce menu ne déclenche PAS de full sync
@@ -249,7 +251,10 @@ class _AdminShellState extends State<AdminShell> {
       default:
         return _DatasetGate(
           datasets: StoreController.dashboardDatasets,
-          child: DashboardScreen(onOpenSuggestions: () => _go('/suggestions')),
+          child: DashboardScreen(
+            onOpenSuggestions: () => _go('/suggestions'),
+            onOpenAbonnements: () => _go('/abonnements'),
+          ),
         );
     }
   }

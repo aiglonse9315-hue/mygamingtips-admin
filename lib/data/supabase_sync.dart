@@ -13,6 +13,7 @@ import '../domain/models/log_entry.dart';
 import '../domain/models/suggestion.dart';
 import '../domain/models/sync_status.dart';
 import '../domain/models/trusted_channel.dart';
+import '../domain/plus_paging.dart';
 
 /// Exception levée quand le token admin est expiré ou invalide (HTTP 401).
 ///
@@ -318,21 +319,26 @@ class SupabaseSync {
 
   /// Convertit les lignes suggestions (snake_case + embed `author`) en
   /// modèles [Suggestion]. Mapping identique à l'ancien embed PostgREST
-  /// `author:profiles(id,display_name,avatar_preset)`.
-  static List<Suggestion> _mapSuggestionRows(List<dynamic> rows) {
+  /// `author:profiles(id,display_name,avatar_preset)`, plus l'indicateur
+  /// `author_is_plus` (auteur abonné Plus actif — migration 0085 ; absent
+  /// d'une EF antérieure → false).
+  static List<Suggestion> mapSuggestionRows(List<dynamic> rows) {
     return rows.map((r) {
       final row = r as Map<String, dynamic>;
       final authorData = row['author'];
+      final bool isPlus = row['author_is_plus'] == true;
       final Map<String, dynamic> authorObj = authorData is Map
           ? {
               'id': authorData['id'] ?? row['author_id'] ?? '',
               'displayName':
                   authorData['display_name'] ?? row['author_name'] ?? 'Inconnu',
               'avatarUrl': authorData['avatar_preset'],
+              'isPlus': isPlus,
             }
           : {
               'id': row['author_id'] ?? '',
               'displayName': row['author_name'] ?? 'Inconnu',
+              'isPlus': isPlus,
             };
       final Map<String, dynamic> mapped = _camelRow(row);
       mapped['author'] = authorObj;
@@ -362,7 +368,7 @@ class SupabaseSync {
       if (since != null) 'since': since,
     });
     final List<dynamic> rows = data['suggestions'] as List? ?? [];
-    return (items: _mapSuggestionRows(rows), maxUpdatedAt: _maxUpdatedAt(rows));
+    return (items: mapSuggestionRows(rows), maxUpdatedAt: _maxUpdatedAt(rows));
   }
 
   /// Récupère les suggestions VRAIMENT nouvelles : jamais prises en charge
@@ -892,55 +898,101 @@ class SupabaseSync {
     await _post('profiles/unban', {'user_id': userId});
   }
 
+  /// Crée ou modifie un abonnement Plus (route EF `subscriptions/upsert`).
+  ///
+  /// Sémantique « champs FOURNIS uniquement » (migration 0085) : seuls les
+  /// paramètres non nuls sont envoyés, et l'EF ne modifie QUE ceux-là sur un
+  /// abonnement existant — suspendre ou changer la formule n'efface plus
+  /// l'échéance d'un abonnement Google Play. [clearExpiry] envoie
+  /// `expires_at: null` explicite (« sans échéance ») ; la source n'est
+  /// jamais envoyée (jamais modifiée par l'EF). [plan] est obligatoire pour
+  /// CRÉER un abonnement.
   Future<void> upsertSubscription({
     required String userId,
-    required String plan,
-    bool isActive = true,
+    String? plan,
+    bool? isActive,
     DateTime? startedAt,
     DateTime? expiresAt,
-    String source = 'admin',
+    bool clearExpiry = false,
   }) async {
-    await _post('subscriptions/upsert', {
-      'user_id': userId,
-      'plan': plan,
-      'is_active': isActive,
-      'started_at': startedAt?.toIso8601String(),
-      'expires_at': expiresAt?.toIso8601String(),
-      'source': source,
-    });
+    await _post(
+      'subscriptions/upsert',
+      subscriptionUpsertBody(
+        userId: userId,
+        plan: plan,
+        isActive: isActive,
+        startedAt: startedAt,
+        expiresAt: expiresAt,
+        clearExpiry: clearExpiry,
+      ),
+    );
   }
 
-  /// Récupère tous les abonnements depuis Supabase (via Edge Function).
+  /// Corps de `subscriptions/upsert` : uniquement les champs à modifier
+  /// (voir [upsertSubscription]). Dates en UTC ISO 8601.
+  static Map<String, dynamic> subscriptionUpsertBody({
+    required String userId,
+    String? plan,
+    bool? isActive,
+    DateTime? startedAt,
+    DateTime? expiresAt,
+    bool clearExpiry = false,
+  }) {
+    return <String, dynamic>{
+      'user_id': userId,
+      'plan': ?plan,
+      'is_active': ?isActive,
+      'started_at': ?startedAt?.toUtc().toIso8601String(),
+      if (expiresAt != null)
+        'expires_at': expiresAt.toUtc().toIso8601String()
+      else if (clearExpiry)
+        'expires_at': null,
+    };
+  }
+
+  /// Une page d'abonnés Plus (route EF `subscriptions/list`, pagination
+  /// SERVEUR — migration 0085) : filtres, recherche et tri appliqués en SQL,
+  /// total EXACT correspondant aux filtres. Aucun plafond de volume : seule
+  /// la page demandée transite (100 lignes par défaut, 1 000 max).
   ///
-  /// Pagination : récupère par pages de 1000 jusqu'à 100 000 abonnés.
-  ///
-  /// Retourne une liste de maps avec : user_id, plan, is_active, started_at,
-  /// expires_at, displayName (du profil joint).
-  Future<List<Map<String, dynamic>>> fetchSubscriptions() async {
-    const int maxSubs = 100000;
-    const int pageSize = 1000;
-    final allSubs = <Map<String, dynamic>>[];
-    for (var page = 0; page * pageSize < maxSubs; page++) {
-      final data = await _post('subscriptions/list', {
-        'page': page,
-        'pageSize': pageSize,
-      });
-      final subs = data['subscriptions'] as List? ?? [];
-      for (final s in subs) {
-        final m = s as Map<String, dynamic>;
-        allSubs.add(<String, dynamic>{
-          'id': m['user_id'] as String,
-          'plan': (m['plan'] as String?) ?? 'monthly',
-          'active': (m['is_active'] as bool?) ?? false,
-          'startedAt': m['started_at'] as String?,
-          'expiresAt': m['expires_at'] as String?,
-          'displayName': m['display_name'] as String? ?? 'Inconnu',
-          'source': (m['source'] as String?) ?? 'admin',
-        });
-      }
-      if (subs.length < pageSize) break; // Fin des données.
-    }
-    return allSubs;
+  /// [status] : 'active' | 'inactive' (null = tous) ; [source] : 'google' |
+  /// 'admin' (« Manuel », null = toutes) ; [sort] : display_name | plan |
+  /// source | status | started_at (défaut : plus récents d'abord).
+  /// Les exceptions sont PROPAGÉES (AdminAuthException incluse).
+  Future<PlusPage> fetchSubscriptionsPage({
+    int page = 0,
+    int pageSize = kPlusPageSize,
+    String? search,
+    String? status,
+    String? source,
+    String? sort,
+    bool ascending = false,
+  }) async {
+    final PlusPageQuery query = PlusPageQuery(
+      page: page,
+      pageSize: pageSize,
+      search: search ?? '',
+      status: status,
+      source: source,
+      sort: sort ?? kPlusDefaultSort,
+      ascending: ascending,
+    );
+    final Map<String, dynamic> data = await _post(
+      'subscriptions/list',
+      query.toRequestBody(),
+    );
+    return parsePlusPage(data);
+  }
+
+  /// Compteurs des abonnés (route EF `subscriptions/stats`, migration 0085) :
+  /// total, actifs (is_active), répartition par formule / source — sans
+  /// charger la liste. Exceptions propagées.
+  Future<PlusStats> fetchSubscriptionStats() async {
+    final Map<String, dynamic> data = await _post(
+      'subscriptions/stats',
+      <String, dynamic>{},
+    );
+    return PlusStats.fromJson(data);
   }
 
   // ─────────────────────────────────────────────────────────────────────────

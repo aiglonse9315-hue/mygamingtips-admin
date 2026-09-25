@@ -511,6 +511,10 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
     String title = widget.suggestion.url;
     if (provided != null && provided.isNotEmpty) {
       title = provided;
+    } else if (ai?.proposedTitle != null &&
+        ai!.proposedTitle!.trim().isNotEmpty) {
+      // §123 : titre proposé par Sentinelle (toutes plateformes).
+      title = ai.proposedTitle!.trim();
     } else if (ai != null && ai.youtubeTitle != null && ai.youtubeTitle!.trim().isNotEmpty) {
       title = ai.youtubeTitle!.trim();
     } else {
@@ -524,13 +528,17 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
     _title = TextEditingController(text: title);
     _image = TextEditingController();
 
-    // Auto-remplissage de la catégorie depuis la recommandation IA.
-    if (ai != null && ai.suggestedCategory != null) {
-      final cat = ContentCategory.values.firstWhere(
-        (e) => e.name == ai.suggestedCategory,
-        orElse: () => ContentCategory.video,
-      );
-      _category = cat;
+    // Auto-remplissage de la catégorie — §123 : page web → Links ; vidéo
+    // (YouTube, bilibili, RUTUBE, Twitch) → Vidéo, ou Patch and Mod si une
+    // analyse §123+ l'y a classée (avant, « guides » = guide écrit).
+    if (!StoreController.isVideoPlatformUrl(widget.suggestion.url)) {
+      _category = ContentCategory.links;
+    } else {
+      final suggested = ai?.suggestedCategory?.trim().toLowerCase();
+      _category = (suggested == 'guides' &&
+              (ai?.categoryVersion ?? 0) >= 2)
+          ? ContentCategory.guides
+          : ContentCategory.video;
     }
   }
 

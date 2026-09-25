@@ -109,9 +109,15 @@ class Store {
       _saveList(_kBanned, banned.map((b) => b.toJson()).toList());
 
   // ---------- Utilisateurs Plus ----------
+  // MODE APERÇU LOCAL uniquement : en production, la liste des abonnés n'est
+  // jamais persistée (pagination serveur — migration 0085).
   List<PlusUser> loadPlus() => _loadList(_kPlus, PlusUser.fromJson);
   void savePlus(List<PlusUser> plus) =>
       _saveList(_kPlus, plus.map((n) => n.toJson()).toList());
+
+  /// Efface la liste d'abonnés mise en cache par les versions précédentes du
+  /// panneau (production — données réelles, périmées).
+  void clearPlus() => html.window.localStorage.remove(_kPlus);
 
   // ---------- Curseurs de sync incrémentale ----------
   //

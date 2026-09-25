@@ -3,7 +3,11 @@ import 'package:flutter/material.dart';
 /// Les trois catégories arborescentes du catalogue de chaque jeu.
 ///
 /// Conformément au cahier des charges, l'arborescence est :
-/// Jeu > Video / Guides / Links.
+/// Jeu > Video / Patch and Mod / Links.
+///
+/// §123 (25/09/2026) : la catégorie stockée `guides` est AFFICHÉE « Patch and
+/// Mod » (vidéos de mises à jour, patchs, MAJ, mods) — la valeur en base ne
+/// change pas (compatibilité des anciennes versions de l'app).
 enum ContentCategory {
   video,
   guides,
@@ -15,7 +19,7 @@ enum ContentCategory {
       case ContentCategory.video:
         return 'Vidéo';
       case ContentCategory.guides:
-        return 'Guides';
+        return 'Patch and Mod';
       case ContentCategory.links:
         return 'Links';
     }
@@ -27,7 +31,7 @@ enum ContentCategory {
       case ContentCategory.video:
         return Icons.smart_display_rounded;
       case ContentCategory.guides:
-        return Icons.menu_book_rounded;
+        return Icons.build_circle_rounded;
       case ContentCategory.links:
         return Icons.link_rounded;
     }

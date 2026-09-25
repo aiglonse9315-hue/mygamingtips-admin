@@ -15,6 +15,8 @@ import '../domain/models/game_alias.dart';
 import '../domain/models/plus_user.dart';
 import '../domain/models/suggestion.dart';
 import '../domain/models/sync_status.dart';
+import '../domain/plus_paging.dart';
+import '../domain/title_cleaning.dart';
 
 /// Détecte si une erreur provient d'un token admin expiré/invalide (HTTP 401).
 bool _isAuthError(Object e) => e is AdminAuthException;
@@ -33,8 +35,11 @@ bool _isAuthError(Object e) => e is AdminAuthException;
 /// - [sentinelleAnalyzed] : suggestions analysées par Sentinelle.
 /// - [scruteur] : suggestions du bot Scruteur (sites de guides).
 /// - [gamesToCreate] : file « Jeux à créer ».
-/// - [subscriptions] : abonnements Plus.
 /// - [banned] : comptes bannis + mauvais contributeurs (menu Comptes à bannir).
+///
+/// Les abonnements Plus ne sont PLUS un dataset synchronisé (migration 0085) :
+/// pagination serveur à la demande ([StoreController.fetchPlusPage],
+/// [StoreController.refreshPlusStats]) — jamais de chargement complet.
 enum SyncDataset {
   games,
   contents,
@@ -43,7 +48,6 @@ enum SyncDataset {
   sentinelleAnalyzed,
   scruteur,
   gamesToCreate,
-  subscriptions,
   banned,
 }
 
@@ -371,7 +375,28 @@ class StoreController extends ChangeNotifier {
   List<Suggestion> _scruteurSuggestions = <Suggestion>[];
   List<Suggestion> _gamesToCreate = <Suggestion>[];
   List<BannedUser> _banned = <BannedUser>[];
+
+  /// Abonnés Plus du MODE APERÇU LOCAL uniquement (sans Supabase). En
+  /// production, la liste n'est JAMAIS chargée en entier ni persistée
+  /// (migration 0085) : pages serveur via [fetchPlusPage].
   List<PlusUser> _plus = <PlusUser>[];
+
+  /// Compteurs des abonnés (route `subscriptions/stats`) — null tant que non
+  /// chargés.
+  PlusStats? _plusStats;
+
+  /// Numéro de la dernière demande de compteurs (seule la plus récente est
+  /// appliquée — demandes concurrentes possibles après des écritures).
+  int _plusStatsSeq = 0;
+
+  /// Incrémenté à chaque écriture d'abonnement réussie et à chaque
+  /// « Actualiser » : les écrans paginés (menu Abonnements, accordéon du
+  /// dashboard) rechargent alors leur page courante.
+  int _plusRevision = 0;
+
+  /// Indicateurs « abonné Plus actif » des auteurs de suggestions (badge
+  /// PLUS / bouton « Plus ») — voir [isPlusUser].
+  final PlusFlags _plusFlags = PlusFlags();
 
   /// Mauvais contributeurs (taux de rejet élevé) — menu « Comptes à bannir ».
   /// Données fraîches issues de `bad-contributors/list` (sync serveur).
@@ -463,8 +488,14 @@ class StoreController extends ChangeNotifier {
   static const double kScruteurTrustThreshold = 0.95;
 
   List<BannedUser> get banned => List<BannedUser>.unmodifiable(_banned);
-  List<PlusUser> get plus => List<PlusUser>.unmodifiable(_plus);
-  int get activePlusCount => _plus.where((n) => n.active).length;
+
+  /// Compteurs des abonnés Plus (total, actifs…) — null tant que non chargés
+  /// (voir [refreshPlusStats]).
+  PlusStats? get plusStats => _plusStats;
+
+  /// Révision des abonnements : change après chaque écriture réussie et à
+  /// chaque « Actualiser » — les écrans paginés rechargent leur page.
+  int get plusRevision => _plusRevision;
 
   /// Mauvais contributeurs (taux de rejet élevé) pour le menu
   /// « Comptes à bannir ». Liste non modifiable (lecture seule côté UI).
@@ -474,53 +505,27 @@ class StoreController extends ChangeNotifier {
   /// L'auteur d'une suggestion est-il actuellement banni ?
   bool isAuthorBanned(String authorId) => _banned.any((b) => b.id == authorId);
 
-  /// Un utilisateur est-il déjà abonné Plus (actif) ?
-  bool isPlusUser(String userId) =>
-      _plus.any((p) => p.id == userId && p.active);
+  /// Un utilisateur est-il abonné Plus ACTIF (is_active) ?
+  ///
+  /// Production : indicateur `author_is_plus` des suggestions lues, corrigé
+  /// par le résultat des actions de la session — la liste complète des
+  /// abonnés n'est plus chargée (migration 0085). Inconnu → false.
+  /// Aperçu local : liste locale.
+  bool isPlusUser(String userId) {
+    if (sync == null) return _plus.any((p) => p.id == userId && p.active);
+    return _plusFlags.isPlus(userId);
+  }
 
   /// Ajoute un utilisateur en Plus directement depuis son user_id (UUID).
-  /// Utilisé par le bouton "Plus" dans le menu Suggestions/Sentinelle.
-  Future<void> addPlusByUserId({
+  /// Utilisé par le bouton "Plus" dans le menu Suggestions/Sentinelle : sans
+  /// effet s'il est déjà connu comme abonné actif. Voir [grantPlus].
+  Future<bool> addPlusByUserId({
     required String userId,
     required String displayName,
     String plan = 'monthly',
   }) async {
-    if (isPlusUser(userId)) return; // déjà Plus
-    // Ajout local optimiste.
-    _plus = [
-      ..._plus,
-      PlusUser(
-        id: userId,
-        displayName: displayName,
-        plan: plan,
-        startedAt: DateTime.now(),
-        active: true,
-      ),
-    ];
-    _store.savePlus(_plus);
-    notifyListeners();
-
-    // Sync serveur (si l'UUID est valide).
-    if (sync == null) return;
-    if (userId.length != 36 || !userId.contains('-')) return;
-    try {
-      await sync!.upsertSubscription(
-        userId: userId,
-        plan: plan,
-        isActive: true,
-        startedAt: DateTime.now(),
-      );
-    } catch (e) {
-      // Rollback.
-      _plus = _plus.where((p) => p.id != userId).toList();
-      _store.savePlus(_plus);
-      if (_isAuthError(e)) {
-        onAuthError?.call();
-        return;
-      }
-      lastActionError = 'Abonnement Plus non ajouté (erreur serveur) : $e';
-      notifyListeners();
-    }
+    if (isPlusUser(userId)) return true; // déjà Plus
+    return grantPlus(userId: userId, displayName: displayName, plan: plan);
   }
 
   // ---------- Jeux ----------
@@ -2014,19 +2019,43 @@ class StoreController extends ChangeNotifier {
   /// [_cleanTitleForInsertion] (hashtags + mentions du jeu — règle
   /// 12/09/2026). Sans [gameName], comportement historique inchangé.
   static String _titleForInsertion(Suggestion s, {String? gameName}) {
+    final game = gameName?.trim();
+    final translated = (game == null || game.isEmpty)
+        ? null
+        : _gameTranslationsCache[_normalizeGameName(game)];
+    // §123 — titre PROPOSÉ par Sentinelle (toutes plateformes : nettoyé avec
+    // les alias distants et les noms traduits, domaine du site pour une page
+    // web) : affiché tel quel ; re-nettoyé seulement si l'admin a choisi un
+    // AUTRE jeu que celui de l'analyse.
+    final proposed = s.aiRecommendation?.proposedTitle?.trim();
+    if (proposed != null && proposed.isNotEmpty) {
+      final aiGame = s.aiRecommendation?.suggestedGame?.trim() ?? '';
+      if (game == null ||
+          game.isEmpty ||
+          _normalizeGameName(game) == _normalizeGameName(aiGame)) {
+        return proposed;
+      }
+      return _cleanTitleForInsertion(proposed,
+          gameName: game, translatedNames: translated);
+    }
+    // Analyse d'avant §123 :
     // 1. Titre YouTube réel (le plus fiable).
     final ytTitle = s.aiRecommendation?.youtubeTitle;
     final base = (ytTitle != null && ytTitle.trim().isNotEmpty)
         ? ytTitle.trim()
         // 2. Fallback : texte partagé nettoyé.
         : _cleanTitle(s);
-    final game = gameName?.trim();
-    if (game == null || game.isEmpty) return base;
-    // D1.4 — titres traduits du jeu (cache best-effort du StoreController ;
-    // null si non chargé — comportement antérieur inchangé).
-    return _cleanTitleForInsertion(base,
-        gameName: game,
-        translatedNames: _gameTranslationsCache[_normalizeGameName(game)]);
+    // §123 : entités HTML décodées même sans jeu (« &#039; » → « ' »).
+    final cleaned = (game == null || game.isEmpty)
+        ? _decodeHtmlEntities(base)
+        // D1.4 — titres traduits du jeu (cache best-effort du StoreController ;
+        // null si non chargé — comportement antérieur inchangé).
+        : _cleanTitleForInsertion(base,
+            gameName: game, translatedNames: translated);
+    // §123 (A) — page web : domaine du site dans le titre.
+    return isVideoPlatformUrl(s.url)
+        ? cleaned
+        : webTitleWithDomain(cleaned, s.url);
   }
 
   /// Titre d'insertion effectif : l'override saisi par l'admin (colonne
@@ -2050,226 +2079,41 @@ class StoreController extends ChangeNotifier {
   String titleForInsertion(Suggestion s, {String? gameName}) =>
       _titleForInsertion(s, gameName: gameName);
 
-  // ── Nettoyage des titres d'insertion (règles 11/09 + 12/09/2026) ──
-  // COPIE AUTONOME de SentinelleRunner.cleanTitleForInsertion (tools/vision)
-  // et de GameMatcher (normalize + alias) : l'admin ne peut pas importer
-  // tools/vision. ⚠️ Toute évolution de GameMatcher._aliases doit être
-  // reportée ici (et dans tools/sentinelle/lib/game_matcher.dart).
-  //
-  // ⚠️ Les titres DÉJÀ en base avec le nom du jeu ne sont PAS rétro-
-  // modifiés : l'admin les édite à la main via le champ « Titre pour
-  // insertion ».
+  // ── Nettoyage des titres d'insertion (règles 11/09 + 12/09/2026, §123) ──
+  // Code PUR dans lib/domain/title_cleaning.dart (§123 : testable en VM,
+  // sans dart:html — test/title_clean_test.dart). Délégations privées : le
+  // reste du contrôleur est inchangé. ⚠️ Toute évolution de
+  // GameMatcher._aliases (tools/vision) doit être reportée dans
+  // TitleCleaning.gameAliases (et dans tools/sentinelle/lib/game_matcher.dart).
 
-  /// Variantes accentuées par lettre ASCII, pour la comparaison insensible
-  /// aux accents de [_cleanTitleForInsertion].
-  static const Map<String, String> _accentVariants = {
-    'a': 'àâäãåā',
-    'e': 'éèêëē',
-    'i': 'îïíìī',
-    'o': 'ôöõòóōø',
-    'u': 'ùûüúū',
-    'y': 'ýÿ',
-    'c': 'ç',
-    'n': 'ñ',
-  };
+  /// Alias connus → nom canonique normalisé ([TitleCleaning.gameAliases]).
+  static const Map<String, String> _gameAliases = TitleCleaning.gameAliases;
 
-  /// Alias connus → nom canonique normalisé. Copie de GameMatcher._aliases
-  /// (tools/vision/lib/game_matcher.dart) — clés et valeurs déjà normalisées.
-  static const Map<String, String> _gameAliases = {
-    'd4': 'diablo 4',
-    'diablo iv': 'diablo 4',
-    'diablo 4': 'diablo 4',
-    'poe': 'path of exile',
-    'poe 2': 'path of exile 2',
-    'poe2': 'path of exile 2',
-    'path of exile 2': 'path of exile 2',
-    'lol': 'league of legends',
-    'league of legends': 'league of legends',
-    'tft': 'league of legends teamfight tactics',
-    'teamfight tactics': 'league of legends teamfight tactics',
-    'tft set': 'league of legends teamfight tactics',
-    'lol tft': 'league of legends teamfight tactics',
-    'league of legends tft': 'league of legends teamfight tactics',
-    'league of legends teamfight tactics': 'league of legends teamfight tactics',
-    'bo7': 'call of duty black ops 7',
-    'black ops 7': 'call of duty black ops 7',
-    'cod bo7': 'call of duty black ops 7',
-    'call of duty black ops 7': 'call of duty black ops 7',
-    'oni': 'oxygen not included',
-    'oxygen not included': 'oxygen not included',
-    'oxygene not included': 'oxygen not included',
-    'oxygène not included': 'oxygen not included',
-    'sc': 'star citizen',
-    'wf': 'warframe',
-    'la': 'lost ark',
-    'drg': 'deep rock galactic',
-    'total war warhammer 3': 'total war warhammer 3',
-    'warhammer 3': 'total war warhammer 3',
-    'mortal shell 2': 'mortal shell 2',
-    'mortal shell ii': 'mortal shell 2',
-    'dc universe online': 'dc universe online',
-    'dcuo': 'dc universe online',
-    'the blood of dawnwalker': 'the blood of dawnwalker',
-    'the blood of dawnwalker eclipse edition': 'the blood of dawnwalker',
-    'the legend of zelda breath of the wild':
-        'the legend of zelda breath of the wild',
-    'botw': 'the legend of zelda breath of the wild',
-    'breath of the wild': 'the legend of zelda breath of the wild',
-    'the legend of zelda tears of the kingdom':
-        'the legend of zelda tears of the kingdom',
-    'totk': 'the legend of zelda tears of the kingdom',
-    'tears of the kingdom': 'the legend of zelda tears of the kingdom',
-    'metal gear solid 5 the phantom pain':
-        'metal gear solid 5 the phantom pain',
-    'mgsv': 'metal gear solid 5 the phantom pain',
-    'resident evil requiem': 'resident evil requiem',
-    'resident evil 9 requiem': 'resident evil requiem',
-    'reanimal': 'reanimal',
-    's t a l k e r 2': 's t a l k e r 2',
-    'stalker 2': 's t a l k e r 2',
-    'stalker 2 heart of chornobyl': 's t a l k e r 2',
-    'call of duty b o 7': 'call of duty black ops 7',
-    'senuas saga hellblade 2': 'senuas saga hellblade 2',
-    'hellblade 2': 'senuas saga hellblade 2',
-    'hellblade 2 senuas saga': 'senuas saga hellblade 2',
-    'death stranding 2 on the beach': 'death stranding 2 on the beach',
-    'death stranding 2': 'death stranding 2 on the beach',
-    'assassins creed black flag resynced':
-        'assassins creed black flag resynced',
-    'ac black flag resynced': 'assassins creed black flag resynced',
-    // Hogwarts Legacy : L'Héritage de Poudlard — titre FR officiel du même
-    // jeu (12/09/2026, §60 — rattrapage de synchro avec les copies bots).
-    'hogwarts legacy': 'hogwarts legacy',
-    'hogwarts legacy lheritage de poudlard': 'hogwarts legacy',
-    'lheritage de poudlard': 'hogwarts legacy',
-  };
+  /// Nom de jeu normalisé AVEC résolution d'alias.
+  static String _normalizeGameName(String name) =>
+      TitleCleaning.normalizeGameName(name);
 
-  /// Conversion des chiffres romains courants en chiffres arabes (copie de
-  /// GameMatcher._romanToArabic). « I » seul est volontairement exclu.
-  static const Map<String, String> _romanToArabic = {
-    'ii': '2',
-    'iii': '3',
-    'iv': '4',
-    'v': '5',
-    'vi': '6',
-    'vii': '7',
-    'viii': '8',
-    'ix': '9',
-    'x': '10',
-    'xi': '11',
-    'xii': '12',
-  };
+  /// Forme CLÉ d'un nom ou d'un alias (sans résolution d'alias).
+  static String _normalizeGameNameNoAlias(String name) =>
+      TitleCleaning.normalizeGameNameNoAlias(name);
 
-  /// Chiffre romain en limite de mot (copie de GameMatcher._romanPattern).
-  static final RegExp _romanPattern = RegExp(
-    r'(^|[^a-z0-9])(viii|vii|xii|iii|xi|ix|vi|iv|ii|x|v)(?![a-z0-9])',
-  );
+  /// Titre nettoyé pour insertion ([TitleCleaning.cleanTitleForInsertion]).
+  static String _cleanTitleForInsertion(String title,
+          {String? gameName, List<String>? translatedNames}) =>
+      TitleCleaning.cleanTitleForInsertion(title,
+          gameName: gameName, translatedNames: translatedNames);
 
-  /// Jeux pour lesquels les HASHTAGS sont conservés dans les titres
-  /// (12/09/2026 — Roblox : les hashtags différencient ses jeux/modes
-  /// internes ; même règle côté bots, voir passation §56).
-  static const Set<String> _keepHashtagsGames = {'roblox'};
+  /// §123 (G) — entités HTML décodées (« &#039; » → « ' »).
+  static String _decodeHtmlEntities(String s) =>
+      TitleCleaning.decodeHtmlEntities(s);
 
-  /// Normalise un nom de jeu pour la comparaison (copie fidèle de
-  /// GameMatcher.normalize : minuscules, accents, romains → arabes,
-  /// suffixes d'édition, apostrophes, ponctuation, puis résolution d'alias).
-  static String _normalizeGameName(String name) {
-    final n = _normalizeGameNameNoAlias(name);
-    // Résolution d'alias.
-    return _gameAliases[n] ?? n;
-  }
+  /// §123 — URL d'une plateforme VIDÉO (YouTube, bilibili, RUTUBE, Twitch).
+  static bool isVideoPlatformUrl(String url) =>
+      TitleCleaning.isVideoPlatformUrl(url);
 
-  /// Normalisation SANS résolution d'alias (équivalent du
-  /// `_normalizeCore` de GameMatcher côté bots) : la forme CLÉ d'un nom
-  /// ou d'un alias. Base de [_normalizeGameName] et de
-  /// [normalizeGameAlias] (B-001 : l'alias_norm persisté doit être la
-  /// forme clé, JAMAIS la forme canonique résolue — sinon la ligne est
-  /// inerte pour les bots).
-  static String _normalizeGameNameNoAlias(String name) {
-    var n = _stripAccentsForNorm(name);
-    // Chiffres romains → arabes (en limite de mot).
-    n = n.replaceAllMapped(
-      _romanPattern,
-      (m) => '${m.group(1)}${_romanToArabic[m.group(2)]!}',
-    );
-    // Suffixes d'édition courants. D1.8 : « remaster », « remastered » et
-    // « remake » (formes avec espace ou « : ») sont désormais retirés AU
-    // MATCHING — « Elden Ring Remaster » rattache à « Elden Ring » — MAIS
-    // la mention d'édition n'est jamais une forme retirée du titre pour
-    // insertion (normalize l'enlève du canonique : elle reste VISIBLE dans
-    // le titre proposé, choix du brief item 6).
-    const suffixesToRemove = [
-      ': wild hunt',
-      ': enhanced edition',
-      ' remaster',
-      ' remastered',
-      ' remake',
-      ': remaster',
-      ': remastered',
-      ': remake',
-      ' game of the year edition',
-      ' goty edition',
-      ' definitive edition',
-      ' complete edition',
-      ' standard edition',
-      ' deluxe edition',
-      ' ultimate edition',
-    ];
-    for (final suffix in suffixesToRemove) {
-      if (n.endsWith(suffix)) {
-        n = n.substring(0, n.length - suffix.length).trim();
-      }
-    }
-    // Apostrophes → RIEN (pas d'espace) : « Assassin's » → « assassins ».
-    n = n.replaceAll("'", '');
-    n = n.replaceAll('’', '');
-    // Ponctuation → espaces, puis espaces multiples → un seul.
-    n = n.replaceAll(RegExp(r'[^a-z0-9 ]'), ' ');
-    n = n.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return n;
-  }
-
-  /// Strip accents + minuscules (étape commune des normalisations).
-  static String _stripAccentsForNorm(String name) {
-    var n = name.toLowerCase().trim();
-    n = n.replaceAll('é', 'e');
-    n = n.replaceAll('è', 'e');
-    n = n.replaceAll('ê', 'e');
-    n = n.replaceAll('ë', 'e');
-    n = n.replaceAll('à', 'a');
-    n = n.replaceAll('â', 'a');
-    n = n.replaceAll('ä', 'a');
-    n = n.replaceAll('ã', 'a');
-    n = n.replaceAll('å', 'a');
-    n = n.replaceAll('î', 'i');
-    n = n.replaceAll('ï', 'i');
-    n = n.replaceAll('í', 'i');
-    n = n.replaceAll('ì', 'i');
-    n = n.replaceAll('ô', 'o');
-    n = n.replaceAll('ö', 'o');
-    n = n.replaceAll('õ', 'o');
-    n = n.replaceAll('ò', 'o');
-    n = n.replaceAll('ó', 'o');
-    n = n.replaceAll('ù', 'u');
-    n = n.replaceAll('û', 'u');
-    n = n.replaceAll('ü', 'u');
-    n = n.replaceAll('ú', 'u');
-    n = n.replaceAll('ý', 'y');
-    n = n.replaceAll('ÿ', 'y');
-    n = n.replaceAll('ā', 'a');
-    n = n.replaceAll('ē', 'e');
-    n = n.replaceAll('ī', 'i');
-    n = n.replaceAll('ō', 'o');
-    n = n.replaceAll('ū', 'u');
-    n = n.replaceAll('ç', 'c');
-    n = n.replaceAll('ñ', 'n');
-    n = n.replaceAll('æ', 'ae');
-    n = n.replaceAll('œ', 'oe');
-    n = n.replaceAll('ø', 'o');
-    n = n.replaceAll('ð', 'd');
-    n = n.replaceAll('þ', 'th');
-    return n;
-  }
+  /// §123 (A) — titre d'une PAGE WEB : titre + domaine du site.
+  static String webTitleWithDomain(String cleanedTitle, String url) =>
+      TitleCleaning.webTitleWithDomain(cleanedTitle, url);
 
   /// Normalise un alias de jeu pour la persistance (colonne `alias_norm` de
   /// `game_aliases`) : forme CLÉ de l'alias, SANS résolution vers le nom
@@ -2435,379 +2279,6 @@ class StoreController extends ChangeNotifier {
       gamesUpToDate: upToDate,
       orphanCanonicals: orphanCanonicals.toList()..sort(),
     );
-  }
-
-  /// Construit la regex de détection d'une forme NORMALISÉE de nom de jeu
-  /// (cf. [_cleanTitleForInsertion]) dans un titre brut :
-  /// - mots joints par `[\W_]+` → « Prince of Persia The Lost Crown »
-  ///   matche « Prince of Persia: The Lost Crown » ou « ... - The ... » ;
-  /// - chaque lettre matche ses variantes accentuées ([_accentVariants]) ;
-  /// - une apostrophe optionnelle est admise entre les lettres →
-  ///   « Assassin's » matche la forme normalisée « assassins » ;
-  /// - limites de mot Unicode des deux côtés → jamais de retrait à
-  ///   l'intérieur d'un mot plus long (« la » dans « large »).
-  /// Retourne null si la forme est inexploitable (vide).
-  static RegExp? _gameMentionPattern(String normalizedForm,
-      {bool withPreposition = false}) {
-    final words =
-        normalizedForm.split(' ').where((w) => w.isNotEmpty).toList();
-    if (words.isEmpty) return null;
-    final buffer = StringBuffer();
-    var first = true;
-    for (final word in words) {
-      if (!first) buffer.write(r'[\W_]+');
-      first = false;
-      for (final unit in word.codeUnits) {
-        final ch = String.fromCharCode(unit);
-        final variants = _accentVariants[ch];
-        final escaped = RegExp.escape(ch);
-        buffer.write(variants != null ? '[$escaped$variants]' : escaped);
-        // Apostrophe optionnelle (droite U+0027 ou typographique U+2019).
-        buffer.write("['’]?");
-      }
-    }
-    // Préposition/fragment optionnel AVANT la mention (règle 12/09/2026,
-    // liste étendue D1.3 = [_orphanPreps]) — consommé UNIQUEMENT s'il
-    // PRÉCÈDE directement la mention du jeu (jamais de retrait agressif).
-    final prep = withPreposition ? '($_orphanPrepAlt)[\\W_]+' : '';
-    return RegExp(
-      '(^|[^\\p{L}\\p{N}])$prep$buffer(?![\\p{L}\\p{N}])',
-      caseSensitive: false,
-      unicode: true,
-    );
-  }
-
-  /// Nettoie un titre avant insertion (copie autonome de
-  /// SentinelleRunner.cleanTitleForInsertion, tools/vision) :
-  /// (a) retire les hashtags (règle 11/09/2026) — D1.1 : les hashtags
-  ///     NUMÉRIQUES (`#328` — suites/séries) sont conservés ;
-  /// (b) retire TOUTES les mentions du jeu [gameName] — nom canonique ET
-  ///     chaque alias connu pointant vers lui (règle 12/09/2026 : le contenu
-  ///     est déjà associé au jeu dans l'app, répéter le nom est inutile) —
-  ///     D1.4 : [translatedNames] (titres `game_translations` du jeu, cache
-  ///     best-effort du StoreController) ajoutés aux formes retirées ;
-  ///     D1.5 : formes partielles (préfixe avant « : » ≥ 10 car. et ≥ 2
-  ///     mots) ; D1.2 : mention encadrée de `()`/`[]` → encadrement retiré ;
-  /// (c) nettoie les artefacts du retrait (espaces multiples, paires vides,
-  ///     prépositions orphelines BORNÉES aux bordures/après séparateur
-  ///     (D1.3, [_orphanPreps]) ET conditionnées à un retrait effectif
-  ///     (B-002), mentions de langue (D1.6, [_stripLanguageMentions]),
-  ///     séparateurs orphelins en bordure, séparateurs doublés au milieu) ;
-  ///     D1.7 : première lettre en majuscule.
-  ///     Révision D1 (correctifs de revue prouvés par exécution) : B-001
-  ///     (`()`/`[]` retirés des classes de bordure — la purge D1.2 des
-  ///     paires vides suffit), B-002 (orphelins seulement si une mention du
-  ///     jeu a été retirée — cicatrice de retrait), I-001 (re-collapse des
-  ///     espaces après la passe après-séparateur) ;
-  /// (d) garde-fou : si le résultat fait moins de 3 caractères ou est vide,
-  ///     retourne le titre seulement dé-hashtagué (jamais de titre vide).
-  static String _cleanTitleForInsertion(String title,
-      {String? gameName, List<String>? translatedNames}) {
-    // (a) Hashtags — SAUF pour les jeux d'exception (12/09/2026 : Roblox
-    // contient de nombreux jeux/modes en son sein, les hashtags les
-    // différencient — même règle que les bots, cf. _keepHashtagsGames).
-    // D1.1 : les hashtags numériques (#328) sont conservés pour tous.
-    final game = gameName?.trim();
-    final keepHashtags = game != null &&
-        _keepHashtagsGames.contains(_normalizeGameName(game));
-    final withoutHashtags = keepHashtags
-        ? title.replaceAll(RegExp(r'\s+'), ' ').trim()
-        : title
-            .replaceAll(_hashtagPattern, '')
-            .replaceAll(RegExp(r'\s+'), ' ')
-            .trim();
-
-    if (game == null || game.isEmpty) return withoutHashtags;
-
-    // (b) Formes à retirer : nom canonique normalisé + alias connus dont la
-    //     cible == ce canonique. Alias < 3 caractères exclus (« sc », « la »,
-    //     « wf », « d4 ») : trop courts, risque de découper un mot courant.
-    final canonical = _normalizeGameName(game);
-    if (canonical.isEmpty) return withoutHashtags;
-    final forms = <String>{canonical};
-    for (final entry in _gameAliases.entries) {
-      if (entry.value == canonical && entry.key.length >= 3) {
-        forms.add(entry.key);
-      }
-    }
-    // D1.4 — titres TRADUITS du jeu (table game_translations), fournis par
-    // l'appelant depuis le cache (null = non disponibles : comportement
-    // antérieur inchangé).
-    if (translatedNames != null) {
-      for (final t in translatedNames) {
-        final norm = _normalizeGameName(t);
-        if (norm.length >= 3) forms.add(norm);
-      }
-    }
-    // D1.5 — formes PARTIELLES : préfixe avant « : » du nom canonique brut
-    // et de chaque traduction brute (« Horizon Forbidden West » pour
-    // « Horizon Forbidden West: Burning Shores »).
-    _addColonPrefixForm(game, forms);
-    if (translatedNames != null) {
-      for (final t in translatedNames) {
-        _addColonPrefixForm(t, forms);
-      }
-    }
-
-    // Retrait sur le titre dé-hashtagué ET débarrassé des mentions de langue
-    // (D1.6 — accents conservés), insensible à la casse, aux accents et à
-    // la ponctuation. Formes les plus longues d'abord pour éviter les
-    // retraits partiels.
-    var result = _stripLanguageMentions(withoutHashtags);
-    final sorted = forms.toList()..sort((a, b) => b.length.compareTo(a.length));
-    // B-002 : vrai dès qu'au moins une mention du jeu a été retirée — les
-    // passes orphelines (D1.3) ne nettoient que la cicatrice d'un retrait.
-    var removedAny = false;
-    for (final form in sorted) {
-      // Règle prépositions (12/09/2026, liste étendue D1.3) : mention
-      // PRÉCÉDÉE d'une préposition/fragment de [_orphanPreps] (« dans »,
-      // « in », « pour », « for »…) → retirée avec le nom du jeu
-      // (« Comment jouer son nécromancien Dans Albion » → « Comment jouer
-      // son nécromancien » ; « Best build for Elden Ring » → « Best build »).
-      final prepPattern = _gameMentionPattern(form, withPreposition: true);
-      final pattern = _gameMentionPattern(form);
-      if (prepPattern != null && prepPattern.hasMatch(result)) {
-        result = result.replaceAllMapped(prepPattern, (m) => m.group(1) ?? '');
-        removedAny = true;
-      } else if (pattern != null) {
-        // Le caractère de limite avant la mention (groupe 1) est réinséré.
-        final before = result;
-        result = result.replaceAllMapped(pattern, (m) => m.group(1) ?? '');
-        if (result != before) removedAny = true;
-      }
-    }
-
-    // (c) Nettoyage post-retrait.
-    // D1.2 — purge des paires vides laissées par une mention encadrée du jeu
-    // (« Guide complet () » → « Guide complet ») ; en boucle pour les
-    // imbrications (« ( []) »).
-    var prevPairs = '';
-    while (prevPairs != result) {
-      prevPairs = result;
-      result = result
-          .replaceAll(RegExp(r'\(\s*\)'), '')
-          .replaceAll(RegExp(r'\[\s*\]'), '');
-    }
-    result = result.replaceAll(RegExp(r'\s+'), ' ');
-    // D1.3 — prépositions/fragments orphelins (liste partagée
-    // [_orphanPreps]) — BORNÉS : en FIN de titre (en boucle), en DÉBUT de
-    // titre, et juste après un séparateur. JAMAIS en milieu de phrase
-    // (« Guide de survie » intact).
-    // B-002 : ces passes ne s'exécutent QUE si une mention du jeu a été
-    // retirée ([removedAny]) — un orphelin est la cicatrice d'un retrait ;
-    // sans retrait, « DO it yourself build » serait massacré.
-    if (removedAny) {
-      var prevEnd = '';
-      while (prevEnd != result) {
-        prevEnd = result;
-        result = result.replaceAll(_orphanPrepEnd, '');
-      }
-      var prevStart = '';
-      while (prevStart != result) {
-        prevStart = result;
-        result = result.replaceAll(_orphanPrepStart, '');
-      }
-      result = result
-          .replaceAllMapped(_orphanPrepAfterSep, (m) => '${m.group(1)} ');
-      // I-001 : la passe après-séparateur ajoute un espace alors que le
-      // lookahead en conserve déjà un → double espace résiduel (« Zelda :
-      // bons conseils ») ; re-collapse immédiat.
-      result = result.replaceAll(RegExp(r'\s+'), ' ');
-    }
-    // Séparateurs doublés au milieu (« - - » → « - », « - : » → « - »).
-    result = result.replaceAllMapped(
-      RegExp(r'\s*([-–:|•])(?:\s*[-–:|•])+\s*'),
-      (m) => ' ${m.group(1)} ',
-    );
-    // Séparateurs orphelins en bordure (« - Ep 1 » → « Ep 1 »).
-    // B-001 : `()` et `[]` RETIRÉS de la classe (ils mangeaient les
-    // encadrements légitimes, ex. « boss (spoiler) » → « boss (spoiler ») —
-    // la purge D1.2 des paires vides couvre « Guide complet () »/« [] Guide ».
-    result = result.replaceAll(RegExp(r'^[\s\-–:|•/]+'), '');
-    result = result.replaceAll(RegExp(r'[\s\-–:|•/]+$'), '');
-    result = result.trim();
-
-    // D1.7 — normalisation finale : première lettre en majuscule (correction
-    // de casse minimale et sûre — le reste du titre n'est pas touché).
-    if (result.isNotEmpty) {
-      final first = result[0].toUpperCase();
-      if (first != result[0]) result = first + result.substring(1);
-    }
-
-    // (d) Garde-fou : jamais de titre vide ou quasi vide en base.
-    if (result.length < 3) return withoutHashtags;
-    return result;
-  }
-
-  // ── D1 — listes partagées et helpers du nettoyage de titre ──────────────
-
-  /// D1.1 — hashtag NON numérique : `#BOTW` est retiré, `#328` (suite/série)
-  /// est conservé. Le lookahead exige que le hashtag ne soit pas composé
-  /// uniquement de chiffres (`#328abc` est retiré, `#328` ou `#328,` gardés).
-  static final RegExp _hashtagPattern = RegExp(
-    r'#(?!\d+(?![\p{L}\p{N}_]))\S+',
-    unicode: true,
-  );
-
-  /// D1.3 — prépositions/fragments orphelins supprimés après retrait du jeu
-  /// (liste partagée : variante `withPreposition` de [_gameMentionPattern]
-  /// ET nettoyage post-retrait). Le tiret isolé « - » est couvert par les
-  /// séparateurs orphelins de bordure (étape c). Ordre : les formes longues
-  /// (« in the ») AVANT leurs préfixes (« in ») pour l'alternation regex.
-  static const List<String> _orphanPreps = [
-    'in the',
-    'for',
-    'em',
-    'at',
-    'de',
-    'à',
-    'to',
-    'en',
-    "'s",
-    'pour',
-    'of',
-    'do',
-    'dans',
-    'in',
-    'sur',
-    'on',
-  ];
-
-  /// Alternation regex de [_orphanPreps] : espaces = `\s+`, « 's » accepte
-  /// l'apostrophe droite ou typographique.
-  static final String _orphanPrepAlt = _orphanPreps.map((p) {
-    if (p == "'s") return r"['’]s";
-    return p.split(' ').map(RegExp.escape).join(r'\s+');
-  }).join('|');
-
-  /// D1.3 — préposition orpheline en FIN de titre (bouclée par l'appelant).
-  static final RegExp _orphanPrepEnd = RegExp(
-    '\\s+(?:$_orphanPrepAlt)\$',
-    caseSensitive: false,
-  );
-
-  /// D1.3 — préposition orpheline en DÉBUT de titre (bouclée).
-  static final RegExp _orphanPrepStart = RegExp(
-    '^(?:$_orphanPrepAlt)\\s+',
-    caseSensitive: false,
-  );
-
-  /// D1.3 — préposition orpheline juste APRÈS un séparateur (le séparateur,
-  /// groupe 1, est conservé).
-  static final RegExp _orphanPrepAfterSep = RegExp(
-    '([-–:|•/])\\s+(?:$_orphanPrepAlt)(?=\\s)',
-    caseSensitive: false,
-  );
-
-  /// D1.5 — ajoute à [forms] la forme PARTIELLE d'un nom brut contenant
-  /// « : » : le préfixe avant les deux-points (« Horizon Forbidden West:
-  /// Burning Shores » → « horizon forbidden west »), SEULEMENT s'il fait
-  /// ≥ 10 caractères ET ≥ 2 mots (anti « diablo » pour « diablo 4 »).
-  static void _addColonPrefixForm(String rawName, Set<String> forms) {
-    final colon = rawName.indexOf(':');
-    if (colon <= 0) return;
-    final prefix = rawName.substring(0, colon).trim();
-    if (prefix.length < 10) return;
-    if (prefix.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length < 2) {
-      return;
-    }
-    final norm = _normalizeGameName(prefix);
-    if (norm.length >= 3) forms.add(norm);
-  }
-
-  /// D1.6 — les 12 langues de l'app : formes longues/natives retirées des
-  /// titres (bordures, après séparateur, encadrement).
-  static const List<String> _languageLongForms = [
-    'español',
-    'français',
-    'english',
-    'deutsch',
-    'português',
-    'italiano',
-    'русский',
-    '日本語',
-    '中文',
-    '한국어',
-    'العربية',
-    'हिन्दी',
-  ];
-
-  /// D1.6 — codes langue : 2 lettres (codes canoniques du pack) + variantes
-  /// ISO-3 fréquentes dans les titres YouTube ([ESP], (FRA)…). Retirés
-  /// uniquement en MAJUSCULES, entre crochets/parenthèses ou accolés à un
-  /// séparateur en bordure — JAMAIS nus en milieu de titre.
-  static const List<String> _languageCodes = [
-    'FR', 'EN', 'ES', 'PT', 'DE', 'IT', 'RU', 'JA', 'ZH', 'KO', 'AR', 'HI',
-    'ESP', 'FRA', 'ENG', 'DEU', 'POR', 'ITA', 'RUS', 'JPN', 'KOR', 'ARA',
-    'HIN',
-  ];
-
-  static final String _langLongAlt =
-      _languageLongForms.map(RegExp.escape).join('|');
-  static final String _langCodeAlt = _languageCodes.join('|');
-
-  /// Mention de langue entre crochets/parenthèses : codes (MAJUSCULES
-  /// seulement) ou formes longues (casse insensible) — retirés AVEC
-  /// l'encadrement.
-  static final RegExp _langBracketedCode =
-      RegExp('[\\(\\[]\\s*(?:$_langCodeAlt)\\s*[\\)\\]]');
-  static final RegExp _langBracketedLong = RegExp(
-      '[\\(\\[]\\s*(?:$_langLongAlt)\\s*[\\)\\]]',
-      caseSensitive: false);
-
-  /// Grappe de mentions de langue en FIN de titre (formes longues et/ou
-  /// codes, séparés par espaces/séparateurs).
-  static final RegExp _langEndCluster = RegExp(
-      '(?:[\\s\\-–:|/]+(?:$_langLongAlt|$_langCodeAlt))+[\\s\\-–:|/]*\$',
-      caseSensitive: false);
-
-  /// Test « contient une forme longue » pour une grappe de fin.
-  static final RegExp _langLongWord =
-      RegExp(_langLongAlt, caseSensitive: false);
-
-  /// Forme(s) longue(s) en DÉBUT de titre (« Español Guide… »).
-  static final RegExp _langStartCluster = RegExp(
-      '^(?:$_langLongAlt)(?:[\\s\\-–:|/]+(?:$_langLongAlt))*(?=[\\s\\-–:|/]|\$)',
-      caseSensitive: false);
-
-  /// Code MAJUSCULE en bordure accolé à un séparateur (« | EN », « EN - »).
-  static final RegExp _langCodeEndSep =
-      RegExp('\\s*[-–:|/]+\\s*(?:$_langCodeAlt)\\s*\$');
-  static final RegExp _langCodeStartSep =
-      RegExp('^(?:$_langCodeAlt)\\s*[-–:|/]+\\s*');
-
-  /// Forme longue juste APRÈS un séparateur (milieu de titre).
-  static final RegExp _langLongAfterSep = RegExp(
-      '([-–:|/])\\s+(?:$_langLongAlt)(?=\\s|\$)',
-      caseSensitive: false);
-
-  /// D1.6 — retire les mentions de langue résiduelles d'un titre (le contenu
-  /// est déjà classé par langue dans l'app) : formes longues/natives des 12
-  /// langues et codes MAJUSCULES, BORNÉS aux bordures du titre, après un
-  /// séparateur ou entre crochets/parenthèses. Une grappe de fin n'est
-  /// retirée que si elle contient au moins une forme longue — un code court
-  /// nu en bordure (« act 1 walkthrough FR ») est CONSERVÉ.
-  static String _stripLanguageMentions(String input) {
-    var out = input;
-    // 1. Encadrements : [ESP], (FR), (Español)…
-    out = out.replaceAll(_langBracketedCode, '');
-    out = out.replaceAll(_langBracketedLong, '');
-    // 2. Grappe en fin de titre (« Guide complet EN Español ») — retirée si
-    //    elle contient au moins une forme longue ; bouclée par sécurité.
-    var prev = '';
-    while (prev != out) {
-      prev = out;
-      out = out.replaceAllMapped(_langEndCluster,
-          (m) => _langLongWord.hasMatch(m.group(0)!) ? '' : m.group(0)!);
-    }
-    // 3. Forme(s) longue(s) en début de titre.
-    out = out.replaceAll(_langStartCluster, '');
-    // 4. Code MAJUSCULE en bordure accolé à un séparateur.
-    out = out.replaceAll(_langCodeEndSep, '');
-    out = out.replaceAll(_langCodeStartSep, '');
-    // 5. Forme longue juste après un séparateur (milieu de titre).
-    out = out.replaceAllMapped(_langLongAfterSep, (m) => m.group(1)!);
-    return out.replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 
   // ── D1.4 — cache des traductions de titres pour le nettoyage local ──
@@ -3000,8 +2471,88 @@ class StoreController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ---------- Utilisateurs Plus ----------
-  /// Ajoute manuellement un utilisateur Plus (depuis le dashboard admin).
+  // ---------- Utilisateurs Plus (pagination serveur — migration 0085) ----------
+  //
+  // La liste des abonnés n'est plus JAMAIS chargée en entier ni persistée en
+  // localStorage (demande propriétaire du 25/09/2026 : plus de plafond à
+  // 100 000 abonnés) : chaque écran demande SA page au serveur (100 lignes,
+  // total exact) et les compteurs via `subscriptions/stats`. Les écritures
+  // portent sur UNE ligne et n'envoient QUE les champs modifiés ; en cas de
+  // succès, [plusRevision] change (les écrans rechargent leur page) et les
+  // compteurs sont relus. Mode aperçu local (sans Supabase) : même contrat,
+  // appliqué à la liste locale [_plus].
+
+  /// Page d'abonnés pour [query] (filtres, recherche, tri appliqués côté
+  /// serveur). Les erreurs sont PROPAGÉES (l'écran les affiche) ; un 401
+  /// déclenche en plus le logout forcé.
+  Future<PlusPage> fetchPlusPage(PlusPageQuery query) async {
+    if (sync == null) return applyPlusQueryLocally(_plus, query);
+    try {
+      return await sync!.fetchSubscriptionsPage(
+        page: query.effectivePage,
+        pageSize: query.effectivePageSize,
+        search: query.normalizedSearch,
+        status: query.normalizedStatus,
+        source: query.normalizedSource,
+        sort: query.normalizedSort,
+        ascending: query.ascending,
+      );
+    } on AdminAuthException {
+      onAuthError?.call();
+      rethrow;
+    }
+  }
+
+  /// Relit les compteurs des abonnés ([plusStats]). Non bloquant : un échec
+  /// conserve les compteurs précédents (log console) ; un 401 déclenche le
+  /// logout forcé. Demandes concurrentes : seule la plus récente s'applique.
+  Future<void> refreshPlusStats() async {
+    final int seq = ++_plusStatsSeq;
+    if (sync == null) {
+      _plusStats = PlusStats.fromUsers(_plus);
+      notifyListeners();
+      return;
+    }
+    try {
+      final PlusStats stats = await sync!.fetchSubscriptionStats();
+      if (seq != _plusStatsSeq) return; // réponse d'une demande périmée
+      _plusStats = stats;
+      notifyListeners();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      debugPrint('subscriptions/stats échec (non critique) : $e');
+    }
+  }
+
+  /// Une écriture d'abonnement a réussi (ou « Actualiser ») : les écrans
+  /// paginés rechargent leur page via [plusRevision], compteurs relus.
+  void _bumpPlusRevision() {
+    _plusRevision++;
+    notifyListeners();
+    unawaited(refreshPlusStats());
+  }
+
+  /// Persiste la liste locale — MODE APERÇU uniquement (en production, la
+  /// liste des abonnés ne touche jamais le localStorage).
+  void _savePreviewPlus() {
+    if (sync == null) _store.savePlus(_plus);
+  }
+
+  /// Échec d'une écriture d'abonnement : 401 → logout forcé ; sinon erreur
+  /// visible (snackbar rouge du shell). Retourne toujours false.
+  bool _plusWriteFailed(Object e, String message) {
+    if (_isAuthError(e)) {
+      onAuthError?.call();
+      return false;
+    }
+    lastActionError = '$message : $e';
+    notifyListeners();
+    return false;
+  }
+
+  /// Ajoute manuellement un utilisateur Plus en MODE APERÇU (identifiant
+  /// fictif, aucun appel serveur — en production, voir [grantPlus]).
   void addPlusUser({
     required String displayName,
     required String email,
@@ -3016,84 +2567,142 @@ class StoreController extends ChangeNotifier {
       active: true,
     );
     _plus = [..._plus, user];
-    _store.savePlus(_plus);
-    notifyListeners();
-    // Pas de sync Supabase automatique : l'ID est fictif. La gestion réelle
-    // des abonnements se fera via Google Play Billing (Phase 3).
+    _savePreviewPlus();
+    _bumpPlusRevision();
   }
 
-  /// Active/désactive un abonnement Plus.
-  Future<void> togglePlusUser(PlusUser user) async {
-    final bool previousActive = user.active;
-    _plus = _plus
-        .map((n) => n.id == user.id ? n.copyWith(active: !n.active) : n)
-        .toList();
-    _store.savePlus(_plus);
-    notifyListeners();
-    if (sync == null) return;
-    if (user.id.length != 36 || !user.id.contains('-')) return;
-    try {
-      await sync!.upsertSubscription(
-        userId: user.id,
-        plan: user.plan,
-        isActive: !previousActive,
-        startedAt: user.startedAt,
-      );
-    } catch (e) {
-      // Rollback.
-      _plus = _plus
-          .map((n) => n.id == user.id ? n.copyWith(active: previousActive) : n)
-          .toList();
-      _store.savePlus(_plus);
-      lastActionError = 'Abonnement non modifié (erreur serveur) : $e';
-      notifyListeners();
+  /// Accorde (ou réaccorde) un abonnement Plus MANUEL à [userId] : actif,
+  /// formule [plan], début maintenant, SANS échéance — effet historique de
+  /// « Ajouter » et du bouton « Plus ». La source n'est pas modifiée (une
+  /// nouvelle ligne prend 'admin'). Retourne false en cas d'échec (erreur
+  /// signalée via [lastActionError]).
+  Future<bool> grantPlus({
+    required String userId,
+    required String displayName,
+    String plan = 'monthly',
+  }) async {
+    if (sync == null) {
+      _plus = [
+        ..._plus.where((PlusUser p) => p.id != userId),
+        PlusUser(
+          id: userId,
+          displayName: displayName,
+          plan: plan,
+          startedAt: DateTime.now(),
+          active: true,
+        ),
+      ];
+      _savePreviewPlus();
+      _bumpPlusRevision();
+      return true;
     }
-  }
-
-  /// Change la formule d'un utilisateur Plus.
-  Future<void> setPlusPlan(PlusUser user, String plan) async {
-    final String previousPlan = user.plan;
-    _plus = _plus
-        .map((n) => n.id == user.id ? n.copyWith(plan: plan) : n)
-        .toList();
-    _store.savePlus(_plus);
+    if (!_isUuid(userId)) {
+      reportActionError(
+        'Abonnement Plus non ajouté : identifiant utilisateur invalide.',
+      );
+      return false;
+    }
+    // Badge PLUS optimiste (bouton « Plus » des suggestions), annulé en cas
+    // d'échec.
+    final bool? previous = _plusFlags.sessionValue(userId);
+    _plusFlags.setSessionValue(userId, true);
     notifyListeners();
-    if (sync == null) return;
-    if (user.id.length != 36 || !user.id.contains('-')) return;
     try {
       await sync!.upsertSubscription(
-        userId: user.id,
+        userId: userId,
         plan: plan,
-        isActive: user.active,
-        startedAt: user.startedAt,
+        isActive: true,
+        startedAt: DateTime.now(),
+        clearExpiry: true,
       );
+      _bumpPlusRevision();
+      return true;
     } catch (e) {
-      // Rollback.
-      _plus = _plus
-          .map((n) => n.id == user.id ? n.copyWith(plan: previousPlan) : n)
-          .toList();
-      _store.savePlus(_plus);
-      lastActionError = 'Formule non modifiée (erreur serveur) : $e';
+      _plusFlags.setSessionValue(userId, previous);
       notifyListeners();
+      return _plusWriteFailed(e, 'Abonnement Plus non ajouté (erreur serveur)');
     }
   }
 
-  void deletePlusUser(String id) {
-    // Désactive côté serveur AVANT de supprimer localement.
-    final user = _plus.where((n) => n.id == id).firstOrNull;
-    if (user != null && sync != null) {
-      sync!.upsertSubscription(userId: id, plan: user.plan, isActive: false);
+  /// Suspend / réactive un abonnement : n'envoie QUE `is_active` — formule,
+  /// date de début, source et échéance future (Google Play) sont conservées.
+  /// Seule exception : à la RÉACTIVATION, une échéance DÉJÀ PASSÉE est
+  /// effacée, sinon l'abonnement resterait expiré pour l'app et Analytics.
+  Future<bool> togglePlusUser(PlusUser user) async {
+    final bool newActive = !user.active;
+    if (sync == null) {
+      _plus = _plus
+          .map((PlusUser n) => n.id == user.id ? n.copyWith(active: newActive) : n)
+          .toList();
+      _savePreviewPlus();
+      _bumpPlusRevision();
+      return true;
     }
-    _plus = _plus.where((n) => n.id != id).toList();
-    _store.savePlus(_plus);
-    notifyListeners();
+    if (!_isUuid(user.id)) return false;
+    try {
+      await sync!.upsertSubscription(
+        userId: user.id,
+        isActive: newActive,
+        clearExpiry: newActive && user.isExpiredAt(),
+      );
+      _plusFlags.setSessionValue(user.id, newActive);
+      _bumpPlusRevision();
+      return true;
+    } catch (e) {
+      return _plusWriteFailed(e, 'Abonnement non modifié (erreur serveur)');
+    }
+  }
+
+  /// Change la formule : n'envoie QUE `plan` (statut, dates et source
+  /// inchangés).
+  Future<bool> setPlusPlan(PlusUser user, String plan) async {
+    if (plan == user.plan) return true;
+    if (sync == null) {
+      _plus = _plus
+          .map((PlusUser n) => n.id == user.id ? n.copyWith(plan: plan) : n)
+          .toList();
+      _savePreviewPlus();
+      _bumpPlusRevision();
+      return true;
+    }
+    if (!_isUuid(user.id)) return false;
+    try {
+      await sync!.upsertSubscription(userId: user.id, plan: plan);
+      _bumpPlusRevision();
+      return true;
+    } catch (e) {
+      return _plusWriteFailed(e, 'Formule non modifiée (erreur serveur)');
+    }
+  }
+
+  /// « Supprimer » un abonné = DÉSACTIVER son abonnement côté serveur (même
+  /// effet serveur qu'avant : `is_active: false`, désormais SEUL champ envoyé
+  /// — dates, formule et source conservées). La ligne reste consultable
+  /// (statut Expiré) : aucune ligne n'est effacée de la base. Aperçu local :
+  /// la ligne est retirée de la liste.
+  Future<bool> deletePlusUser(String id) async {
+    if (sync == null) {
+      _plus = _plus.where((PlusUser n) => n.id != id).toList();
+      _savePreviewPlus();
+      _bumpPlusRevision();
+      return true;
+    }
+    if (!_isUuid(id)) return false;
+    try {
+      await sync!.upsertSubscription(userId: id, isActive: false);
+      _plusFlags.setSessionValue(id, false);
+      _bumpPlusRevision();
+      return true;
+    } catch (e) {
+      return _plusWriteFailed(e, 'Abonnement non désactivé (erreur serveur)');
+    }
   }
 
   // ---------- Divers ----------
   void resetDemo() {
     _store.resetToSeed();
     _reload();
-    notifyListeners();
+    _bumpPlusRevision(); // notifie + recharge les écrans d'abonnés
   }
 
   /// Purge les données de démo (IDs temporaires non-UUID) du localStorage.
@@ -3112,6 +2721,10 @@ class StoreController extends ChangeNotifier {
         .where((s) => _isUuid(s.id))
         .toList();
     _store.saveSuggestions(suggestions);
+    // Migration 0085 : la liste des abonnés n'est plus mise en cache — on
+    // efface celle qu'avaient persistée les versions précédentes du panneau
+    // (données réelles d'utilisateurs, périmées).
+    _store.clearPlus();
   }
 
   void _reload() {
@@ -3119,29 +2732,36 @@ class StoreController extends ChangeNotifier {
     _contents = _store.loadContents();
     _suggestions = _store.loadSuggestions();
     _banned = _store.loadBanned();
-    _plus = _store.loadPlus();
+    // Aperçu local uniquement : en production, pas de liste d'abonnés.
+    _plus = sync == null ? _store.loadPlus() : <PlusUser>[];
+    // Indicateurs « Plus » des auteurs déjà en cache (badge PLUS immédiat).
+    _plusFlags.absorbAuthors(_suggestions.map((Suggestion s) => s.author));
   }
 
   /// Recharge le catalogue depuis la source active.
   ///
   /// - Mode aperçu : relit le localStorage.
   /// - Mode production : full sync de TOUS les datasets (bouton « Actualiser »
-  ///   global — comportement historique conservé, curseurs ignorés).
+  ///   global — comportement historique conservé, curseurs ignorés). Les
+  ///   écrans d'abonnés (pagination serveur) rechargent aussitôt leur page
+  ///   et les compteurs, sans attendre la fin de la synchro.
   Future<void> refresh() async {
     if (sync != null) {
+      _bumpPlusRevision();
       await syncFromSupabase(forceFull: true);
     } else {
       _reload();
-      notifyListeners();
+      _bumpPlusRevision(); // notifie + recharge les écrans d'abonnés
     }
   }
 
-  /// Datasets nécessaires au dashboard (chargés au login).
+  /// Datasets nécessaires au dashboard (chargés au login). Les abonnés Plus
+  /// n'en font plus partie (migration 0085) : compteurs et 10 derniers
+  /// abonnés sont lus à la demande par le dashboard.
   static const Set<SyncDataset> dashboardDatasets = <SyncDataset>{
     SyncDataset.games,
     SyncDataset.contents,
     SyncDataset.suggestionsNew,
-    SyncDataset.subscriptions,
     SyncDataset.banned,
   };
 
@@ -4188,7 +3808,6 @@ class StoreController extends ChangeNotifier {
       SyncDataset.sentinelleAnalyzed: 'sentinelle (analysées)',
       SyncDataset.scruteur: 'scruteur',
       SyncDataset.gamesToCreate: 'jeux à créer',
-      SyncDataset.subscriptions: 'abonnements',
       SyncDataset.banned: 'comptes à bannir',
     };
 
@@ -4287,8 +3906,6 @@ class StoreController extends ChangeNotifier {
             fullModeSyncs: fullModeSyncs,
           ),
         ),
-      if (datasets.contains(SyncDataset.subscriptions))
-        guard(SyncDataset.subscriptions, _syncSubscriptions),
       if (datasets.contains(SyncDataset.banned))
         guard(SyncDataset.banned, _syncBanned),
     ]);
@@ -4327,6 +3944,15 @@ class StoreController extends ChangeNotifier {
   // ─────────────────────────────────────────────────────────────────────
   // Jobs de sync par dataset (appelés en parallèle par _doSyncFromSupabase)
   // ─────────────────────────────────────────────────────────────────────
+
+  /// Garde ANTI-BOUCLE de la pagination spéculative ([_fetchPaged] sans
+  /// total connu) : jeux en incrémental ou quand le comptage HEAD échoue,
+  /// files de suggestions (pages de 500). Ce n'est PAS un plafond métier :
+  /// avec un total connu (full sync jeux/contenus), toutes les pages sont
+  /// lues. Relevée de 100 000 à 1 000 000 (25/09/2026) : le comptage de
+  /// secours n'avait plus de raison de tronquer à 100 000 ; le temps reste
+  /// borné par le budget de synchro (45/120 s).
+  static const int _kRunawayGuardItems = 1000000;
 
   /// Pagination parallèle par chunks de 3 pages (Future.wait).
   ///
@@ -4396,7 +4022,7 @@ class StoreController extends ChangeNotifier {
       final r = await _fetchPaged<Game>(
         (p) => sync!.fetchGames(page: p, pageSize: pageSize, since: cursor),
         pageSize,
-        maxItems: 100000,
+        maxItems: _kRunawayGuardItems,
       );
       maxUp = r.maxUpdatedAt;
       if (r.items.isNotEmpty) {
@@ -4414,7 +4040,7 @@ class StoreController extends ChangeNotifier {
         (p) => sync!.fetchGames(page: p, pageSize: pageSize),
         pageSize,
         totalCount: count,
-        maxItems: 100000,
+        maxItems: _kRunawayGuardItems,
       );
       maxUp = r.maxUpdatedAt;
       final pendingGames = _games.where((g) => !_isUuid(g.id)).toList();
@@ -4544,7 +4170,7 @@ class StoreController extends ChangeNotifier {
     final r = await _fetchPaged<Suggestion>(
       (p) => fetcher(page: p, pageSize: pageSize, since: cursor),
       pageSize,
-      maxItems: 100000,
+      maxItems: _kRunawayGuardItems,
     );
     // ── Tombstones : une ligne tout juste rejetée/acceptée peut encore
     //    figurer dans le snapshot entrant (fetch émis AVANT le commit
@@ -4554,6 +4180,9 @@ class StoreController extends ChangeNotifier {
     final List<Suggestion> items = r.items
         .where((s) => !_pendingRemovalIds.contains(s.id))
         .toList();
+    // Indicateurs « abonné Plus » des auteurs (author_is_plus, migration
+    // 0085) : badge PLUS / bouton « Plus » sans liste complète des abonnés.
+    _plusFlags.absorbAuthors(r.items.map((Suggestion s) => s.author));
     if (cursor != null) {
       _mergeSuggestionsIncremental(dataset, items);
     } else {
@@ -4640,31 +4269,6 @@ class StoreController extends ChangeNotifier {
       default:
         break;
     }
-  }
-
-  /// Dataset `subscriptions` (Edge Function, pas de curseur : petit volume).
-  /// Fusion serveur + locaux non synchronisables (ID non UUID = démo).
-  Future<void> _syncSubscriptions() async {
-    final List<Map<String, dynamic>> serverPlus = await sync!
-        .fetchSubscriptions();
-    final localOnlyPlus = _plus.where((p) => !_isUuid(p.id)).toList();
-    _plus = [
-      ...serverPlus.map(
-        (m) => PlusUser(
-          id: m['id'] as String,
-          displayName: m['displayName'] as String? ?? 'Inconnu',
-          plan: m['plan'] as String? ?? 'monthly',
-          startedAt:
-              DateTime.tryParse(m['startedAt'] as String? ?? '') ??
-              DateTime.now(),
-          active: m['active'] as bool? ?? false,
-          source: m['source'] as String? ?? 'admin',
-        ),
-      ),
-      ...localOnlyPlus,
-    ];
-    _store.savePlus(_plus);
-    _markDatasetLoaded(SyncDataset.subscriptions);
   }
 
   /// Dataset `banned` : utilisateurs bannis + mauvais contributeurs (menu

@@ -1542,9 +1542,10 @@ class _TrustedTableState extends State<_TrustedTable> {
 
     return Tooltip(
       message:
-          'Catégorie d\'insertion : « $current » — modifiable avant '
-          'validation. Présélection intelligente : YouTube → video, page '
-          'web → links.',
+          'Catégorie d\'insertion : « ${_categoryLabel(current)} » — '
+          'modifiable avant validation. Présélection : page web → Links ; '
+          'vidéo (YouTube, bilibili, RUTUBE) → Vidéo, ou Patch and Mod si '
+          'l\'IA l\'y a classée.',
       showDuration: const Duration(seconds: 6),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
@@ -1563,7 +1564,7 @@ class _TrustedTableState extends State<_TrustedTable> {
                 (category) => DropdownMenuItem<String>(
                   value: category,
                   child: Text(
-                    category,
+                    _categoryLabel(category),
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 12),
                   ),
@@ -2451,11 +2452,25 @@ String _smartCategoryFor(Suggestion s, [String? editedCategory]) {
   if (editedCategory != null && options.contains(editedCategory)) {
     return editedCategory;
   }
-  final url = s.url.toLowerCase();
-  if (url.contains('youtube') || url.contains('youtu.be')) return 'video';
-  final suggested = s.aiRecommendation?.suggestedCategory?.trim().toLowerCase();
-  return (suggested == 'guides' || suggested == 'guide') ? 'guides' : 'links';
+  // §123 : page web → links ; vidéo (YouTube, bilibili, RUTUBE, Twitch) →
+  // video, ou guides (« Patch and Mod ») si une analyse §123+ l'y a classée
+  // (avant §123, « guides » sur une vidéo = guide écrit, souvent bilibili
+  // mal attribué).
+  if (!StoreController.isVideoPlatformUrl(s.url)) return 'links';
+  final ai = s.aiRecommendation;
+  final suggested = ai?.suggestedCategory?.trim().toLowerCase();
+  final patchMod = (suggested == 'guides' || suggested == 'guide') &&
+      (ai?.categoryVersion ?? 0) >= 2;
+  return patchMod ? 'guides' : 'video';
 }
+
+/// §123 : libellé affiché d'une catégorie (valeur stockée → écran).
+String _categoryLabel(String category) => switch (category) {
+      'video' => 'Vidéo',
+      'guides' => 'Patch and Mod',
+      'links' => 'Links',
+      _ => category,
+    };
 
 String _formatViews(int? views) {
   if (views == null) return '—';
@@ -2649,9 +2664,10 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
 
     return Tooltip(
       message:
-          'Catégorie d\'insertion : « $current » — modifiable avant '
-          'validation. Présélection intelligente : YouTube → video, page '
-          'web → links.',
+          'Catégorie d\'insertion : « ${_categoryLabel(current)} » — '
+          'modifiable avant validation. Présélection : page web → Links ; '
+          'vidéo (YouTube, bilibili, RUTUBE) → Vidéo, ou Patch and Mod si '
+          'l\'IA l\'y a classée.',
       showDuration: const Duration(seconds: 6),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
@@ -2670,7 +2686,7 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
                 (category) => DropdownMenuItem<String>(
                   value: category,
                   child: Text(
-                    category,
+                    _categoryLabel(category),
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 12),
                   ),

@@ -191,6 +191,16 @@ class AiRecommendation {
   /// 'search' (recherche générique) | 'trusted_channel' (chaîne de confiance).
   final String? foundVia;
 
+  /// §123 : titre PROPOSÉ par Sentinelle pour toutes les plateformes (nettoyé
+  /// avec les alias distants et les noms traduits ; domaine du site pour une
+  /// page web). Null = analyse d'avant §123.
+  final String? proposedTitle;
+
+  /// §123 : version des règles de catégorie de l'analyse (null = avant
+  /// §123). À partir de 2, « guides » sur une vidéo = « Patch and Mod » ;
+  /// avant, c'était un « guide écrit » souvent mal attribué (bilibili).
+  final int? categoryVersion;
+
   const AiRecommendation({
     required this.verdict,
     required this.confidence,
@@ -208,6 +218,8 @@ class AiRecommendation {
     this.targetGame,
     this.searchLanguage,
     this.foundVia,
+    this.proposedTitle,
+    this.categoryVersion,
   });
 
   /// « 🔎 Vision cherchait : Raft · RU » (+ « · chaîne de confiance »), null
@@ -254,6 +266,8 @@ class AiRecommendation {
       targetGame: json['target_game'] as String?,
       searchLanguage: json['search_language'] as String?,
       foundVia: json['found_via'] as String?,
+      proposedTitle: json['proposed_title'] as String?,
+      categoryVersion: (json['category_v'] as num?)?.toInt(),
     );
   }
 
@@ -294,5 +308,7 @@ class AiRecommendation {
         'target_game': ?targetGame,
         'search_language': ?searchLanguage,
         'found_via': ?foundVia,
+        'proposed_title': ?proposedTitle,
+        'category_v': ?categoryVersion,
       };
 }
