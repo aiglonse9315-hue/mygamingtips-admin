@@ -132,6 +132,28 @@ void main() {
     expect(back.channelName, '志祺七七');
   });
 
+  test('§126 — noms de jeux à chiffres romains retirés', () {
+    // Forme normalisée « modern warfare 3 » : le titre écrit « III ».
+    expect(
+        clean('Campaign Trailer | Call of Duty: Modern Warfare III',
+            'Call of Duty Modern Warfare 3'),
+        'Campaign Trailer');
+    expect(clean('Civ Tour: England | Civilization VII', 'Civilization 7'),
+        'Civ Tour: England');
+    expect(clean('Mortal Kombat X: My Top 5 Characters', 'Mortal Kombat X'),
+        'My Top 5 Characters');
+    expect(clean('V Rising - Castle build guide', 'V Rising'),
+        'Castle build guide');
+    // Autre jeu de la série (« X4 ») et hashtag ordinaire : gardés.
+    expect(clean('Mega Man X4 speedrun any%', 'Mega Man X'),
+        'Mega Man X4 speedrun any%');
+    expect(clean('Chaos mode in #pov', 'Grand Theft Auto V'),
+        'Chaos mode in');
+    // Hashtag à romain collé : repère du jeu (« in » part avec lui).
+    expect(clean('Best build in #BaldursGateIII #gaming', "Baldur's Gate 3"),
+        'Best build');
+  });
+
   test('page web : domaine du site ; plateformes vidéo reconnues', () {
     const url = 'https://gamerant.com/alan-wake-2-walkthrough-chapters/';
     expect(TitleCleaning.webTitleWithDomain('Walkthrough: Chapters', url),

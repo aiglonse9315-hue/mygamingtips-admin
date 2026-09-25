@@ -255,6 +255,38 @@ abstract final class TitleCleaning {
     return n;
   }
 
+  /// §126 — nombre de 2 à 12 → écriture ROMAINE, pour
+  /// [_gameMentionPattern] : la forme NORMALISÉE d'un nom de jeu porte le
+  /// chiffre arabe (la normalisation convertit « Modern Warfare III » en
+  /// « modern warfare 3 ») alors qu'un titre écrit l'un OU l'autre. « I »
+  /// seul reste exclu, comme dans la normalisation (pronom anglais).
+  static const Map<String, String> _arabicToRoman = {
+    '2': 'ii',
+    '3': 'iii',
+    '4': 'iv',
+    '5': 'v',
+    '6': 'vi',
+    '7': 'vii',
+    '8': 'viii',
+    '9': 'ix',
+    '10': 'x',
+    '11': 'xi',
+    '12': 'xii',
+  };
+
+  /// §126 — chiffre romain COLLÉ en fin de hashtag (« #GTAV »,
+  /// « #CivilizationVII ») : converti en chiffre arabe pour la comparaison
+  /// aux formes compactes du jeu (« gta5 », « civilization7 »).
+  static final RegExp _romanSuffix =
+      RegExp(r'(viii|vii|xii|iii|xi|ix|vi|iv|ii|x|v)$');
+
+  static final Map<String, String> _romanToDigits = {
+    for (final e in _arabicToRoman.entries) e.value: e.key,
+  };
+
+  static String _romanSuffixToArabic(String compact) => compact
+      .replaceFirstMapped(_romanSuffix, (m) => _romanToDigits[m.group(1)]!);
+
   /// Construit la regex de détection d'une forme NORMALISÉE de nom de jeu
   /// (cf. [cleanTitleForInsertion]) dans un titre brut :
   /// - mots joints par `[\W_]+` → « Prince of Persia The Lost Crown »
@@ -262,6 +294,9 @@ abstract final class TitleCleaning {
   /// - chaque lettre matche ses variantes accentuées ([_accentVariants]) ;
   /// - une apostrophe optionnelle est admise entre les lettres →
   ///   « Assassin's » matche la forme normalisée « assassins » ;
+  /// - §126 : un nombre de 2 à 12 matche aussi son écriture ROMAINE
+  ///   (« modern warfare 3 » → « Modern Warfare III », « mortal kombat
+  ///   10 » → « Mortal Kombat X » — [_arabicToRoman]) ;
   /// - limites de mot Unicode des deux côtés → jamais de retrait à
   ///   l'intérieur d'un mot plus long (« la » dans « large »).
   /// Retourne null si la forme est inexploitable (vide).
@@ -274,6 +309,9 @@ abstract final class TitleCleaning {
     for (final word in words) {
       if (!first) buffer.write(r'[\W_]+');
       first = false;
+      // §126 — « 3 » accepte aussi « III » ([_arabicToRoman]).
+      final roman = _arabicToRoman[word];
+      if (roman != null) buffer.write('(?:');
       for (final unit in word.codeUnits) {
         final ch = String.fromCharCode(unit);
         final variants = _accentVariants[ch];
@@ -282,6 +320,7 @@ abstract final class TitleCleaning {
         // Apostrophe optionnelle (droite U+0027 ou typographique U+2019).
         buffer.write("['’]?");
       }
+      if (roman != null) buffer.write('|$roman)');
     }
     return RegExp(
       '(^|[^\\p{L}\\p{N}])$buffer(?![\\p{L}\\p{N}])',
@@ -408,11 +447,13 @@ abstract final class TitleCleaning {
         ? base
         : base.replaceAllMapped(_hashtagPattern, (m) {
             final tag = m.group(0)!.substring(1);
-            // Forme clé OU forme résolue par alias (« #d4 » → diablo 4).
-            final isGame = compactForms.contains(
-                    normalizeGameNameNoAlias(tag).replaceAll(' ', '')) ||
+            // Forme clé OU forme résolue par alias (« #d4 » → diablo 4) ;
+            // §126 : romain collé en fin (« #GTAV » → gta5).
+            final key = normalizeGameNameNoAlias(tag).replaceAll(' ', '');
+            final isGame = compactForms.contains(key) ||
                 compactForms
-                    .contains(normalizeGameName(tag).replaceAll(' ', ''));
+                    .contains(normalizeGameName(tag).replaceAll(' ', '')) ||
+                compactForms.contains(_romanSuffixToArabic(key));
             return isGame ? ' $_gameMark ' : '';
           });
     // Mentions de langue retirées (D1.6 — accents conservés).
