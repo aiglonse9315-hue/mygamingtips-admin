@@ -995,6 +995,18 @@ class SupabaseSync {
     return PlusStats.fromJson(data);
   }
 
+  /// Supprime DÉFINITIVEMENT l'abonnement de [userId] (route EF
+  /// `subscriptions/delete`, compte principal uniquement — 403 sinon).
+  /// Retourne false si aucun abonnement n'existait déjà plus. Exceptions
+  /// propagées.
+  Future<bool> deleteSubscription(String userId) async {
+    final Map<String, dynamic> data = await _post(
+      'subscriptions/delete',
+      <String, dynamic>{'user_id': userId},
+    );
+    return data['deleted'] == true;
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // ANALYTICS + CONFIG (EF v76, migration 0066 — chantier F1, §70.3/§70.6)
   // Retourne le JSON BRUT des routes (parsing en modèles côté

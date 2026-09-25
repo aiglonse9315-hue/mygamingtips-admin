@@ -305,6 +305,11 @@ class StoreController extends ChangeNotifier {
   /// la vraie barrière de sécurité (403 sur les routes owner-only).
   bool get isOwner => _isOwner;
 
+  /// Suppression DÉFINITIVE d'un abonnement Plus : compte principal
+  /// uniquement (l'EF renvoie 403 sinon) ; toujours permise en mode aperçu
+  /// (liste locale).
+  bool get canDeletePlus => sync == null || _isOwner;
+
   /// Identifiant du compte connecté (claim `username` du JWT), null sinon.
   String? get currentUsername => _currentUsername;
 
@@ -2675,11 +2680,12 @@ class StoreController extends ChangeNotifier {
     }
   }
 
-  /// « Supprimer » un abonné = DÉSACTIVER son abonnement côté serveur (même
-  /// effet serveur qu'avant : `is_active: false`, désormais SEUL champ envoyé
-  /// — dates, formule et source conservées). La ligne reste consultable
-  /// (statut Expiré) : aucune ligne n'est effacée de la base. Aperçu local :
-  /// la ligne est retirée de la liste.
+  /// « Supprimer » un abonné = suppression DÉFINITIVE de son abonnement
+  /// (demande du propriétaire du 25/09/2026 ; avant : simple désactivation).
+  /// Compte principal uniquement (vérifié par l'EF, 403 sinon) ; l'UI
+  /// demande une double confirmation ([DeletePlusUserDialog]). La ligne
+  /// disparaît de la liste et des statistiques ; l'utilisateur perd Plus.
+  /// Aperçu local : la ligne est retirée de la liste.
   Future<bool> deletePlusUser(String id) async {
     if (sync == null) {
       _plus = _plus.where((PlusUser n) => n.id != id).toList();
@@ -2689,12 +2695,12 @@ class StoreController extends ChangeNotifier {
     }
     if (!_isUuid(id)) return false;
     try {
-      await sync!.upsertSubscription(userId: id, isActive: false);
+      await sync!.deleteSubscription(id);
       _plusFlags.setSessionValue(id, false);
       _bumpPlusRevision();
       return true;
     } catch (e) {
-      return _plusWriteFailed(e, 'Abonnement non désactivé (erreur serveur)');
+      return _plusWriteFailed(e, 'Abonnement non supprimé (erreur serveur)');
     }
   }
 

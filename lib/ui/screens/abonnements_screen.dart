@@ -11,6 +11,7 @@ import '../../domain/plus_paging.dart';
 import '../../state/store_controller.dart';
 import '../widgets/admin_data_table.dart';
 import '../widgets/confirm_dialog.dart';
+import '../widgets/delete_plus_user_dialog.dart';
 import '../widgets/stat_card.dart' show StatusBadge;
 import 'dashboard_screen.dart' show AddPlusUserDialog;
 
@@ -592,11 +593,12 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
                         );
                       },
               ),
-              // « Supprimer » = désactiver côté serveur (aucune ligne
-              // effacée) : sans objet pour un abonnement déjà inactif.
-              if (u.active)
+              // « Supprimer » = suppression DÉFINITIVE (compte principal
+              // uniquement), double confirmation — aussi pour une ligne
+              // expirée (nettoyage).
+              if (store.canDeletePlus)
                 IconButton(
-                  tooltip: 'Supprimer (désactive l\'abonnement)',
+                  tooltip: 'Supprimer définitivement',
                   icon: const Icon(
                     Icons.delete_outline_rounded,
                     size: 20,
@@ -606,14 +608,8 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
                       ? null
                       : () => showDialog<void>(
                           context: context,
-                          builder: (_) => ConfirmDialog(
-                            title: 'Supprimer ${u.displayName} ?',
-                            message:
-                                'L\'abonnement sera désactivé côté serveur '
-                                '(statut Expiré). La ligne reste consultable '
-                                'dans la liste : aucune donnée n\'est effacée.',
-                            confirmLabel: 'Supprimer',
-                            destructive: true,
+                          builder: (_) => DeletePlusUserDialog(
+                            user: u,
                             onConfirm: () => _runRowAction(
                               u,
                               () => store.deletePlusUser(u.id),

@@ -8,6 +8,7 @@ import '../../domain/models/plus_user.dart';
 import '../../domain/models/suggestion.dart';
 import '../../domain/plus_paging.dart';
 import '../../state/store_controller.dart';
+import '../widgets/delete_plus_user_dialog.dart';
 import '../widgets/limits_alert_card.dart';
 import '../widgets/stat_card.dart';
 
@@ -717,14 +718,21 @@ class _PlusAccordionState extends State<_PlusAccordion> {
                 PopupMenuItem(value: 'yearly', child: Text('Annuel')),
               ],
             ),
-          // « Supprimer » = désactiver côté serveur (aucune ligne effacée,
-          // l'abonné reste listé « Expiré ») : sans objet s'il est inactif.
-          if (n.active)
+          // « Supprimer » = suppression DÉFINITIVE (compte principal
+          // uniquement), après double confirmation (avant : désactivation
+          // immédiate, sans confirmation).
+          if (store.canDeletePlus)
             IconButton(
-              tooltip: 'Supprimer (désactive l\'abonnement)',
+              tooltip: 'Supprimer définitivement',
               icon: const Icon(Icons.delete_outline_rounded, size: 20),
               color: AppColors.categoryVideo,
-              onPressed: () => store.deletePlusUser(n.id),
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (_) => DeletePlusUserDialog(
+                  user: n,
+                  onConfirm: () => store.deletePlusUser(n.id),
+                ),
+              ),
             ),
         ],
       ),
