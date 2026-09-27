@@ -72,9 +72,9 @@ void main() {
     // Sans la base : « GTA 5 » n'est pas un alias codé en dur.
     expect(clean(title, 'Grand Theft Auto V'), title);
     TitleCleaning.setRemoteAliases(const [
-      (aliasNorm: 'gta 5', gameName: 'Grand Theft Auto V'),
-      (aliasNorm: 'gta5', gameName: 'Grand Theft Auto V'),
-      (aliasNorm: '', gameName: 'Grand Theft Auto V'), // ignoré
+      (alias: 'GTA 5', aliasNorm: 'gta 5', gameName: 'Grand Theft Auto V'),
+      (alias: 'GTA5', aliasNorm: 'gta5', gameName: 'Grand Theft Auto V'),
+      (alias: '', aliasNorm: '', gameName: 'Grand Theft Auto V'), // ignoré
     ]);
     expect(clean(title, 'Grand Theft Auto V'),
         'Controversial New Glitch Breaking Speedrun Community');
@@ -89,7 +89,7 @@ void main() {
   test('§125 — nom de la chaîne retiré quand il est détaché', () {
     addTearDown(() => TitleCleaning.setRemoteAliases(const []));
     TitleCleaning.setRemoteAliases(const [
-      (aliasNorm: 'gta 5', gameName: 'Grand Theft Auto V'),
+      (alias: 'GTA 5', aliasNorm: 'gta 5', gameName: 'Grand Theft Auto V'),
     ]);
     // Exemple du propriétaire (titre brut : alias « GTA 5 » + chaîne).
     expect(

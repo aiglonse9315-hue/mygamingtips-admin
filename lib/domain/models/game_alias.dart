@@ -22,6 +22,9 @@ class GameAlias {
 
   /// Forme normalisée utilisée pour le matching (minuscules, sans accents,
   /// chiffres romains convertis — même règle que GameMatcher.normalize).
+  /// §137 : forme clé d'ALIAS (`TitleCleaning.aliasKey`) — écritures non
+  /// latines conservées (« 发薪日3 ») ; jamais écrite sans lettre (une
+  /// ligne d'avant §137 peut encore valoir « 3 »).
   final String aliasNorm;
 
   factory GameAlias.fromJson(Map<String, dynamic> json) {

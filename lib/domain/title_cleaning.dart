@@ -143,19 +143,78 @@ abstract final class TitleCleaning {
   /// titre recalculé par le panneau alors que Sentinelle le retire.
   static Map<String, String> _remoteAliases = const {};
 
+  /// §137 — alias NON LATINS de la base (« 发薪日3 », « 原神 ») par jeu :
+  /// nom du jeu normalisé ([normalizeGameName]) → formes affichées, sans
+  /// doublon. Tenus HORS de la table latine [_remoteAliases] ; ajoutés aux
+  /// noms traduits du jeu pour le nettoyage des titres
+  /// ([withNonLatinAliases]).
+  static Map<String, List<String>> _remoteNonLatinAliases = const {};
+
   /// Remplace la couche distante. Chaque côté est re-normalisé SANS
   /// résolution d'alias (même règle que `GameMatcher._applyRemoteAliases`) ;
   /// les entrées vides ou identiques au nom du jeu sont ignorées.
+  /// §137 : un alias contenant une lettre NON LATINE (forme affichée
+  /// [alias] ou clé [aliasNorm]) n'entre jamais dans la table latine — la
+  /// normalisation latine le réduirait à « » ou à un nombre nu (« 发薪日3 »
+  /// → « 3 » : tout titre contenant « 3 » rattaché au jeu) ; il va dans
+  /// [_remoteNonLatinAliases]. Une clé latine SANS lettre (« 2077 ») est
+  /// ignorée aussi ([isValidAliasKey]).
   static void setRemoteAliases(
-      Iterable<({String aliasNorm, String gameName})> entries) {
+      Iterable<({String alias, String aliasNorm, String gameName})> entries) {
     final rebuilt = <String, String>{};
+    final nonLatin = <({String alias, String aliasNorm, String gameName})>[];
     for (final e in entries) {
-      final alias = normalizeGameNameNoAlias(e.aliasNorm);
+      if (hasNonLatinLetter(e.alias) || hasNonLatinLetter(e.aliasNorm)) {
+        nonLatin.add(e);
+        continue;
+      }
+      // aliasKey (et non normalizeGameNameNoAlias) : même lecture que
+      // GameMatcher._applyRemoteAliases, pleine chasse comprise.
+      final alias = aliasKey(e.aliasNorm);
       final game = normalizeGameNameNoAlias(e.gameName);
-      if (alias.isEmpty || game.isEmpty || alias == game) continue;
+      if (!isValidAliasKey(alias) || game.isEmpty || alias == game) continue;
       rebuilt[alias] = game;
     }
     _remoteAliases = Map.unmodifiable(rebuilt);
+    // §137 — clé du jeu calculée APRÈS la table latine : même résolution
+    // qu'à la lecture ([nonLatinAliasesFor]).
+    final byGame = <String, List<String>>{};
+    for (final e in nonLatin) {
+      final raw =
+          e.alias.trim().isNotEmpty ? e.alias.trim() : e.aliasNorm.trim();
+      final game = normalizeGameName(e.gameName);
+      if (game.isEmpty || !isValidAliasKey(aliasKey(raw))) continue;
+      final names = byGame.putIfAbsent(game, () => <String>[]);
+      if (!names.contains(raw)) names.add(raw);
+    }
+    _remoteNonLatinAliases = Map.unmodifiable({
+      for (final e in byGame.entries) e.key: List<String>.unmodifiable(e.value),
+    });
+  }
+
+  /// §137 — alias NON LATINS de la base pour le jeu [gameName] (formes
+  /// affichées ; vide si aucun ou si la base n'est pas chargée).
+  static List<String> nonLatinAliasesFor(String gameName) {
+    final key = normalizeGameName(gameName);
+    if (key.isEmpty) return const <String>[];
+    return _remoteNonLatinAliases[key] ?? const <String>[];
+  }
+
+  /// §137 — noms du jeu [gameName] à passer à [cleanTitleForInsertion] :
+  /// ses titres traduits [translatedNames] (null = non chargés) PUIS ses
+  /// alias non latins de la base, sans doublon. Même usage que les titres
+  /// traduits non latins (autres noms du jeu, retirés des titres par le
+  /// motif brut — la normalisation latine les efface). Sans alias non
+  /// latin : [translatedNames] rendu tel quel (null compris).
+  static List<String>? withNonLatinAliases(
+      String gameName, List<String>? translatedNames) {
+    final aliases = nonLatinAliasesFor(gameName);
+    if (aliases.isEmpty) return translatedNames;
+    final names = <String>[...?translatedNames];
+    for (final a in aliases) {
+      if (!names.contains(a)) names.add(a);
+    }
+    return names;
   }
 
   /// Alias connus pour le nettoyage des titres : codés en dur ∪ base (la
@@ -165,11 +224,23 @@ abstract final class TitleCleaning {
 
   /// Normalisation SANS résolution d'alias (équivalent du
   /// `_normalizeCore` de GameMatcher côté bots) : la forme CLÉ d'un nom
-  /// ou d'un alias. Base de [normalizeGameName] et de
-  /// `StoreController.normalizeGameAlias` (B-001 : l'alias_norm persisté doit être la
-  /// forme clé, JAMAIS la forme canonique résolue — sinon la ligne est
-  /// inerte pour les bots).
+  /// ou d'un alias. Base de [normalizeGameName] et, via [aliasKey] (§137),
+  /// de `StoreController.normalizeGameAlias` (B-001 : l'alias_norm persisté
+  /// doit être la forme clé, JAMAIS la forme canonique résolue — sinon la
+  /// ligne est inerte pour les bots).
   static String normalizeGameNameNoAlias(String name) {
+    var n = _keyFormSteps(name);
+    // Ponctuation → espaces, puis espaces multiples → un seul.
+    n = n.replaceAll(RegExp(r'[^a-z0-9 ]'), ' ');
+    n = n.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return n;
+  }
+
+  /// Étapes communes des formes CLÉ — [normalizeGameNameNoAlias] et, §137,
+  /// [aliasKey] : minuscules, accents, chiffres romains, suffixes d'édition,
+  /// apostrophes. Tout SAUF le filtrage final des caractères (extrait tel
+  /// quel de [normalizeGameNameNoAlias], sortie inchangée).
+  static String _keyFormSteps(String name) {
     var n = _stripAccentsForNorm(name);
     // Chiffres romains → arabes (en limite de mot).
     n = n.replaceAllMapped(
@@ -207,11 +278,55 @@ abstract final class TitleCleaning {
     // Apostrophes → RIEN (pas d'espace) : « Assassin's » → « assassins ».
     n = n.replaceAll("'", '');
     n = n.replaceAll('’', '');
-    // Ponctuation → espaces, puis espaces multiples → un seul.
-    n = n.replaceAll(RegExp(r'[^a-z0-9 ]'), ' ');
-    n = n.replaceAll(RegExp(r'\s+'), ' ').trim();
     return n;
   }
+
+  // ── §137 — forme CLÉ des ALIAS (toutes écritures) ───────────────────────
+
+  /// §137 — forme CLÉ d'un ALIAS (colonne `alias_norm` de `game_aliases`),
+  /// identique au caractère près à `GameMatcher.aliasKey` (packages/mgt_core)
+  /// et gardée côté EF (`games/aliases/set`) :
+  /// 1. pleine chasse U+FF01..U+FF5E → ASCII, U+3000 → espace (« ＦＦ７ »
+  ///    → « FF7 ») ;
+  /// 2. AUCUNE lettre non latine → forme clé actuelle
+  ///    ([normalizeGameNameNoAlias]) : un alias latin garde exactement sa
+  ///    clé d'avant (invariant B-001 — forme CLÉ, jamais la forme canonique
+  ///    résolue) ;
+  /// 3. sinon, mêmes étapes SAUF le filtrage final : lettres, marques et
+  ///    chiffres de TOUTES les écritures gardés (avant : « 发薪日3 » → « 3 »,
+  ///    « 原神 » → vide), « ё » → « е », tatweel arabe retiré.
+  /// À valider par [isValidAliasKey] avant toute écriture. Les TITRES
+  /// gardent leur normalisation ([normalizeGameName]).
+  static String aliasKey(String raw) {
+    final text = _foldFullWidth(raw);
+    if (!hasNonLatinLetter(text)) return normalizeGameNameNoAlias(text);
+    var n = _keyFormSteps(text)
+        .replaceAll('\u0451', '\u0435') // ё → е (cyrillique)
+        .replaceAll('\u0640', ''); // tatweel arabe
+    n = n.replaceAll(_nonAliasKeyChar, ' ');
+    return n.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  /// §137 — clé d'alias EXPLOITABLE : non vide ET au moins une lettre
+  /// (toutes écritures). Une clé faite de chiffres et d'espaces (« 3 »,
+  /// « 2077 ») rattacherait au jeu tout titre contenant ce nombre : refusée.
+  static bool isValidAliasKey(String key) =>
+      key.isNotEmpty && _anyLetter.hasMatch(key);
+
+  /// §137 — lettre de n'importe quelle écriture.
+  static final RegExp _anyLetter = RegExp(r'\p{L}', unicode: true);
+
+  /// §137 — caractère écarté d'une clé d'alias NON LATINE : ni lettre, ni
+  /// marque (voyelles devanagari…), ni chiffre, ni espace.
+  static final RegExp _nonAliasKeyChar =
+      RegExp(r'[^\p{L}\p{M}\p{N} ]', unicode: true);
+
+  /// §137 — formes pleine chasse (U+FF01..U+FF5E) ramenées à l'ASCII,
+  /// espace idéographique (U+3000) → espace.
+  static String _foldFullWidth(String s) =>
+      String.fromCharCodes(s.codeUnits.map((u) => u >= 0xFF01 && u <= 0xFF5E
+          ? u - 0xFEE0
+          : (u == 0x3000 ? 0x20 : u)));
 
   /// Strip accents + minuscules (étape commune des normalisations).
   static String _stripAccentsForNorm(String name) {
@@ -429,7 +544,7 @@ abstract final class TitleCleaning {
     final rawForms = <String>{
       if (translatedNames != null)
         for (final t in translatedNames)
-          if (_hasNonLatinLetter(t)) t.trim(),
+          if (hasNonLatinLetter(t)) t.trim(),
     };
 
     // §123 (B/C) — chaque mention du jeu devient un REPÈRE ([_gameMark]) ;
@@ -823,7 +938,9 @@ abstract final class TitleCleaning {
   static final RegExp _nonLatinLetter =
       RegExp(r'(?!\p{Script=Latin})\p{L}', unicode: true);
 
-  static bool _hasNonLatinLetter(String s) => _nonLatinLetter.hasMatch(s);
+  /// §137 (public) — au moins une lettre hors écriture latine ([aliasKey],
+  /// alias distants, noms traduits).
+  static bool hasNonLatinLetter(String s) => _nonLatinLetter.hasMatch(s);
 
   /// §123 (G) — décode les entités HTML d'un titre (« &#039; » → « ' »,
   /// « &amp; » → « & »…), deux passes (double encodage). Copie de

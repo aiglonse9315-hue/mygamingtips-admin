@@ -629,47 +629,37 @@ class SupabaseSync {
     return byGame;
   }
 
-  /// Récupère les traductions d'UN seul jeu via PostgREST anon, avec ses
-  /// AUTRES NOMS par langue (`alt_titles`, migration 0080 — §119) dans la
-  /// même requête.
+  /// Récupère les traductions d'UN seul jeu via PostgREST anon
+  /// (`{LANG: title}`). §137 : UNE traduction par langue — la colonne
+  /// `alt_titles` (migration 0080) n'est plus lue (les autres noms du jeu
+  /// sont des ALIAS, table `game_aliases`).
   ///
   /// Contrairement à [fetchAllTranslations] (qui charge tout et peut être
   /// limité par la pagination), cette méthode ne récupère que les 12 lignes
   /// max du jeu concerné — aucun cutoff possible.
-  Future<({Map<String, String> titles, Map<String, List<String>> altTitles})>
-      fetchTranslationsForGame(String gameId) async {
+  Future<Map<String, String>> fetchTranslationsForGame(String gameId) async {
     final titles = <String, String>{};
-    final altTitles = <String, List<String>>{};
     final res = await _withRetry(
       () => http
           .get(
             Uri.parse(
               '$supabaseUrl/rest/v1/game_translations'
-              '?select=lang,title,alt_titles&game_id=eq.$gameId',
+              '?select=lang,title&game_id=eq.$gameId',
             ),
             headers: {'apikey': anonKey, 'Authorization': 'Bearer $anonKey'},
           )
           .timeout(requestTimeout),
     );
-    if (res.statusCode != 200) return (titles: titles, altTitles: altTitles);
+    if (res.statusCode != 200) return titles;
     final List<dynamic> rows = jsonDecode(res.body) as List? ?? [];
     for (final row in rows) {
       if (row is! Map) continue;
       final lang = row['lang'];
       final title = row['title'];
       if (lang is! String || title is! String) continue;
-      final code = lang.toUpperCase();
-      titles[code] = title;
-      final alts = row['alt_titles'];
-      if (alts is List) {
-        final names = [
-          for (final a in alts)
-            if (a is String && a.trim().isNotEmpty) a.trim(),
-        ];
-        if (names.isNotEmpty) altTitles[code] = names;
-      }
+      titles[lang.toUpperCase()] = title;
     }
-    return (titles: titles, altTitles: altTitles);
+    return titles;
   }
 
   /// Récupère TOUTES les traductions de titres via PostgREST anon
@@ -724,16 +714,14 @@ class SupabaseSync {
   /// `{LANG: title}` — les entrées vides sont ignorées côté caller (filtre
   /// avant l'appel) pour ne pas insérer de titres vides.
   ///
-  /// [altTitles] (§119) : AUTRES NOMS par langue `{LANG: [noms]}` — une
-  /// langue absente ou vide EFFACE ses autres noms ; null = colonne
-  /// inchangée (comportement d'avant).
+  /// §137 : `alt_titles` n'est plus JAMAIS envoyé (colonne laissée intacte
+  /// en base ; les autres noms du jeu se saisissent dans les alias).
   ///
   /// Retourne `true` en cas de succès, `false` sinon.
   Future<bool> updateGameTranslations(
     String gameId,
-    Map<String, String> translations, {
-    Map<String, List<String>>? altTitles,
-  }) async {
+    Map<String, String> translations,
+  ) async {
     try {
       print(
         '[Sync] updateGameTranslations: gameId=$gameId, '
@@ -742,7 +730,6 @@ class SupabaseSync {
       final data = await _post('games/translate', {
         'game_id': gameId,
         'translations': translations,
-        'alt_titles': ?altTitles,
       });
       print('[Sync] updateGameTranslations succès: ${data['ok']}');
       return true;
@@ -1586,7 +1573,9 @@ class SupabaseSync {
   /// [aliases] sont supprimés côté serveur). Chaque entrée est un map
   /// `{alias: <saisi>, alias_norm: <forme normalisée>}` — la normalisation
   /// est calculée côté panneau (StoreController.normalizeGameAlias) pour
-  /// rester identique au matching des bots.
+  /// rester identique au matching des bots. §137 : listes construites par
+  /// lib/domain/game_alias_payload.dart (forme clé d'alias Unicode, jamais
+  /// de clé sans lettre — refusée aussi par l'EF).
   ///
   /// Retourne le nombre d'alias enregistrés (`count` du serveur).
   Future<int> setGameAliases(

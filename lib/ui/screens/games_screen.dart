@@ -4,9 +4,10 @@ import 'package:provider/provider.dart';
 import '../../core/i18n/app_languages.dart';
 import '../../core/theme/colors.dart';
 import '../../data/supabase_sync.dart';
-import '../../domain/alt_titles_input.dart';
+import '../../domain/game_alias_payload.dart';
 import '../../domain/models/game.dart';
 import '../../domain/models/game_alias.dart';
+import '../../domain/title_cleaning.dart';
 import '../../state/store_controller.dart';
 import '../widgets/admin_data_table.dart';
 import '../widgets/confirm_dialog.dart';
@@ -150,6 +151,19 @@ class _GamesScreenState extends State<GamesScreen> {
                     '${report.aliasesAdded} alias ajouté(s).'),
                 if (report.gamesUpToDate > 0)
                   Text('${report.gamesUpToDate} jeu(x) déjà à jour.'),
+                // §137 — jeux non écrits : alias en base à clé sans lettre.
+                if (report.gamesBlocked.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Jeux non mis à jour — alias existant(s) sans lettre, à '
+                    'retirer dans le dialogue Alias du jeu : '
+                    '${report.gamesBlocked.join(', ')}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.categoryVideo,
+                    ),
+                  ),
+                ],
                 if (report.orphanCanonicals.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Text(
@@ -678,9 +692,9 @@ class _GameEditDialogState extends State<GameEditDialog> {
 /// Le dialog est scrollable (12 langues = grand). Les champs vides ne sont
 /// pas envoyés au serveur (filtre côté caller).
 ///
-/// §119 : sous chaque titre, un champ « Autres noms » (un par ligne) —
-/// variantes employées par les vidéos, pour la seule RECONNAISSANCE du jeu
-/// (jamais affichées dans l'app, jamais recherchées).
+/// §137 : UNE traduction par langue. Le champ « Autres noms » (§119) est
+/// retiré : les autres noms du jeu, écritures non latines comprises, se
+/// saisissent dans les ALIAS ([GameAliasesDialog]).
 class GameTranslationsDialog extends StatefulWidget {
   const GameTranslationsDialog({super.key, required this.game});
   final Game game;
@@ -692,9 +706,6 @@ class GameTranslationsDialog extends StatefulWidget {
 class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
   /// Un TextEditingController par langue (code majuscule).
   late final Map<String, TextEditingController> _controllers;
-
-  /// Autres noms par langue (§119) — un nom par ligne.
-  late final Map<String, TextEditingController> _altControllers;
 
   /// État de chargement des traductions existantes.
   bool _loading = true;
@@ -717,16 +728,12 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
       for (final lang in kSupportedLanguages)
         lang.code: TextEditingController(),
     };
-    _altControllers = {
-      for (final lang in kSupportedLanguages)
-        lang.code: TextEditingController(),
-    };
     _loadTranslations();
   }
 
   @override
   void dispose() {
-    for (final c in [..._controllers.values, ..._altControllers.values]) {
+    for (final c in _controllers.values) {
       c.dispose();
     }
     super.dispose();
@@ -741,10 +748,8 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
       // nom du jeu par défaut (l'admin peut ainsi traduire rapidement sans
       // repartir de zéro, ou vider le champ s'il ne veut pas de traduction).
       for (final lang in kSupportedLanguages) {
-        final value = existing.titles[lang.code] ?? widget.game.name;
+        final value = existing[lang.code] ?? widget.game.name;
         _controllers[lang.code]!.text = value;
-        _altControllers[lang.code]!.text =
-            (existing.altTitles[lang.code] ?? const <String>[]).join('\n');
       }
       setState(() => _loading = false);
     } catch (e) {
@@ -763,46 +768,23 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
   }
 
   Future<void> _save() async {
-    // Filtre les valeurs non vides (on ne persiste pas les titres vides) ;
-    // autres noms envoyés pour CHAQUE langue titrée (liste vide = effacés).
+    // Filtre les valeurs non vides (on ne persiste pas les titres vides).
     final Map<String, String> translations = {};
-    final Map<String, List<String>> altTitles = {};
-    String? altWithoutTitle;
     for (final entry in _controllers.entries) {
       final value = entry.value.text.trim();
-      final alts = parseAltTitlesInput(
-        _altControllers[entry.key]!.text,
-        title: value,
-      );
-      if (value.isEmpty) {
-        if (alts.isNotEmpty) altWithoutTitle ??= entry.key;
-        continue;
-      }
-      translations[entry.key] = value;
-      altTitles[entry.key] = alts;
+      if (value.isNotEmpty) translations[entry.key] = value;
     }
-    if (altWithoutTitle != null) {
-      setState(() {
-        _statusMessage =
-            'Renseigne le titre $altWithoutTitle avant ses autres noms.';
-        _statusError = true;
-      });
-      return;
-    }
-    final altCount = altTitles.values.fold(0, (n, l) => n + l.length);
     setState(() {
       _saving = true;
       _statusMessage = null;
     });
     final StoreController store = context.read<StoreController>();
-    final ok = await store.updateGameTranslations(widget.game, translations,
-        altTitles: altTitles);
+    final ok = await store.updateGameTranslations(widget.game, translations);
     if (!mounted) return;
     setState(() {
       _saving = false;
       _statusMessage = ok
-          ? 'Traductions enregistrées (${translations.length})'
-              '${altCount > 0 ? ' + $altCount autre(s) nom(s)' : ''}.'
+          ? 'Traductions enregistrées (${translations.length}).'
           : (store.lastActionError ?? 'Erreur lors de l\'enregistrement.');
       _statusError = !ok;
     });
@@ -857,19 +839,6 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        '« Autres noms » : variantes employées par les vidéos '
-                        '(ex. 发薪日3 pour Payday 3), un par ligne. Elles '
-                        'servent uniquement à reconnaître le jeu — jamais '
-                        'affichées dans l\'app ni utilisées pour les '
-                        'recherches. Vision les récupère à la prochaine '
-                        '« 🔄 Sync Total ».',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Theme.of(context).textTheme.bodySmall?.color,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
                       for (final lang in kSupportedLanguages) ...[
                         TextField(
                           controller: _controllers[lang.code],
@@ -882,24 +851,20 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
                             if (!_dirty) setState(() => _dirty = true);
                           },
                         ),
-                        Padding(
-                          padding: const EdgeInsets.only(left: 16),
-                          child: TextField(
-                            controller: _altControllers[lang.code],
-                            minLines: 1,
-                            maxLines: 4,
-                            style: const TextStyle(fontSize: 12),
-                            decoration: const InputDecoration(
-                              labelText: 'Autres noms (un par ligne)',
-                              isDense: true,
-                            ),
-                            onChanged: (_) {
-                              if (!_dirty) setState(() => _dirty = true);
-                            },
-                          ),
-                        ),
                         const SizedBox(height: 12),
                       ],
+                      // §137 — plus de champ « Autres noms » : ils sont des
+                      // alias (écritures non latines comprises).
+                      Text(
+                        'Une seule traduction par langue. Les autres noms du '
+                        'jeu (acronymes, noms dans d\'autres écritures — ex. '
+                        '发薪日3 pour Payday 3) se saisissent dans les alias : '
+                        'bouton « Alias » (@) du menu Jeux.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).textTheme.bodySmall?.color,
+                        ),
+                      ),
                       if (_statusMessage != null) ...[
                         const SizedBox(height: 4),
                         Text(
@@ -990,6 +955,12 @@ class _GameTranslationsDialogState extends State<GameTranslationsDialog> {
 /// REMPLACE toute la liste côté serveur (`games/aliases/set`), avec la forme
 /// normalisée calculée par [StoreController.normalizeGameAlias] — strictement
 /// identique au matching des bots.
+///
+/// §137 : les AUTRES NOMS du jeu (ex-champ « Autres noms » des traductions),
+/// écritures non latines comprises (« 发薪日3 », « Ведьмак 3 »), se saisissent
+/// ici. Un alias dont la forme normalisée n'a AUCUNE lettre (« 3 », « !!! »)
+/// est refusé à l'ajout ; s'il en reste un (ancien alias en base), la
+/// sauvegarde est refusée et rien n'est écrit ([buildGameAliasPayload]).
 class GameAliasesDialog extends StatefulWidget {
   const GameAliasesDialog({super.key, required this.game});
   final Game game;
@@ -1086,9 +1057,10 @@ class _GameAliasesDialogState extends State<GameAliasesDialog> {
     final String alias = raw.trim();
     if (alias.isEmpty) return;
     final String norm = StoreController.normalizeGameAlias(alias);
-    if (norm.isEmpty) {
+    // §137 — clé vide ou SANS lettre (« 3 », « !!! ») : refusée.
+    if (!TitleCleaning.isValidAliasKey(norm)) {
       setState(() {
-        _statusMessage = '« $alias » est inexploitable après normalisation.';
+        _statusMessage = '« $alias » refusé : $kAliasNeedsLetter.';
         _statusError = true;
       });
       return;
@@ -1132,6 +1104,19 @@ class _GameAliasesDialogState extends State<GameAliasesDialog> {
     });
   }
 
+  /// §137 — alias dont la forme normalisée n'a aucune lettre (ancien alias
+  /// en base) : signalé sur sa puce, bloque la sauvegarde.
+  static bool _isInvalidAlias(String alias) => !TitleCleaning.isValidAliasKey(
+      StoreController.normalizeGameAlias(alias));
+
+  /// Info-bulle d'une puce : forme normalisée (et refus §137).
+  static String _aliasTooltip(String alias) {
+    final String norm = StoreController.normalizeGameAlias(alias);
+    return _isInvalidAlias(alias)
+        ? 'Forme normalisée : « $norm » — refusée, $kAliasNeedsLetter'
+        : 'Forme normalisée : $norm';
+  }
+
   void _removeAlias(String alias) {
     setState(() {
       _aliases = _aliases.where((a) => a != alias).toList();
@@ -1151,17 +1136,21 @@ class _GameAliasesDialogState extends State<GameAliasesDialog> {
     }
     // Déduplication finale sur la forme normalisée (première occurrence
     // conservée) + calcul de `alias_norm` avec le normaliseur du panneau
-    // (identique à GameMatcher.normalize côté bots).
-    final Set<String> seen = <String>{};
-    final List<Map<String, String>> payload = [
-      for (final alias in _aliases)
-        if (alias.trim().isNotEmpty &&
-            seen.add(StoreController.normalizeGameAlias(alias)))
-          {
-            'alias': alias.trim(),
-            'alias_norm': StoreController.normalizeGameAlias(alias),
-          },
-    ];
+    // (identique à GameMatcher.normalize côté bots) — §137 :
+    // [buildGameAliasPayload] ; un alias sans lettre (ancien alias en base,
+    // ex. « 3 ») bloque la sauvegarde : RIEN n'est écrit.
+    final built = buildGameAliasPayload(_aliases);
+    if (built.invalid.isNotEmpty) {
+      setState(() {
+        _statusMessage = 'Rien n\'a été enregistré : '
+            '${quoteGameAliases(built.invalid)} refusé(s) — '
+            '$kAliasNeedsLetter. Retire-le(s) (croix de la puce) puis '
+            'sauvegarde.';
+        _statusError = true;
+      });
+      return;
+    }
+    final List<Map<String, String>> payload = built.payload;
     setState(() {
       _saving = true;
       _statusMessage = null;
@@ -1234,9 +1223,11 @@ class _GameAliasesDialogState extends State<GameAliasesDialog> {
                     children: [
                       // Texte d'aide.
                       Text(
-                        'Noms raccourcis, acronymes, noms communautaires. '
-                        'Les alias normalisés servent au matching des titres '
-                        'par Vision/Sentinelle.',
+                        'Autres noms du jeu : acronymes, noms communautaires, '
+                        'noms dans d\'autres écritures (ex. 发薪日3, '
+                        'Ведьмак 3). Un alias doit contenir au moins une '
+                        'lettre. Les alias normalisés servent au matching des '
+                        'titres par Vision2/Sentinelle.',
                         style: TextStyle(
                           fontSize: 12,
                           color:
@@ -1252,7 +1243,7 @@ class _GameAliasesDialogState extends State<GameAliasesDialog> {
                               controller: _addCtrl,
                               decoration: const InputDecoration(
                                 labelText: 'Nouvel alias',
-                                hintText: 'Ex. D4, BotW, Star Citizen…',
+                                hintText: 'Ex. D4, BotW, 发薪日3…',
                                 isDense: true,
                               ),
                               onSubmitted: _saving ? null : _addAlias,
@@ -1309,9 +1300,16 @@ class _GameAliasesDialogState extends State<GameAliasesDialog> {
                           children: [
                             for (final alias in _aliases)
                               Tooltip(
-                                message:
-                                    'Forme normalisée : ${StoreController.normalizeGameAlias(alias)}',
+                                message: _aliasTooltip(alias),
                                 child: InputChip(
+                                  // §137 — clé sans lettre : à retirer.
+                                  avatar: _isInvalidAlias(alias)
+                                      ? const Icon(
+                                          Icons.warning_amber_rounded,
+                                          size: 16,
+                                          color: AppColors.categoryVideo,
+                                        )
+                                      : null,
                                   label: Text(alias),
                                   onDeleted: _saving
                                       ? null

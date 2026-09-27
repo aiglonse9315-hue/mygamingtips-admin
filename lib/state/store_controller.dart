@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import '../data/store.dart';
 import '../data/supabase_sync.dart';
 import '../domain/analytics_calc.dart';
+import '../domain/game_alias_payload.dart';
 import '../domain/models/banned_user.dart';
 import '../domain/models/category.dart';
 import '../domain/models/content.dart';
@@ -655,45 +656,38 @@ class StoreController extends ChangeNotifier {
   ///
   /// Lit directement les traductions du jeu via PostgREST anon (12 lignes max)
   /// plutôt que de charger toutes les traductions via l'Edge Function (qui
-  /// peut être limitée par la pagination à 1000 lignes). Inclut les AUTRES
-  /// NOMS par langue (§119).
-  Future<({Map<String, String> titles, Map<String, List<String>> altTitles})>
-      loadTranslationsForGame(String gameId) async {
-    const empty = (
-      titles: <String, String>{},
-      altTitles: <String, List<String>>{},
-    );
-    if (sync == null) return empty;
+  /// peut être limitée par la pagination à 1000 lignes). §137 : UNE
+  /// traduction par langue, plus d'« autres noms » (ils sont des alias).
+  Future<Map<String, String>> loadTranslationsForGame(String gameId) async {
+    if (sync == null) return <String, String>{};
     try {
       return await sync!.fetchTranslationsForGame(gameId);
     } on AdminAuthException {
       rethrow;
     } catch (e) {
       debugPrint('loadTranslationsForGame échoué: $e');
-      return empty;
+      return <String, String>{};
     }
   }
 
   /// Sauvegarde les traductions du titre d'un jeu. [translations] contient
-  /// uniquement les langues non vides (filtrées par le caller) ;
-  /// [altTitles] leurs AUTRES NOMS (§119 — liste vide = effacés).
+  /// uniquement les langues non vides (filtrées par le caller). §137 : plus
+  /// aucun envoi d'« autres noms » (colonne `alt_titles` laissée intacte).
   ///
   /// Pas de mise à jour du `Game` en mémoire : les traductions ne sont pas
   /// affichées dans la liste principale des jeux. En cas d'échec serveur,
   /// `lastActionError` est positionnée (le dialog affiche l'erreur).
   Future<bool> updateGameTranslations(
     Game game,
-    Map<String, String> translations, {
-    Map<String, List<String>>? altTitles,
-  }) async {
+    Map<String, String> translations,
+  ) async {
     if (sync == null) {
       lastActionError = 'Mode aperçu : traductions non persistées.';
       notifyListeners();
       return false;
     }
     try {
-      final ok = await sync!.updateGameTranslations(game.id, translations,
-          altTitles: altTitles);
+      final ok = await sync!.updateGameTranslations(game.id, translations);
       if (!ok) {
         lastActionError = 'Traductions non enregistrées (erreur serveur).';
         notifyListeners();
@@ -2025,9 +2019,12 @@ class StoreController extends ChangeNotifier {
   /// 12/09/2026). Sans [gameName], comportement historique inchangé.
   static String _titleForInsertion(Suggestion s, {String? gameName}) {
     final game = gameName?.trim();
+    // §137 — titres traduits du jeu + ses alias NON LATINS de la base
+    // (autres noms, « 发薪日3 » : retirés des titres comme les traductions).
     final translated = (game == null || game.isEmpty)
         ? null
-        : _gameTranslationsCache[_normalizeGameName(game)];
+        : TitleCleaning.withNonLatinAliases(
+            game, _gameTranslationsCache[_normalizeGameName(game)]);
     // §123 — titre PROPOSÉ par Sentinelle (toutes plateformes : nettoyé avec
     // les alias distants et les noms traduits, domaine du site pour une page
     // web) : affiché tel quel ; re-nettoyé seulement si l'admin a choisi un
@@ -2103,10 +2100,6 @@ class StoreController extends ChangeNotifier {
   static String _normalizeGameName(String name) =>
       TitleCleaning.normalizeGameName(name);
 
-  /// Forme CLÉ d'un nom ou d'un alias (sans résolution d'alias).
-  static String _normalizeGameNameNoAlias(String name) =>
-      TitleCleaning.normalizeGameNameNoAlias(name);
-
   /// Titre nettoyé pour insertion ([TitleCleaning.cleanTitleForInsertion]).
   static String _cleanTitleForInsertion(String title,
           {String? gameName,
@@ -2142,8 +2135,13 @@ class StoreController extends ChangeNotifier {
   /// à ces CLÉS, une alias_norm canonique serait une ligne inerte).
   /// Utilisé par le dialog d'alias du menu Jeux et le bouton
   /// « Synchroniser les alias connus ».
+  /// §137 : forme clé d'ALIAS [TitleCleaning.aliasKey] — identique à
+  /// l'ancienne pour tout alias latin, écritures non latines conservées
+  /// (« 发薪日3 », plus « 3 ») ; à valider par
+  /// [TitleCleaning.isValidAliasKey] avant écriture (lib/domain/
+  /// game_alias_payload.dart).
   static String normalizeGameAlias(String alias) =>
-      _normalizeGameNameNoAlias(alias);
+      TitleCleaning.aliasKey(alias);
 
   /// D3.4 — Charge TOUS les alias en UNE requête et les groupe par jeu
   /// (game_id → liste MUTABLE, mise à jour localement après chaque création
@@ -2167,8 +2165,11 @@ class StoreController extends ChangeNotifier {
   /// GARDES (jamais de création anarchique) :
   /// - le jeu effectivement validé doit ÊTRE celui du candidat (si l'admin a
   ///   choisi un autre jeu via override, le candidat ne s'applique plus) ;
-  /// - alias vide ou forme clé vide → sans-op ;
-  /// - alias déjà présent (dédup par alias_norm) → sans-op.
+  /// - alias vide ou forme clé invalide (vide ou SANS lettre, §137 :
+  ///   « 3 ») → sans-op ;
+  /// - alias déjà présent (dédup par alias_norm recalculée) → sans-op ;
+  /// - §137 : alias DÉJÀ en base à clé invalide → rien n'est écrit
+  ///   (avertissement : à retirer dans le dialogue Alias du jeu).
   ///
   /// [aliasesByGame] : cache mutable par jeu (UNE requête list-all par lot) ;
   /// null → fetch frais (validation unitaire).
@@ -2186,20 +2187,22 @@ class StoreController extends ChangeNotifier {
       return null;
     }
     final alias = candidate.alias.trim();
-    if (alias.isEmpty) return null;
     final norm = normalizeGameAlias(alias);
-    if (norm.isEmpty) return null;
+    if (!TitleCleaning.isValidAliasKey(norm)) return null;
     try {
       final byGame = aliasesByGame ?? await _fetchGameAliasesByGame();
       final existing =
           byGame.putIfAbsent(game.id, () => <GameAlias>[]);
-      // Union dédup : l'alias existe déjà (même forme clé) → rien à faire.
-      if (existing.any((a) => a.aliasNorm == norm)) return null;
-      final payload = <Map<String, String>>[
-        for (final a in existing) {'alias': a.alias, 'alias_norm': a.aliasNorm},
-        {'alias': alias, 'alias_norm': norm},
-      ];
-      await sync!.setGameAliases(game.id, payload);
+      // §137 — union existants + candidat, clés recalculées
+      // ([mergeGameAliases]) ; déjà présent (même forme clé) → rien à faire.
+      final merge = mergeGameAliases(existing, [alias]);
+      if (merge.added.isEmpty) return null;
+      if (merge.invalidExisting.isNotEmpty) {
+        return 'alias « $alias » → ${game.name} non créé : alias existant(s) '
+            '${quoteGameAliases(merge.invalidExisting)} sans lettre, à '
+            'retirer dans le dialogue Alias du jeu';
+      }
+      await sync!.setGameAliases(game.id, merge.payload);
       // Cache local à jour (id inconnu côté client — non utilisé pour la
       // persistance, la base étant la source de vérité).
       existing.add(GameAlias(id: '', alias: alias, aliasNorm: norm));
@@ -2242,7 +2245,14 @@ class StoreController extends ChangeNotifier {
   ///
   /// [onProgress] reçoit un message par étape (jeu traité) pour l'UI.
   /// Retourne le résumé : nombre de jeux poussés, d'alias ajoutés, de jeux
-  /// déjà à jour et d'alias locaux orphelins (canonical sans jeu en base).
+  /// déjà à jour, de jeux bloqués (§137) et d'alias locaux orphelins
+  /// (canonical sans jeu en base).
+  ///
+  /// §137 : union calculée par [mergeGameAliases] (clés recalculées par
+  /// [normalizeGameAlias], dédupliquées ; clé sans lettre jamais envoyée).
+  /// Un jeu dont un alias DÉJÀ en base a une clé invalide n'est pas écrit
+  /// (l'EF refuserait la liste, le retirer le supprimerait) : il est
+  /// signalé dans [KnownAliasesSyncReport.gamesBlocked].
   Future<KnownAliasesSyncReport> syncKnownGameAliases({
     void Function(String message)? onProgress,
   }) async {
@@ -2260,33 +2270,29 @@ class StoreController extends ChangeNotifier {
     var pushed = 0, added = 0, upToDate = 0;
     final orphanCanonicals = <String>{};
     final coveredCanonicals = <String>{};
+    final blocked = <String>[];
     for (final game in games) {
       final known = knownAliasesFor(game.name);
       if (known.isEmpty) continue;
       coveredCanonicals.add(_normalizeGameName(game.name));
-      final existingNorms = {
-        for (final a in remoteByGame[game.id] ?? const <GameAlias>[]) a.aliasNorm,
-      };
-      final missing = known
-          .map((a) => (display: a, norm: normalizeGameAlias(a)))
-          .where((e) => !existingNorms.contains(e.norm))
-          .toList();
-      if (missing.isEmpty) {
-        upToDate++;
-        continue;
-      }
       // Union : conservés (forme affichée d'origine) + manquants (forme
       // normalisée locale comme affichage — même comportement que le
       // bouton « Importer les alias connus » du dialog).
-      final payload = <Map<String, String>>[
-        for (final a in remoteByGame[game.id] ?? const <GameAlias>[])
-          {'alias': a.alias, 'alias_norm': a.aliasNorm},
-        for (final m in missing) {'alias': m.display, 'alias_norm': m.norm},
-      ];
-      onProgress?.call('${game.name} : +${missing.length} alias');
-      await sync!.setGameAliases(game.id, payload);
+      final merge = mergeGameAliases(
+          remoteByGame[game.id] ?? const <GameAlias>[], known);
+      if (merge.added.isEmpty) {
+        upToDate++;
+        continue;
+      }
+      if (merge.invalidExisting.isNotEmpty) {
+        blocked.add(
+            '${game.name} (${quoteGameAliases(merge.invalidExisting)})');
+        continue;
+      }
+      onProgress?.call('${game.name} : +${merge.added.length} alias');
+      await sync!.setGameAliases(game.id, merge.payload);
       pushed++;
-      added += missing.length;
+      added += merge.added.length;
     }
     // 3) Alias locaux dont le jeu canonical n'est pas au catalogue
     //    (ex. « stalker 2 » pas encore ajouté) — signalés, ignorés.
@@ -2297,6 +2303,7 @@ class StoreController extends ChangeNotifier {
       gamesPushed: pushed,
       aliasesAdded: added,
       gamesUpToDate: upToDate,
+      gamesBlocked: blocked,
       orphanCanonicals: orphanCanonicals.toList()..sort(),
     );
   }
@@ -2353,10 +2360,16 @@ class StoreController extends ChangeNotifier {
     _remoteAliasesTried = true;
     try {
       final all = await sync!.fetchGameAliasesAll();
+      // §137 — forme affichée transmise aussi : un alias non latin reste
+      // hors de la table latine (voir [TitleCleaning.setRemoteAliases]).
       TitleCleaning.setRemoteAliases([
         for (final e in all)
           if ((e.gameName ?? '').trim().isNotEmpty)
-            (aliasNorm: e.alias.aliasNorm, gameName: e.gameName!),
+            (
+              alias: e.alias.alias,
+              aliasNorm: e.alias.aliasNorm,
+              gameName: e.gameName!,
+            ),
       ]);
       _bumpTitleCleaningRevision();
     } catch (_) {
@@ -4430,6 +4443,7 @@ class KnownAliasesSyncReport {
     required this.gamesPushed,
     required this.aliasesAdded,
     required this.gamesUpToDate,
+    required this.gamesBlocked,
     required this.orphanCanonicals,
   });
 
@@ -4441,6 +4455,10 @@ class KnownAliasesSyncReport {
 
   /// Jeux avec alias locaux déjà tous présents en base (rien à faire).
   final int gamesUpToDate;
+
+  /// §137 — jeux NON mis à jour : un alias déjà en base a une clé sans
+  /// lettre (« Nom du jeu (« 3 ») ») — à retirer dans le dialogue Alias.
+  final List<String> gamesBlocked;
 
   /// Noms canoniques locaux dont AUCUN jeu du catalogue ne correspond
   /// (alias ignorés — ex. jeu pas encore ajouté au catalogue).

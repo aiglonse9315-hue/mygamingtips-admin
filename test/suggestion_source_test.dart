@@ -3,6 +3,9 @@
 // « Masquer Scruteur » du menu Suggestions. Lecture des lignes de la route
 // EF suggestions/list, aller-retour du cache local, cache d'avant §127
 // (sans `source`). Aucune dépendance dart:html.
+// §119 — repère « jeu cherché par Vision » du tableau Sentinelle (groupe
+// déplacé de alt_titles_input_test.dart, retiré au §137 avec le champ
+// « Autres noms »).
 
 import 'package:flutter_test/flutter_test.dart';
 
@@ -93,6 +96,26 @@ void main() {
         author: const SuggestionAuthor(id: 'u1', displayName: 'Nono'),
       );
       expect(s.source, Suggestion.sourceUser);
+    });
+  });
+
+  group('AiRecommendation.visionSearchLabel', () {
+    test('jeu cherché, langue, chaîne de confiance', () {
+      final ai = AiRecommendation.fromJson({
+        'target_game': 'Raft',
+        'search_language': 'RU',
+        'found_via': 'trusted_channel',
+      });
+      expect(ai.visionSearchLabel,
+          '🔎 Vision cherchait : Raft · RU · chaîne de confiance');
+      expect(AiRecommendation.fromJson(ai.toJson()).visionSearchLabel,
+          ai.visionSearchLabel,
+          reason: 'aller-retour du stockage local');
+    });
+
+    test('inconnu (avant §119, Scruteur, joueurs) → null', () {
+      expect(AiRecommendation.fromJson({'verdict': 'caution'}).visionSearchLabel,
+          isNull);
     });
   });
 }
