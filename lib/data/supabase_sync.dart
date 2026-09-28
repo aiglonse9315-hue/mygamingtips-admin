@@ -3,13 +3,19 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../domain/ids.dart';
+import '../domain/jwt_payload.dart';
 import '../domain/models/admin_user_account.dart';
+import '../domain/models/ban_category.dart';
 import '../domain/models/banned_channel.dart';
+import '../domain/models/banned_user.dart';
 import '../domain/models/category.dart';
 import '../domain/models/content.dart';
 import '../domain/models/game.dart';
 import '../domain/models/game_alias.dart';
 import '../domain/models/log_entry.dart';
+import '../domain/models/moderation.dart';
+import '../domain/models/ready_games.dart';
 import '../domain/models/suggestion.dart';
 import '../domain/models/sync_status.dart';
 import '../domain/models/trusted_channel.dart';
@@ -38,6 +44,80 @@ class AdminForbiddenException implements Exception {
   String toString() => message;
 }
 
+/// Réponse d'erreur de l'EF (statut ≥ 400 hors 401 / 403) : statut et corps
+/// décodé CONSERVÉS (409 de modération : `result`, `ban_event_id`,
+/// `distinct_contents`, `threshold` ; 400 de settings-set : `reasons`).
+///
+/// Porte aussi une réponse 2xx ILLISIBLE (corps non JSON, tableau, objet
+/// attendu absent) : [statusCode] < 400, issue côté serveur inconnue
+/// ([isUncertainFailure] vrai) → l'écran relit l'état.
+class AdminApiException implements Exception {
+  const AdminApiException(
+    this.statusCode,
+    this.message, {
+    this.body = const <String, dynamic>{},
+  });
+
+  /// Statut HTTP de la réponse.
+  final int statusCode;
+
+  /// `body['error']` si texte non vide, sinon « Erreur serveur (HTTP <code>). »
+  /// (texte français du serveur : c'est lui qui est affiché).
+  final String message;
+
+  /// Corps d'erreur complet (`{}` si non JSON).
+  final Map<String, dynamic> body;
+
+  /// `result` du corps d'erreur (409 de review-decide, profiles/unban,
+  /// channels/unban) ; `null` quand la route n'en renvoie pas.
+  String? get result =>
+      body['result'] is String ? body['result'] as String : null;
+
+  /// Événement du ban automatique (409 `auto_ban_use_review`).
+  int? get banEventId => _int(body['ban_event_id']);
+
+  /// 409 `below_threshold` : contenus distincts de la chaîne.
+  int? get distinctContents => _int(body['distinct_contents']);
+
+  /// 409 `below_threshold` : seuil (2).
+  int? get threshold => _int(body['threshold']);
+
+  /// Champs refusés (400 « Réglages invalides. ») — lecture tolérante :
+  /// jamais de TypeError si `reasons` n'est pas une liste.
+  List<String> get reasons {
+    final Object? r = body['reasons'];
+    return r is List ? r.whereType<String>().toList() : const <String>[];
+  }
+
+  bool get isConflict => statusCode == 409;
+  bool get isNotFound => statusCode == 404;
+  bool get isServerError => statusCode >= 500;
+
+  static int? _int(Object? v) => v is num ? v.toInt() : null;
+
+  /// Le message seul (plus de préfixe « Exception: »).
+  @override
+  String toString() => message;
+}
+
+/// Échec dont l'issue côté serveur est INCONNUE (coupure, délai dépassé,
+/// 5xx après rejeux, réponse illisible) : l'écriture a pu aboutir → relire.
+bool isUncertainFailure(Object e) =>
+    e is http.ClientException ||
+    e is TimeoutException ||
+    (e is AdminApiException && (e.statusCode >= 500 || e.statusCode < 400));
+
+/// Message lisible d'une erreur quelconque (sans « Exception: »).
+String errorText(Object e) {
+  final String s = e.toString();
+  return s.startsWith('Exception: ') ? s.substring(11) : s;
+}
+
+/// Réponse décodée + nombre de tentatives (1 = pas de rejeu). Un rejeu
+/// signifie que la 1re réponse a été PERDUE (coupure, délai, 5xx) : la 1re
+/// tentative a pu agir côté serveur.
+typedef PostResult = ({Map<String, dynamic> data, int attempts});
+
 /// Synchronisation entre le panneau admin et Supabase.
 ///
 /// **Lectures catalogue** (`games`, `contents`, `contributor_stats`) : via
@@ -55,7 +135,8 @@ class SupabaseSync {
     required this.anonKey,
     required this.catalogEndpoint,
     required this.adminToken,
-  });
+    List<Duration>? retryDelays,
+  }) : retryDelays = retryDelays ?? defaultRetryDelays;
 
   /// URL du projet Supabase (ex. https://xxx.supabase.co).
   final String supabaseUrl;
@@ -114,26 +195,41 @@ class SupabaseSync {
   // erreurs sont définitives et le retry serait contre-productif.
   // Les routes EF d'écriture sont idempotentes (skip non-pending, pas de
   // doublon) → rejouer une écriture dont la réponse s'est perdue est sûr.
-  static const List<Duration> _retryDelays = [
+  // P4b-3 (T2) : délais INJECTABLES (les tests passent des délais nuls) ;
+  // le nombre de tentatives est exposé aux écritures de modération (rejeu
+  // visible, voir [PostResult]).
+
+  /// Délais par défaut entre les tentatives (immédiate, +2 s, +4 s).
+  static const List<Duration> defaultRetryDelays = [
     Duration(seconds: 2),
     Duration(seconds: 4),
   ];
 
-  /// Exécute [call] avec retry automatique (3 tentatives max : immédiate,
-  /// +2 s, +4 s) sur erreur réseau transitoire ou 5xx.
+  /// Délais entre les tentatives (une tentative de plus que de délais).
+  final List<Duration> retryDelays;
+
+  /// Exécute [call] avec retry automatique (3 tentatives max par défaut :
+  /// immédiate, +2 s, +4 s) sur erreur réseau transitoire ou 5xx.
   Future<http.Response> _withRetry(
+    Future<http.Response> Function() call,
+  ) async => (await _withRetryCounted(call)).$1;
+
+  /// Comme [_withRetry], et rend aussi le NOMBRE de tentatives faites
+  /// (1 = pas de rejeu). Rejoue `ClientException`, `TimeoutException` et
+  /// tout statut ≥ 500 ; jamais un 4xx (définitif).
+  Future<(http.Response, int)> _withRetryCounted(
     Future<http.Response> Function() call,
   ) async {
     Object? lastError;
-    for (var attempt = 0; attempt <= _retryDelays.length; attempt++) {
+    for (var attempt = 0; attempt <= retryDelays.length; attempt++) {
       if (attempt > 0) {
-        await Future<void>.delayed(_retryDelays[attempt - 1]);
+        await Future<void>.delayed(retryDelays[attempt - 1]);
       }
       try {
         final res = await call();
         // 5xx = transitoire (cold start, gateway) → retente si possible.
-        if (res.statusCode >= 500 && attempt < _retryDelays.length) continue;
-        return res;
+        if (res.statusCode >= 500 && attempt < retryDelays.length) continue;
+        return (res, attempt + 1);
       } on http.ClientException catch (e) {
         lastError = e; // NetworkError (fetch navigateur avorté, coupure)
       } on TimeoutException catch (e) {
@@ -486,24 +582,36 @@ class SupabaseSync {
 
   /// Recherche un profil par email (pour l'ajout d'abonné Plus par email).
   ///
-  /// Retourne l'UUID du profil trouvé, ou null si introuvable.
-  /// Passe par la route service_role `profiles/find-by-email` de l'Edge
-  /// Function admin-catalog (le RPC SQL est exécuté côté fonction).
+  /// Retourne l'UUID du profil trouvé, ou null si introuvable OU en cas
+  /// d'erreur (sauf 401, relancé pour le logout forcé). Enveloppe de
+  /// [lookupProfileIdByEmail] (P4b-3) : même route, e-mail en minuscules.
   Future<String?> findProfileByEmail(String email) async {
     try {
-      // Route service_role (Phase 2) : fonctionne quel que soit l'état des
-      // grants sur le RPC SQL `find_profile_by_email` (révoqué en Phase 3).
-      final Map<String, dynamic> data = await _post('profiles/find-by-email', {
-        'email': email,
-      });
-      final id = data['id'];
-      return id is String && id.isNotEmpty ? id : null;
+      return await lookupProfileIdByEmail(email);
     } on AdminAuthException {
       // 401 = session expirée → on laisse remonter pour le logout forcé.
       rethrow;
     } catch (_) {
       return null;
     }
+  }
+
+  /// Résolution STRICTE e-mail → UUID de profil (route service_role
+  /// `profiles/find-by-email` ; le RPC SQL est exécuté côté fonction).
+  ///
+  /// L'e-mail est envoyé rogné et en MINUSCULES : `find_profile_by_email`
+  /// compare exactement (0007_find_profile_by_email.sql:16-26) et GoTrue
+  /// stocke les e-mails en minuscules. Rend l'UUID, ou `null` = introuvable ;
+  /// TOUTE erreur remonte (contrairement à [findProfileByEmail]) — une
+  /// erreur SQL arrive en 400 « Recherche par email échouée ».
+  Future<String?> lookupProfileIdByEmail(String email) async {
+    // Route service_role (Phase 2) : fonctionne quel que soit l'état des
+    // grants sur le RPC SQL `find_profile_by_email` (révoqué en Phase 3).
+    final Map<String, dynamic> data = await _post('profiles/find-by-email', {
+      'email': email.trim().toLowerCase(),
+    });
+    final Object? id = data['id'];
+    return id is String && id.isNotEmpty ? id : null;
   }
 
   // ===========================================================================
@@ -539,11 +647,32 @@ class SupabaseSync {
   // ÉCRITURES (Edge Function admin-catalog — service_role)
   // ===========================================================================
 
+  /// Appel d'une route de l'EF (forme courte : la réponse décodée seule).
   Future<Map<String, dynamic>> _post(
     String route,
     Map<String, dynamic> body,
+  ) async => (await _postWithMeta(route, body)).data;
+
+  /// Appel d'une route de l'EF, TOLÉRANT (P4b-3, T1). Ordre : rejeux →
+  /// décodage tolérant → statut → corps.
+  ///   - 401 → [AdminAuthException] (logout forcé par le StoreController) ;
+  ///   - 403 → [AdminForbiddenException] (privilège insuffisant, pas de
+  ///     logout) ;
+  ///   - tout autre statut ≥ 400 → [AdminApiException] avec le statut et le
+  ///     corps décodé CONSERVÉS (`{}` si le corps n'est pas du JSON : page
+  ///     HTML de passerelle, corps vide…) ;
+  ///   - 2xx dont le corps n'est pas un objet JSON → [AdminApiException]
+  ///     « Réponse illisible du serveur (HTTP <code>). » (issue inconnue).
+  /// Le `fresh_token` (sliding session) est toujours retiré des données et
+  /// transmis à [onTokenRefreshed] seulement si c'est un JWT lisible dont
+  /// l'`exp` est dans le futur ([isJwtUsable]) ; sinon le jeton courant
+  /// reste.
+  /// Rend aussi le nombre de tentatives (rejeu visible, [PostResult]).
+  Future<PostResult> _postWithMeta(
+    String route,
+    Map<String, dynamic> body,
   ) async {
-    final http.Response res = await _withRetry(
+    final (http.Response res, int attempts) = await _withRetryCounted(
       () => http
           .post(
             Uri.parse('$catalogEndpoint/$route'),
@@ -552,37 +681,71 @@ class SupabaseSync {
           )
           .timeout(requestTimeout),
     );
-    final Map<String, dynamic> data =
-        jsonDecode(res.body) as Map<String, dynamic>;
+    Map<String, dynamic>? data;
+    try {
+      final Object? d = jsonDecode(res.body);
+      if (d is Map) data = Map<String, dynamic>.from(d);
+    } on FormatException {
+      data = null; // page HTML de passerelle, corps vide, octets invalides…
+    }
     if (res.statusCode >= 400) {
+      final Object? err = data?['error'];
+      final String msg = err is String && err.trim().isNotEmpty
+          ? err
+          : 'Erreur serveur (HTTP ${res.statusCode}).';
       // 401 = token admin expiré ou invalide → exception spécialisée pour
       // permettre au StoreController de forcer le logout.
       if (res.statusCode == 401) {
-        throw AdminAuthException(
-          data['error']?.toString() ?? 'Session expirée',
-        );
+        throw AdminAuthException(err is String ? err : 'Session expirée');
       }
       // 403 = compte authentifié mais privilège insuffisant (ex. logs/list
       // réservé au compte principal). Pas de logout : message dédié côté UI.
       if (res.statusCode == 403) {
         throw AdminForbiddenException(
-          data['error']?.toString() ?? 'Accès refusé (403)',
+          err is String ? err : 'Accès refusé (403)',
         );
       }
-      throw Exception(data['error'] ?? 'Erreur serveur (${res.statusCode})');
+      throw AdminApiException(
+        res.statusCode,
+        msg,
+        body: data ?? const <String, dynamic>{},
+      );
+    }
+    if (data == null) {
+      throw AdminApiException(
+        res.statusCode,
+        'Réponse illisible du serveur (HTTP ${res.statusCode}).',
+      );
     }
     // Sliding session : si la réponse contient un fresh_token, on notifie
     // le client pour qu'il remplace son token (prolongation 15 min).
-    final freshToken = data['fresh_token'];
-    if (freshToken is String && freshToken.isNotEmpty) {
-      onTokenRefreshed?.call(freshToken);
-      // Retire le fresh_token des données pour ne pas polluer les modèles.
-      data.remove('fresh_token');
+    // v2 (S-15) puis revue P4b-3 (SEC-P4b3-07) : seulement si c'est un JWT
+    // au payload lisible dont l'`exp` est dans le futur ([isJwtUsable]) —
+    // un jeton sans échéance ne remplace jamais le jeton courant.
+    final Object? fresh = data['fresh_token'];
+    if (fresh is String && isJwtUsable(fresh)) {
+      onTokenRefreshed?.call(fresh);
     }
-    return data;
+    // Retire le fresh_token des données pour ne pas polluer les modèles.
+    data.remove('fresh_token');
+    return (data: data, attempts: attempts);
   }
 
+  /// Erreur « objet attendu absent » d'une réponse 2xx (issue inconnue →
+  /// l'écran relit l'état). Le statut d'une réponse de succès de l'EF est
+  /// toujours 200 (`jsonWithFreshToken`).
+  static AdminApiException _unreadable() =>
+      const AdminApiException(200, 'Réponse illisible du serveur.');
+
+  /// Enregistre un NOUVEAU jeu (création seulement : id temporaire
+  /// `g-<ms>` ou absent — les 6 clés sont envoyées, accepté par
+  /// games_body.ts:80-87). Une MISE À JOUR passe par [patchGame] (envoi
+  /// partiel) : un UUID ici réécrirait les 6 champs depuis le cache.
   Future<Game> upsertGame(Game game) async {
+    assert(
+      !isUuid(game.id),
+      'upsertGame : création seulement (mise à jour → patchGame)',
+    );
     final data = await _post('games', {
       'id': game.id,
       'name': game.name,
@@ -599,6 +762,119 @@ class SupabaseSync {
 
   Future<void> deleteGame(String id) async {
     await _post('games/delete', {'id': id});
+  }
+
+  /// Clés modifiables d'un jeu existant (route `games`, games_body.ts).
+  static const Set<String> _gamePatchKeys = <String>{
+    'name',
+    'publisher',
+    'cover_url',
+    'release_date',
+    'active',
+  };
+
+  /// Met à jour un jeu EXISTANT par envoi PARTIEL (route `games`, v95) :
+  /// corps `{id, ...patch}` — clé présente = écrite (une valeur `null` est
+  /// ENVOYÉE et vaut effacement), clé absente = inchangée. [patch] non vide,
+  /// clés ⊂ {name, publisher, cover_url, release_date, active} (en snake_case)
+  /// ; une autre clé est ignorée (jamais envoyée). [id] : UUID.
+  ///
+  /// Rend la ligne serveur à jour. Erreurs : 400 (validations de
+  /// games_body.ts), 404 « Jeu introuvable. » ([AdminApiException.isNotFound]).
+  Future<Game> patchGame(String id, Map<String, Object?> patch) async {
+    assert(isUuid(id), 'patchGame : id UUID attendu');
+    assert(patch.isNotEmpty, 'patchGame : patch vide');
+    assert(
+      patch.keys.every(_gamePatchKeys.contains),
+      'patchGame : clé non prévue',
+    );
+    final Map<String, dynamic> data = await _post('games', <String, dynamic>{
+      for (final MapEntry<String, Object?> e in patch.entries)
+        if (_gamePatchKeys.contains(e.key)) e.key: e.value,
+      'id': id,
+    });
+    final Object? row = data['game'];
+    if (row is! Map) throw _unreadable();
+    return Game.fromJson(_camelRow(Map<String, dynamic>.from(row)));
+  }
+
+  /// Taille de page de [fetchAllGames] (plafond serveur : 1000).
+  static const int kGamesListPageSize = 500;
+
+  /// Une page de TOUS les jeux, actifs ET inactifs (route `games/list`,
+  /// v95 — la lecture anon est filtrée par la RLS sur `active = true`).
+  /// Corps STRICT `{page, pageSize, active?}` (`active` absent = tous).
+  /// Lignes illisibles (id ou nom non texte) ignorées ; `games` absent →
+  /// réponse illisible (jamais une liste vide supposée).
+  Future<({List<Game> games, int total})> fetchGamesList({
+    int page = 0,
+    int pageSize = kGamesListPageSize,
+    bool? active,
+  }) async {
+    final Map<String, dynamic> data = await _post('games/list', {
+      'page': page,
+      'pageSize': pageSize.clamp(1, 1000),
+      'active': ?active,
+    });
+    final Object? rows = data['games'];
+    if (rows is! List) throw _unreadable();
+    final List<Game> games = <Game>[
+      for (final Object? r in rows)
+        if (r is Map && r['id'] is String && r['name'] is String)
+          Game.fromJson(_camelRow(Map<String, dynamic>.from(r))),
+    ];
+    final Object? total = data['total'];
+    return (games: games, total: total is num ? total.toInt() : games.length);
+  }
+
+  /// Tous les jeux (filtrés par [active] s'il est donné) : pages de 500 tant
+  /// que `(page + 1) * 500 < total` (garde : 100 pages).
+  Future<List<Game>> fetchAllGames({bool? active}) async {
+    final List<Game> out = <Game>[];
+    for (var page = 0; page < 100; page++) {
+      final r = await fetchGamesList(
+        page: page,
+        pageSize: kGamesListPageSize,
+        active: active,
+      );
+      out.addAll(r.games);
+      if (r.games.isEmpty || (page + 1) * kGamesListPageSize >= r.total) {
+        break;
+      }
+    }
+    return out;
+  }
+
+  /// Aperçu de « Activer les jeux prêts » (route `games/activate-ready`,
+  /// `{dry_run: true}`, compte principal) : jeux INACTIFS ayant au moins
+  /// 10 contenus validés (aperçu NON borné). 403 hors compte principal ;
+  /// 500 « Aperçu impossible » (avec ou sans point).
+  Future<ReadyGamesPreview> previewReadyGames() async {
+    final Map<String, dynamic> data = await _post('games/activate-ready', {
+      'dry_run': true,
+    });
+    return ReadyGamesPreview.fromJson(data) ?? (throw _unreadable());
+  }
+
+  /// Plafond serveur d'une activation (games_body.ts : 1 à 500 ids).
+  static const int kActivateReadyMaxIds = 500;
+
+  /// Active les jeux prêts choisis (route `games/activate-ready`,
+  /// `{dry_run: false, ids}`, compte principal) : 1 à 500 UUID. Bilan
+  /// `activated` / `skipped` (`already_active`, `below_threshold`,
+  /// `not_found`) + [ActivateReadyResult.replayed].
+  Future<ActivateReadyResult> activateReadyGames(List<String> ids) async {
+    assert(
+      ids.isNotEmpty && ids.length <= kActivateReadyMaxIds,
+      'activateReadyGames : 1 à 500 identifiants',
+    );
+    assert(ids.every(isUuid), 'activateReadyGames : UUID attendus');
+    final PostResult r = await _postWithMeta('games/activate-ready', {
+      'dry_run': false,
+      'ids': ids,
+    });
+    return ActivateReadyResult.fromJson(r.data, replayed: r.attempts > 1) ??
+        (throw _unreadable());
   }
 
   // ── Traductions de titres de jeux (table game_translations) ──
@@ -878,12 +1154,36 @@ class SupabaseSync {
     return (data['count'] as int?) ?? 0;
   }
 
-  Future<void> banUser(String userId, {String? reason}) async {
-    await _post('profiles/ban', {'user_id': userId, 'reason': reason});
+  /// Ban MANUEL d'un compte (route `profiles/ban`, v95) : corps
+  /// `{user_id, reason, category?}` — `reason: null` gardé (accepté),
+  /// `category` absente = défaut serveur `moderation`. Rend `applied` |
+  /// `already_banned` + l'événement + [ManualBanResult.replayed]. Erreurs
+  /// `{error}` SANS `result` (404 « Profil introuvable. », 400
+  /// « category inconnue. »).
+  Future<ManualBanResult> banUser(
+    String userId, {
+    String? reason,
+    String? category,
+  }) async {
+    final PostResult r = await _postWithMeta('profiles/ban', {
+      'user_id': userId,
+      'reason': reason,
+      'category': ?category,
+    });
+    return ManualBanResult.fromJson(r.data, replayed: r.attempts > 1);
   }
 
-  Future<void> unbanUser(String userId) async {
-    await _post('profiles/unban', {'user_id': userId});
+  /// Levée MANUELLE d'un ban de compte (route `profiles/unban`) : rend
+  /// `lifted` | `not_banned`. Un ban AUTOMATIQUE (en revue ou confirmé)
+  /// arrive en [AdminApiException] 409 `result: auto_ban_use_review` avec
+  /// [AdminApiException.banEventId] (levée par le compte principal depuis la
+  /// modération).
+  Future<ManualUnbanResult> unbanUser(String userId) async {
+    // Rejeu visible (revue P4b-3, INF-01) : [ManualUnbanResult.replayed].
+    final PostResult r = await _postWithMeta('profiles/unban', {
+      'user_id': userId,
+    });
+    return ManualUnbanResult.fromJson(r.data, replayed: r.attempts > 1);
   }
 
   /// Crée ou modifie un abonnement Plus (route EF `subscriptions/upsert`).
@@ -1169,23 +1469,24 @@ class SupabaseSync {
   Future<void> deleteAnnuaireEntry(String id) =>
       _post('annuaire/delete', {'id': id});
 
-  /// Récupère la liste des utilisateurs bannis depuis Supabase (via Edge
-  /// Function `profiles/banned-list`).
-  ///
-  /// Retourne une liste de maps avec : id, displayName, reason.
-  /// Sert à synchroniser le cache local `_banned` avec l'état réel du serveur
-  /// (le bannissement peut être effectué depuis plusieurs menus).
-  Future<List<Map<String, dynamic>>> fetchBannedUsers() async {
-    final data = await _post('profiles/banned-list', <String, dynamic>{});
-    final banned = data['banned'] as List? ?? [];
-    return banned.map((b) {
-      final m = b as Map<String, dynamic>;
-      return <String, dynamic>{
-        'id': m['id'],
-        'displayName': m['display_name'] ?? 'Inconnu',
-        'reason': m['ban_reason'] ?? 'Modération',
-      };
-    }).toList();
+  /// TOUS les comptes bannis, enrichis (route `profiles/banned-list` sans
+  /// pagination, v95) : catégorie, origine, statut, événement du ban, ban
+  /// manuel présent, date. Tout admin. `banned` absent ou non liste →
+  /// [AdminApiException] (RV-10 : jamais une liste vide supposée — l'appelant
+  /// REMPLACE sa liste locale par la réponse) ; éléments sans `id` texte non
+  /// vide ignorés.
+  Future<List<BannedUser>> fetchBannedList() async {
+    final Map<String, dynamic> data = await _post(
+      'profiles/banned-list',
+      <String, dynamic>{},
+    );
+    final Object? rows = data['banned'];
+    if (rows is! List) throw _unreadable();
+    return <BannedUser>[
+      for (final Object? r in rows)
+        if (r is Map && r['id'] is String && (r['id'] as String).isNotEmpty)
+          BannedUser.fromServer(Map<String, dynamic>.from(r)),
+    ];
   }
 
   /// Récupère la liste des mauvais contributeurs depuis Supabase (via Edge
@@ -1494,43 +1795,103 @@ class SupabaseSync {
   /// serveur. La file pending de la chaîne est purgée automatiquement
   /// (motif « Chaîne bannie ») ; le rapport liste les contenus déjà
   /// publiés (retrait manuel via [unpublishByChannel]).
+  ///
+  /// v95 : [category] facultative (absente = défaut serveur `moderation`) ;
+  /// [BanChannelReport.result] = `applied` | `updated` | `auto_en_revue`
+  /// (chaîne déjà bannie automatiquement et en revue : rien purgé).
   Future<BanChannelReport> banChannel({
     required String handleOrUrl,
     required String reason,
     String? displayName,
+    String? category,
   }) async {
     final Map<String, dynamic> data = await _post('channels/ban', {
       'handle': handleOrUrl,
       'reason': reason,
       if (displayName != null && displayName.trim().isNotEmpty)
         'display_name': displayName.trim(),
+      'category': ?category,
     });
     return BanChannelReport.fromJson(data);
   }
 
-  /// Lève un bannissement (route EF `channels/unban`) — [id] = bigserial
-  /// de la ligne `banned_channels`.
-  Future<void> unbanChannel(int id) async {
-    await _post('channels/unban', {'id': id});
+  /// Lève un bannissement MANUEL (route EF `channels/unban`) — [id] =
+  /// bigserial de la ligne `banned_channels`. Rend `lifted` | `not_found`
+  /// (déjà levée) ; `lifted` si l'EF (antérieure) ne renvoie pas `result` ;
+  /// `replayed` = réponse obtenue après un rejeu (revue P4b-3, INF-01).
+  /// Une entrée AUTOMATIQUE arrive en [AdminApiException] 409
+  /// `auto_ban_use_review` avec [AdminApiException.banEventId].
+  Future<({String result, bool replayed})> unbanChannel(int id) async {
+    final PostResult r = await _postWithMeta('channels/unban', {'id': id});
+    final Object? result = r.data['result'];
+    return (
+      result: result is String && result.isNotEmpty ? result : 'lifted',
+      replayed: r.attempts > 1,
+    );
   }
 
   /// Retire les contenus DÉJÀ publiés d'une chaîne (route EF
   /// `contents/unpublish-by-channel`) — appelé UNIQUEMENT au clic manuel
   /// du rapport de bannissement (jamais automatique, contrat §70.3).
-  /// Retourne le nombre de contenus supprimés et leur liste {id,title,url}.
-  Future<({int deleted, List<Map<String, dynamic>> removed})>
-      unpublishByChannel(String handle) async {
-    final Map<String, dynamic> data = await _post(
-      'contents/unpublish-by-channel',
-      {'handle': handle},
-    );
+  /// Retourne le nombre de contenus supprimés, leur liste {id,title,url}
+  /// (renvoyés par le serveur) et `replayed` (réponse obtenue après un
+  /// rejeu : un bilan nul peut alors masquer une suppression faite au
+  /// premier essai).
+  Future<({int deleted, List<Map<String, dynamic>> removed, bool replayed})>
+  unpublishByChannel(String handle) async {
+    final PostResult r = await _postWithMeta('contents/unpublish-by-channel', {
+      'handle': handle,
+    });
+    final Object? deleted = r.data['deleted'];
+    final Object? removed = r.data['removed'];
     return (
-      deleted: (data['deleted'] as num?)?.toInt() ?? 0,
-      removed: (data['removed'] as List?)
-              ?.whereType<Map<String, dynamic>>()
-              .toList() ??
-          const [],
+      deleted: deleted is num ? deleted.toInt() : 0,
+      removed: removed is List
+          ? removed.whereType<Map<String, dynamic>>().toList()
+          : const <Map<String, dynamic>>[],
+      replayed: r.attempts > 1,
     );
+  }
+
+  /// Aperçu (`apply: false`) ou application (`apply: true`) de la purge d'une
+  /// chaîne bannie AUTOMATIQUEMENT et confirmée (route `channels/purge-auto`,
+  /// compte principal) : corps strict `{id, dry_run}` — `dry_run` TOUJOURS
+  /// explicite. [id] = `banned_channels.id`.
+  ///
+  /// Erreurs `{error}` SANS `result` (distinguer par statut, afficher
+  /// [AdminApiException.message]) : 403, 404 « Chaîne bannie introuvable. »,
+  /// 409 « Purge réservée aux chaînes bannies automatiquement. » ou
+  /// « Confirmez d'abord le bannissement (file de revue). ».
+  Future<PurgeAutoResult> purgeAutoChannel({
+    required int id,
+    required bool apply,
+  }) async {
+    final PostResult r = await _postWithMeta('channels/purge-auto', {
+      'id': id,
+      'dry_run': !apply,
+    });
+    return PurgeAutoResult.fromJson(r.data, replayed: r.attempts > 1);
+  }
+
+  /// Ligne `banned_channels` dont `ban_event_id == banEventId`, cherchée dans
+  /// `channels/banned-list` (pages de 100, tri le plus récent d'abord) sur
+  /// au plus [maxPages] pages ; `null` si absente. Sert de repli quand
+  /// `channel_row_id` manque (base sans 0096) et après l'`apply` d'une tête
+  /// de chaîne (ligne créée à l'instant → page 0).
+  Future<BannedChannel?> findBannedChannelByEventId(
+    int banEventId, {
+    int maxPages = 5,
+  }) async {
+    const int pageSize = 100;
+    for (var p = 0; p < maxPages; p++) {
+      final ({List<BannedChannel> items, int total}) res =
+          await fetchBannedChannels(page: p, pageSize: pageSize);
+      for (final BannedChannel c in res.items) {
+        if (c.banEventId == banEventId) return c;
+      }
+      if (res.items.isEmpty || (p + 1) * pageSize >= res.total) break;
+    }
+    return null;
   }
 
   // ===========================================================================
@@ -1620,5 +1981,173 @@ class SupabaseSync {
           SyncAckInfo.fromJson(a),
       ],
     );
+  }
+
+  // ===========================================================================
+  // MODÉRATION (routes EF moderation/* — migration 0094, P4b-3)
+  // ===========================================================================
+  // Corps JSON EXACTS : les routes strictes (review-detail, review-decide,
+  // events-list, settings-set, evidence-purge) refusent toute clé inconnue
+  // et settings-set refuse une clé PRÉSENTE à null → éléments null-aware
+  // (`'k': ?v`) pour omettre une clé nulle. `pageSize` en camelCase, le
+  // reste en snake_case. Les messages d'erreur affichés sont ceux du serveur
+  // ([AdminApiException.message]) ; seuls les 409 de review-decide portent
+  // `result`.
+
+  /// Catégories de bannissement (route `moderation/categories`, tout admin),
+  /// dans l'ordre serveur ; liste vide si `categories` est absente ou
+  /// illisible (l'appelant se replie sur `kManualBanCategoriesFallback`).
+  Future<List<BanCategory>> fetchBanCategories() async {
+    final Map<String, dynamic> data = await _post(
+      'moderation/categories',
+      <String, dynamic>{},
+    );
+    final Object? rows = data['categories'];
+    if (rows is! List) return const <BanCategory>[];
+    return rows
+        .map(BanCategory.fromJson)
+        .whereType<BanCategory>()
+        .toList(growable: false);
+  }
+
+  /// Une page de la file de revue (route `moderation/review-list`, compte
+  /// principal) : corps `{page, pageSize}` (pageSize borné 1-100). 403 hors
+  /// compte principal. `items` absent → réponse illisible (jamais une file
+  /// vide supposée).
+  Future<ReviewQueuePage> fetchReviewList({
+    int page = 0,
+    int pageSize = 50,
+  }) async {
+    final Map<String, dynamic> data = await _post('moderation/review-list', {
+      'page': page,
+      'pageSize': pageSize.clamp(1, 100),
+    });
+    if (data['items'] is! List) throw _unreadable();
+    return ReviewQueuePage.fromJson(data);
+  }
+
+  /// Détail d'un événement et sa preuve (route `moderation/review-detail`,
+  /// compte principal) : corps `{event_id}`. 404 « Événement introuvable. ».
+  Future<ReviewDetail> fetchReviewDetail(int eventId) async {
+    final Map<String, dynamic> data = await _post('moderation/review-detail', {
+      'event_id': eventId,
+    });
+    return ReviewDetail.fromJson(data) ?? (throw _unreadable());
+  }
+
+  /// Décision de revue (route `moderation/review-decide`, compte principal) :
+  /// corps `{event_id, decision, reason?}` — [reason] = motif DÉJÀ normalisé
+  /// (lot L3, `normalizeReviewReason`), omis s'il est nul (obligatoire pour
+  /// `lift`). 200 : les 7 clés + [ReviewDecideResult.replayed] ; 409 avec
+  /// `result` (`not_applicable`, `ban_not_active`, `below_threshold` +
+  /// `distinct_contents` / `threshold`).
+  Future<ReviewDecideResult> reviewDecide(
+    int eventId,
+    ReviewDecision decision, {
+    String? reason,
+  }) async {
+    final PostResult r = await _postWithMeta('moderation/review-decide', {
+      'event_id': eventId,
+      'decision': decision.code,
+      'reason': ?reason,
+    });
+    return ReviewDecideResult.fromJson(r.data, replayed: r.attempts > 1);
+  }
+
+  /// Journal des événements (route `moderation/events-list`, compte
+  /// principal) : corps `{page, pageSize, target_kind?, target_key?,
+  /// action?}` (pageSize borné 1-100). [targetKey] rogné ; vide après rognage
+  /// → clé ABSENTE (l'EF accepterait `''` et filtrerait `target_key = ''`).
+  /// `items` absent → réponse illisible.
+  Future<EventsPage> fetchEvents({
+    int page = 0,
+    int pageSize = 50,
+    String? targetKind,
+    String? targetKey,
+    String? action,
+  }) async {
+    final String? trimmed = targetKey?.trim();
+    final String? key = (trimmed == null || trimmed.isEmpty) ? null : trimmed;
+    final Map<String, dynamic> data = await _post('moderation/events-list', {
+      'page': page,
+      'pageSize': pageSize.clamp(1, 100),
+      'target_kind': ?targetKind,
+      'target_key': ?key,
+      'action': ?action,
+    });
+    if (data['items'] is! List) throw _unreadable();
+    return EventsPage.fromJson(data);
+  }
+
+  /// Réglages de la modération automatique (route `moderation/settings-get`,
+  /// compte principal). `settings` illisible → [AdminApiException]
+  /// « Réponse illisible du serveur. ».
+  Future<ModerationSettings> fetchModerationSettings() async {
+    final Map<String, dynamic> data = await _post(
+      'moderation/settings-get',
+      <String, dynamic>{},
+    );
+    return ModerationSettings.fromJson(data['settings']) ??
+        (throw _unreadable());
+  }
+
+  /// Modifie les réglages (route `moderation/settings-set`, compte
+  /// principal) : SEULES les clés non nulles sont envoyées (au moins une) ;
+  /// [allowedRulesSha256] REMPLACE toute la liste (`[]` = plus aucune
+  /// empreinte autorisée). Rend les réglages relus ; `settings: null` →
+  /// réponse illisible. 400 du parseur `{error}` SANS `reasons` (« Rien à
+  /// modifier. », bornes…).
+  Future<ModerationSettings> updateModerationSettings({
+    bool? autoBanEnabled,
+    int? maxPerHour,
+    int? maxPerDay,
+    List<String>? allowedRulesSha256,
+  }) async {
+    assert(
+      autoBanEnabled != null ||
+          maxPerHour != null ||
+          maxPerDay != null ||
+          allowedRulesSha256 != null,
+      'updateModerationSettings : au moins un réglage à modifier',
+    );
+    final Map<String, dynamic> data = await _post('moderation/settings-set', {
+      'auto_ban_enabled': ?autoBanEnabled,
+      'max_auto_bans_per_hour': ?maxPerHour,
+      'max_auto_bans_per_day': ?maxPerDay,
+      'allowed_rules_sha256': ?allowedRulesSha256,
+    });
+    return ModerationSettings.fromJson(data['settings']) ??
+        (throw _unreadable());
+  }
+
+  /// Aperçu (`apply: false`) ou purge (`apply: true`) des preuves de plus de
+  /// [olderThanDays] jours (route `moderation/evidence-purge`, compte
+  /// principal) : corps `{older_than_days, dry_run}` — `dry_run` TOUJOURS
+  /// explicite (absent = aperçu côté serveur). 400 « older_than_days : 30 à
+  /// 3650. ».
+  Future<EvidencePurgeResult> purgeEvidence({
+    required int olderThanDays,
+    required bool apply,
+  }) async {
+    final PostResult r = await _postWithMeta('moderation/evidence-purge', {
+      'older_than_days': olderThanDays,
+      'dry_run': !apply,
+    });
+    return EvidencePurgeResult.fromJson(r.data, replayed: r.attempts > 1);
+  }
+
+  /// Pages web bloquées (route `moderation/blocked-pages/list`, tout admin) :
+  /// corps `{page, pageSize}` (pageSize borné 1-500). `pages` absent →
+  /// réponse illisible.
+  Future<BlockedPagesPage> fetchBlockedPages({
+    int page = 0,
+    int pageSize = 100,
+  }) async {
+    final Map<String, dynamic> data = await _post(
+      'moderation/blocked-pages/list',
+      {'page': page, 'pageSize': pageSize.clamp(1, 500)},
+    );
+    if (data['pages'] is! List) throw _unreadable();
+    return BlockedPagesPage.fromJson(data);
   }
 }

@@ -1,19 +1,34 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart' as ul;
 
+import '../../core/auth/auth_controller.dart';
 import '../../core/theme/colors.dart';
+import '../../domain/ids.dart';
+import '../../domain/models/banned_user.dart';
 import '../../domain/models/category.dart';
 import '../../domain/models/game.dart';
 import '../../domain/models/suggestion.dart';
+import '../../domain/moderation_actions.dart' show ModerationFocus;
+import '../../domain/moderation_text.dart';
+import '../../domain/web_link.dart';
 import '../../state/store_controller.dart';
+import '../widgets/account_ban_flows.dart';
 import '../widgets/admin_data_table.dart';
 import '../widgets/confirm_dialog.dart';
+import '../widgets/moderation/account_ban_widgets.dart';
+import '../widgets/moderation/moderation_ui.dart' show UntrustedLine;
 import '../widgets/stat_card.dart' show StatusBadge;
 
 /// Modération des suggestions : triées par date de partage, valider / refuser.
 class SuggestionsScreen extends StatefulWidget {
-  const SuggestionsScreen({super.key});
+  const SuggestionsScreen({super.key, this.onOpenModeration});
+
+  /// Ouvre le menu Modération (« Ouvrir dans Modération » de la levée d'un
+  /// ban automatique) ; nul = pas de lien.
+  final void Function([ModerationFocus? focus])? onOpenModeration;
 
   @override
   State<SuggestionsScreen> createState() => _SuggestionsScreenState();
@@ -27,8 +42,23 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
   static const int _pageSize = 500;
 
   @override
+  void initState() {
+    super.initState();
+    // P4b-3 (§5.2, ETAT-01) : la liste des bannis n'est lue qu'à la
+    // connexion — relue à l'ouverture pour que le badge d'origine (T3)
+    // reflète l'état serveur (le 409 du déban reste le filet de sécurité).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(
+        context.read<StoreController>().reloadBannedList(reportErrors: false),
+      );
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final StoreController store = context.watch<StoreController>();
+    final bool isOwner = context.watch<AuthController>().isOwner;
 
     // Filtres d'origine (colonne `source`) : Vision et / ou Scruteur
     // masqués — les deux = suggestions des utilisateurs seules. Les
@@ -188,17 +218,9 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
             ],
             rows: pagedList
                 .map((s) => [
-                      InkWell(
-                        onTap: () => ul.launchUrl(Uri.parse(s.url),
-                            mode: ul.LaunchMode.externalApplication),
-                        child: Text(s.url,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 13,
-                                color: AppColors.neonCyan,
-                                decoration: TextDecoration.underline)),
-                      ),
+                      // P4b-3 (S-16) : URL révélée sur une ligne ; ouvrable
+                      // seulement si http(s) avec un hôte.
+                      _SuggestionUrl(url: s.url),
                       // Colonne Auteur : avatar + pseudo + id + badge banni.
                       Row(
                         children: [
@@ -226,9 +248,12 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     Flexible(
-                                      child: Text(s.author.displayName,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
+                                      // Nom choisi par un tiers (revue
+                                      // P4b-3, SEC-P4b3-02) : invisibles
+                                      // révélés, longueur bornée.
+                                      child: UntrustedLine(
+                                          s.author.displayName,
+                                          max: 60,
                                           style: const TextStyle(
                                               fontSize: 12.5,
                                               fontWeight: FontWeight.w700)),
@@ -238,6 +263,16 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                                       StatusBadge(
                                           label: 'BANNI',
                                           color: AppColors.categoryVideo),
+                                      if (store
+                                              .bannedEntry(s.author.id)
+                                              ?.isAuto ??
+                                          false) ...[
+                                        const SizedBox(width: 4),
+                                        AutoBanPill(
+                                            status: store
+                                                .bannedEntry(s.author.id)
+                                                ?.status),
+                                      ],
                                     ],
                                     if (store.isPlusUser(s.author.id)) ...[
                                       const SizedBox(width: 5),
@@ -324,9 +359,10 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                           ),
                         ],
                       ),
-                      Text(s.sharedText ?? '—',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                      // Texte partagé par un tiers (revue P4b-3,
+                      // SEC-P4b3-02) : une ligne, invisibles révélés, borné.
+                      UntrustedLine(s.sharedText ?? '—',
+                          max: 120,
                           style: TextStyle(
                               fontSize: 12,
                               color: Theme.of(context)
@@ -377,41 +413,57 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                               ),
                             ),
                           ],
-                          // Modération du compte : bannir / débannir l'auteur.
-                          if (store.isAuthorBanned(s.author.id))
-                            IconButton(
-                              tooltip: 'Débannir le compte',
-                              icon: const Icon(Icons.lock_open_rounded,
-                                  size: 20),
-                              color: AppColors.neonGreen,
-                              onPressed: () => store.unban(s.author.id),
-                            )
-                          else
-                            IconButton(
-                              tooltip: 'Bannir le compte',
-                              icon: const Icon(Icons.block_rounded, size: 20),
-                              color: AppColors.categoryVideo,
-                              onPressed: () => showDialog<void>(
-                                context: context,
-                                builder: (_) => ConfirmDialog(
-                                  title:
-                                      'Bannir ${s.author.displayName} ?',
-                                  message:
-                                      'Le compte Google identifié (${s.author.id}) '
-                                      'sera banni. Il ne pourra plus soumettre de '
-                                      'suggestions.',
-                                  confirmLabel: 'Bannir',
-                                  destructive: true,
-                                  onConfirm: () => store.banAuthor(s),
-                                ),
-                              ),
-                            ),
+                          // Modération du compte : bannir / débannir l'auteur
+                          // (P4b-3, T3 / T5) — masquée pour un auteur non
+                          // UUID (partage d'un bot : rien à bannir).
+                          if (isUuid(s.author.id))
+                            _authorBanButton(context, store, s, isOwner),
                         ],
                       ),
                     ])
                 .toList(),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Bouton de ban de l'auteur : banni → « Débannir » / « Lever » selon
+  /// l'origine connue ; sinon « Bannir le compte » (catégorie + motif).
+  Widget _authorBanButton(
+    BuildContext context,
+    StoreController store,
+    Suggestion s,
+    bool isOwner,
+  ) {
+    final BannedUser? entry = store.bannedEntry(s.author.id);
+    if (entry != null) {
+      return AccountUnbanIconButton(
+        control: accountUnbanControl(entry, isOwner: isOwner),
+        onUnban: () => _unbanAuthor(context, s, entry),
+        onLift: () => _unbanAuthor(context, s, entry),
+      );
+    }
+    return IconButton(
+      tooltip: 'Bannir le compte',
+      icon: const Icon(Icons.block_rounded, size: 20),
+      color: AppColors.categoryVideo,
+      onPressed: () => banAccountFlow(
+        context,
+        userId: s.author.id,
+        displayName: s.author.displayName,
+      ),
+    );
+  }
+
+  void _unbanAuthor(BuildContext context, Suggestion s, BannedUser entry) {
+    unawaited(
+      accountUnbanFlow(
+        context,
+        userId: s.author.id,
+        name: s.author.displayName,
+        entry: entry,
+        onOpenModeration: widget.onOpenModeration,
       ),
     );
   }
@@ -437,6 +489,44 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
   static String _formatDate(DateTime d) =>
       '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year} '
       '${d.hour.toString().padLeft(2, '0')}h${d.minute.toString().padLeft(2, '0')}';
+}
+
+/// URL d'une suggestion (P4b-3, S-16) : texte choisi par l'auteur du
+/// partage, affiché révélé sur UNE ligne (`oneLinePreview`, 80 points de
+/// code, gauche-à-droite) ; lien seulement pour une URL http(s) avec hôte
+/// ([webLinkUri]), sinon texte non cliquable avec infobulle.
+class _SuggestionUrl extends StatelessWidget {
+  const _SuggestionUrl({required this.url});
+
+  final String url;
+
+  @override
+  Widget build(BuildContext context) {
+    final Uri? uri = webLinkUri(url);
+    final Widget text = Directionality(
+      textDirection: TextDirection.ltr,
+      child: Text(
+        oneLinePreview(url, max: 80),
+        maxLines: 1,
+        softWrap: false,
+        overflow: TextOverflow.ellipsis,
+        style: uri == null
+            ? const TextStyle(fontSize: 13)
+            : const TextStyle(
+                fontSize: 13,
+                color: AppColors.neonCyan,
+                decoration: TextDecoration.underline,
+              ),
+      ),
+    );
+    if (uri == null) {
+      return Tooltip(message: kNonWebLinkTooltip, child: text);
+    }
+    return InkWell(
+      onTap: () => ul.launchUrl(uri, mode: ul.LaunchMode.externalApplication),
+      child: text,
+    );
+  }
 }
 
 class _StatusTab extends StatelessWidget {

@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:html' as html;
 
 import 'package:flutter/foundation.dart';
 
@@ -8,6 +7,7 @@ import '../../domain/models/content.dart';
 import '../../domain/models/game.dart';
 import '../../domain/models/plus_user.dart';
 import '../../domain/models/suggestion.dart';
+import 'local_storage.dart';
 
 /// Couche d'accès aux données du panneau admin (phase mock).
 ///
@@ -37,24 +37,24 @@ class Store {
 
   /// Initialise le localStorage au 1er lancement à partir des seeds.
   void ensureInitialized() {
-    if (html.window.localStorage[_kInitialized] != 'true') {
-      html.window.localStorage[_kGames] = gamesSeed;
-      html.window.localStorage[_kContents] = contentsSeed;
-      html.window.localStorage[_kSuggestions] = suggestionsSeed;
-      html.window.localStorage[_kBanned] = bannedSeed;
-      html.window.localStorage[_kPlus] = plusSeed;
-      html.window.localStorage[_kInitialized] = 'true';
+    if (browserLocalStorage[_kInitialized] != 'true') {
+      browserLocalStorage[_kGames] = gamesSeed;
+      browserLocalStorage[_kContents] = contentsSeed;
+      browserLocalStorage[_kSuggestions] = suggestionsSeed;
+      browserLocalStorage[_kBanned] = bannedSeed;
+      browserLocalStorage[_kPlus] = plusSeed;
+      browserLocalStorage[_kInitialized] = 'true';
     }
   }
 
   /// Restaure les données seed (bouton « Réinitialiser la démo »).
   void resetToSeed() {
-    html.window.localStorage[_kGames] = gamesSeed;
-    html.window.localStorage[_kContents] = contentsSeed;
-    html.window.localStorage[_kSuggestions] = suggestionsSeed;
-    html.window.localStorage[_kBanned] = bannedSeed;
-    html.window.localStorage[_kPlus] = plusSeed;
-    html.window.localStorage[_kInitialized] = 'true';
+    browserLocalStorage[_kGames] = gamesSeed;
+    browserLocalStorage[_kContents] = contentsSeed;
+    browserLocalStorage[_kSuggestions] = suggestionsSeed;
+    browserLocalStorage[_kBanned] = bannedSeed;
+    browserLocalStorage[_kPlus] = plusSeed;
+    browserLocalStorage[_kInitialized] = 'true';
   }
 
   // ---------- Jeux ----------
@@ -89,7 +89,7 @@ class Store {
       return;
     }
     try {
-      html.window.localStorage[_kContents] = json;
+      browserLocalStorage[_kContents] = json;
     } catch (e) {
       // QuotaExceededError (localStorage plein) ou refus du navigateur :
       // non bloquant, le cache sera simplement absent au prochain démarrage.
@@ -108,6 +108,10 @@ class Store {
   void saveBanned(List<BannedUser> banned) =>
       _saveList(_kBanned, banned.map((b) => b.toJson()).toList());
 
+  /// Efface la liste des bannis mise en cache (production : jamais de cache
+  /// de ces textes de tiers — revue P4b-3, SEC-P4b3-01).
+  void clearBanned() => browserLocalStorage.remove(_kBanned);
+
   // ---------- Utilisateurs Plus ----------
   // MODE APERÇU LOCAL uniquement : en production, la liste des abonnés n'est
   // jamais persistée (pagination serveur — migration 0085).
@@ -117,7 +121,7 @@ class Store {
 
   /// Efface la liste d'abonnés mise en cache par les versions précédentes du
   /// panneau (production — données réelles, périmées).
-  void clearPlus() => html.window.localStorage.remove(_kPlus);
+  void clearPlus() => browserLocalStorage.remove(_kPlus);
 
   // ---------- Curseurs de sync incrémentale ----------
   //
@@ -131,7 +135,7 @@ class Store {
   /// Lit le curseur du dataset [name] : valeur ISO (`updated_at` max vu,
   /// marge déjà déduite) + horodatage du fetch. Null si absent/illisible.
   ({String value, DateTime fetchedAt})? loadCursor(String name) {
-    final String? raw = html.window.localStorage['$_kCursorPrefix$name'];
+    final String? raw = browserLocalStorage['$_kCursorPrefix$name'];
     if (raw == null || raw.isEmpty) return null;
     try {
       final Map<String, dynamic> m = jsonDecode(raw) as Map<String, dynamic>;
@@ -146,26 +150,27 @@ class Store {
 
   /// Persiste le curseur du dataset [name].
   void saveCursor(String name, String value, DateTime fetchedAt) {
-    html.window.localStorage['$_kCursorPrefix$name'] = jsonEncode(
-      <String, String>{'v': value, 'at': fetchedAt.toUtc().toIso8601String()},
-    );
+    browserLocalStorage['$_kCursorPrefix$name'] = jsonEncode(<String, String>{
+      'v': value,
+      'at': fetchedAt.toUtc().toIso8601String(),
+    });
   }
 
   /// Efface le curseur du dataset [name] (force une full sync au prochain
   /// chargement).
   void clearCursor(String name) {
-    html.window.localStorage.remove('$_kCursorPrefix$name');
+    browserLocalStorage.remove('$_kCursorPrefix$name');
   }
 
   // ---------- Helpers ----------
   List<T> _loadList<T>(String key, T Function(Map<String, dynamic>) fromJson) {
-    final String? raw = html.window.localStorage[key];
+    final String? raw = browserLocalStorage[key];
     if (raw == null || raw.isEmpty) return <T>[];
     final List<dynamic> list = jsonDecode(raw) as List<dynamic>;
     return list.map((e) => fromJson(e as Map<String, dynamic>)).toList();
   }
 
   void _saveList(String key, List<Map<String, dynamic>> data) {
-    html.window.localStorage[key] = jsonEncode(data);
+    browserLocalStorage[key] = jsonEncode(data);
   }
 }

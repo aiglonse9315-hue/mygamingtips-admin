@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/auth/auth_controller.dart';
 import '../../core/theme/colors.dart';
+import '../../domain/moderation_actions.dart' show ModerationFocus;
 import '../../state/store_controller.dart';
 import '../widgets/admin_sidebar.dart';
 import '../widgets/admin_topbar.dart';
@@ -20,6 +21,7 @@ import 'games_screen.dart';
 import 'limites_screen.dart';
 import 'login_screen.dart';
 import 'logs_screen.dart';
+import 'moderation_screen.dart';
 import 'sentinelle_screen.dart';
 import 'scruteur_screen.dart';
 import 'suggestions_screen.dart';
@@ -67,10 +69,30 @@ class _AdminShellState extends State<AdminShell> {
   static const NavItem _comptesItem =
       NavItem('Comptes', Icons.manage_accounts_rounded, '/comptes');
 
-  /// Items de navigation effectifs : [_items] + « Log » et « Comptes » si (et
-  /// seulement si) la session courante est owner.
-  static List<NavItem> _navItems({required bool isOwner}) =>
-      isOwner ? [..._items, _logsItem, _comptesItem] : _items;
+  /// Menu « Modération » (P4b-3, D1) — réservé au compte principal (owner),
+  /// même règle que [_logsItem] (le serveur applique la vraie sécurité : 403
+  /// sur `moderation/*` sinon). File de revue des bans automatiques,
+  /// réglages, pages bloquées, journal.
+  static const NavItem _moderationItem =
+      NavItem('Modération', Icons.gavel_rounded, '/moderation');
+
+  /// Items de navigation effectifs : [_items] + « Modération », « Log » et
+  /// « Comptes » si (et seulement si) la session courante est owner.
+  static List<NavItem> _navItems({required bool isOwner}) => isOwner
+      ? [..._items, _moderationItem, _logsItem, _comptesItem]
+      : _items;
+
+  /// Navigation avec paramètre vers « Modération » (P4b-3, §6.1) : événement
+  /// à ouvrir en détail + statut connu de l'appelant. Le compteur force la
+  /// reconstruction de l'écran (nouvelle clé) à chaque navigation.
+  ModerationFocus? _moderationFocus;
+  int _moderationFocusSeq = 0;
+
+  void _openModeration([ModerationFocus? focus]) => setState(() {
+    _route = '/moderation';
+    _moderationFocus = focus;
+    _moderationFocusSeq++;
+  });
 
   @override
   void initState() {
@@ -190,6 +212,7 @@ class _AdminShellState extends State<AdminShell> {
           child: DashboardScreen(
             onOpenSuggestions: () => _go('/suggestions'),
             onOpenAbonnements: () => _go('/abonnements'),
+            onOpenModeration: _openModeration,
           ),
         );
       case '/games':
@@ -207,9 +230,9 @@ class _AdminShellState extends State<AdminShell> {
           child: ContentsScreen(),
         );
       case '/suggestions':
-        return const _DatasetGate(
-          datasets: {SyncDataset.suggestionsNew, SyncDataset.games},
-          child: SuggestionsScreen(),
+        return _DatasetGate(
+          datasets: const {SyncDataset.suggestionsNew, SyncDataset.games},
+          child: SuggestionsScreen(onOpenModeration: _openModeration),
         );
       case '/sentinelle':
         return const _DatasetGate(
@@ -229,7 +252,7 @@ class _AdminShellState extends State<AdminShell> {
       case '/abonnements':
         // Pagination SERVEUR (migration 0085) : l'écran charge lui-même sa
         // page de 100 abonnés — plus de chargement complet ni de _DatasetGate.
-        return const AbonnementsScreen();
+        return AbonnementsScreen(onOpenModeration: _openModeration);
       case '/analytics':
         // Fetch direct (pattern Contributeurs/Limite) : pas de _DatasetGate,
         // AUCUN dataset synchronisé → ce menu ne déclenche PAS de full sync
@@ -238,9 +261,9 @@ class _AdminShellState extends State<AdminShell> {
       case '/contributors':
         return const ContributorsScreen();
       case '/banned':
-        return const _DatasetGate(
-          datasets: {SyncDataset.banned},
-          child: BannedScreen(),
+        return _DatasetGate(
+          datasets: const {SyncDataset.banned},
+          child: BannedScreen(onOpenModeration: _openModeration),
         );
       case '/limites':
         return const LimitesScreen();
@@ -248,18 +271,31 @@ class _AdminShellState extends State<AdminShell> {
         return const LogsScreen();
       case '/comptes':
         return const AdminUsersScreen();
+      case '/moderation':
+        // Pas de _DatasetGate ni de badge de fraîcheur (comme /logs) : l'écran
+        // lit lui-même ses données (routes moderation/*).
+        return ModerationScreen(
+          key: ValueKey<String>('moderation-$_moderationFocusSeq'),
+          focus: _moderationFocus,
+        );
       default:
         return _DatasetGate(
           datasets: StoreController.dashboardDatasets,
           child: DashboardScreen(
             onOpenSuggestions: () => _go('/suggestions'),
             onOpenAbonnements: () => _go('/abonnements'),
+            onOpenModeration: _openModeration,
           ),
         );
     }
   }
 
-  void _go(String route) => setState(() => _route = route);
+  /// Navigation simple (barre latérale, liens) : efface le paramètre de
+  /// « Modération ».
+  void _go(String route) => setState(() {
+    _route = route;
+    _moderationFocus = null;
+  });
 
   /// Charge les datasets du dashboard après login puis masque l'écran de
   /// chargement.
@@ -317,10 +353,11 @@ class _AdminShellState extends State<AdminShell> {
       });
     }
 
-    // Menu dynamique : « Log » et « Comptes » n'existent que pour le compte
-    // principal (owner). Garde-fou : si la route courante n'est plus dans le
-    // menu (ex. logout d'un compte owner puis login d'un compte non owner
-    // sur /logs ou /comptes), on rebascule sur le dashboard.
+    // Menu dynamique : « Modération », « Log » et « Comptes » n'existent que
+    // pour le compte principal (owner). Garde-fou : si la route courante
+    // n'est plus dans le menu (ex. logout d'un compte owner puis login d'un
+    // compte non owner sur /moderation, /logs ou /comptes), on rebascule sur
+    // le dashboard.
     final List<NavItem> items = _navItems(isOwner: auth.isOwner);
     if (!items.any((i) => i.route == _route)) {
       _route = '/dashboard';

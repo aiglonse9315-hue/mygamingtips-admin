@@ -16,6 +16,8 @@ import 'package:mgt_admin/data/supabase_sync.dart';
 import 'package:mgt_admin/domain/models/trusted_channel.dart';
 import 'package:mgt_admin/domain/trusted_channels_paging.dart';
 
+import 'support/http_fixtures.dart' show testJwt;
+
 /// Espace fine insécable (séparateur de milliers de formatCount).
 const String nnbsp = '\u202F';
 
@@ -410,15 +412,16 @@ void main() {
 
   group('SupabaseSync (appel HTTP simulé)', () {
     SupabaseSync sync() => SupabaseSync(
-      supabaseUrl: 'https://exemple.supabase.co',
+      supabaseUrl: 'https://exemple.invalid',
       anonKey: 'anon',
-      catalogEndpoint: 'https://exemple.supabase.co/functions/v1/admin-catalog',
+      catalogEndpoint: 'https://exemple.invalid/functions/v1/admin-catalog',
       adminToken: 'jeton',
     );
 
     test('fetchTrustedChannelsPage : route, corps page/games_per_page/search '
         'et lecture de la réponse', () async {
       final List<http.Request> seen = <http.Request>[];
+      final String fresh = testJwt();
       final MockClient client = MockClient((http.Request req) async {
         seen.add(req);
         return http.Response(
@@ -430,7 +433,9 @@ void main() {
             'total_channels': 1,
             'page': 0,
             'games_per_page': 5,
-            'fresh_token': 'nouveau',
+            // P4b-3 (S-15, SEC-P4b3-07) : un fresh_token n'est transmis que
+            // si c'est un JWT lisible à échéance future.
+            'fresh_token': fresh,
           }),
           200,
           headers: <String, String>{
@@ -457,7 +462,7 @@ void main() {
       });
       expect(page.channels.single.id, 'c1');
       expect(page.totalGames, 1);
-      expect(refreshed, 'nouveau');
+      expect(refreshed, fresh);
     });
 
     test('fetchTrustedChannelGameIds : route handle-games, handle rogné, '

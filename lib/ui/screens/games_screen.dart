@@ -1,18 +1,33 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/auth/auth_controller.dart';
 import '../../core/i18n/app_languages.dart';
 import '../../core/theme/colors.dart';
 import '../../data/supabase_sync.dart';
 import '../../domain/game_alias_payload.dart';
+import '../../domain/games_screen_rules.dart';
 import '../../domain/models/game.dart';
 import '../../domain/models/game_alias.dart';
 import '../../domain/title_cleaning.dart';
 import '../../state/store_controller.dart';
 import '../widgets/admin_data_table.dart';
 import '../widgets/confirm_dialog.dart';
+import '../widgets/games/game_edit_dialog.dart';
+import '../widgets/games/games_flows.dart';
+import '../widgets/games/inactive_games_section.dart';
 
 /// Gestion des jeux : liste + ajout + activation + suppression + recherche.
+///
+/// P4b-3 (lot L9, conception §6.13, D2, T7) : tableau principal limité aux
+/// jeux ACTIFS ; section « Jeux inactifs » lue au serveur à l'ouverture du
+/// menu ; « Activer les jeux prêts » (compte principal) ; confirmation avant
+/// de désactiver ; envoi PARTIEL et dialogue d'édition qui attend la réponse
+/// ([GameEditDialog]). La logique testable vit dans
+/// `domain/games_screen_rules.dart` et `ui/widgets/games/` ; cet écran n'est
+/// que la colle Provider.
 class GamesScreen extends StatefulWidget {
   const GamesScreen({super.key});
 
@@ -30,6 +45,24 @@ class _GamesScreenState extends State<GamesScreen> {
 
   /// Synchronisation des alias connus en cours (désactive le bouton).
   bool _aliasesSyncRunning = false;
+
+  /// « Activer les jeux prêts » en cours (aperçu puis dialogue).
+  bool _readyRunning = false;
+
+  /// Jeux dont une bascule actif / inactif est en cours (indicateur par
+  /// ligne, bouton désactivé).
+  final Set<String> _busyGameIds = <String>{};
+
+  @override
+  void initState() {
+    super.initState();
+    // Jeux inactifs relus à chaque ouverture du menu (jamais persistés ; la
+    // lecture publique des jeux ne les voit pas).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(context.read<StoreController>().loadInactiveGames());
+    });
+  }
 
   @override
   void dispose() {
@@ -216,20 +249,63 @@ class _GamesScreenState extends State<GamesScreen> {
     }
   }
 
+  /// « Activer les jeux prêts » (compte principal) : aperçu, dialogue
+  /// d'information ou `ReadyGamesDialog`, bilan. Le contrôleur relance les
+  /// erreurs ; le 401 de l'aperçu est traité ici (`onAuthError`), celui de
+  /// l'activation par le dialogue.
+  Future<void> _runReadyGames(StoreController store) async {
+    if (_readyRunning) return;
+    setState(() => _readyRunning = true);
+    try {
+      await runReadyGamesFlow(
+        context,
+        preview: store.previewReadyGames,
+        apply: store.activateReadyGames,
+        onAuthError: () => store.onAuthError?.call(),
+      );
+    } finally {
+      if (mounted) setState(() => _readyRunning = false);
+    }
+  }
+
+  /// Bascule actif / inactif d'un jeu (`{id, active}` seul) : désactiver
+  /// demande une confirmation (D2), réactiver non. Indicateur par ligne.
+  Future<void> _setActive(
+      BuildContext context, StoreController store, Game g, bool active) async {
+    await runSetGameActive(
+      context,
+      game: g,
+      active: active,
+      setActive: store.setGameActive,
+      onBusy: (bool busy) {
+        if (!mounted) return;
+        setState(() {
+          if (busy) {
+            _busyGameIds.add(g.id);
+          } else {
+            _busyGameIds.remove(g.id);
+          }
+        });
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final StoreController store = context.watch<StoreController>();
+    final bool isOwner = context.watch<AuthController>().isOwner;
+    final bool hasSync = store.sync != null;
 
-    // Filtre par recherche (nom ou éditeur) — sur l'ensemble des jeux.
-    List<Game> games = store.games;
-    if (_search.isNotEmpty) {
-      final q = _search.toLowerCase();
-      games = games
-          .where((g) =>
-              g.name.toLowerCase().contains(q) ||
-              (g.publisher?.toLowerCase().contains(q) ?? false))
-          .toList();
-    }
+    // Tableau principal : jeux ACTIFS seulement (les inactifs ont leur
+    // section) ; filtre par recherche (nom ou éditeur).
+    final List<Game> games =
+        filterGamesBySearch(activeGamesOnly(store.games), _search);
+    final List<Game> allInactive = store.inactiveGames;
+    final List<Game> inactive = filterGamesBySearch(allInactive, _search);
+    // Colonne « Contenus » des inactifs : « — » si le cache des contenus est
+    // absent (le menu Jeux ne charge pas `contents`).
+    final bool contentsCached = store.contents.isNotEmpty ||
+        store.loadedDatasets.contains(SyncDataset.contents);
 
     // ── Pagination locale : découpe la liste filtrée en pages de 200 ──
     final totalPages = (games.length / _pageSize).ceil();
@@ -255,36 +331,60 @@ class _GamesScreenState extends State<GamesScreen> {
                 'Jeux du catalogue',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
               ),
-              Row(
-                children: [
-                  Tooltip(
-                    message:
-                        'Pousse les alias connus (acronymes, noms alternatifs)\n'
-                        'vers la base pour TOUS les jeux du catalogue.\n'
-                        'Ajout seul — jamais de suppression ; la base est la\n'
-                        'source qui alimente les bots (Vision/Sentinelle).',
-                    child: OutlinedButton.icon(
-                      onPressed: _aliasesSyncRunning
-                          ? null
-                          : () => _confirmSyncKnownAliases(context, store),
-                      icon: _aliasesSyncRunning
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2),
-                            )
-                          : const Icon(Icons.sync_rounded),
-                      label: const Text('Synchroniser alias connus'),
+              const SizedBox(width: 16),
+              Flexible(
+                child: Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    Tooltip(
+                      message:
+                          'Pousse les alias connus (acronymes, noms alternatifs)\n'
+                          'vers la base pour TOUS les jeux du catalogue.\n'
+                          'Ajout seul — jamais de suppression ; la base est la\n'
+                          'source qui alimente les bots (Vision/Sentinelle).',
+                      child: OutlinedButton.icon(
+                        onPressed: _aliasesSyncRunning
+                            ? null
+                            : () => _confirmSyncKnownAliases(context, store),
+                        icon: _aliasesSyncRunning
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2),
+                              )
+                            : const Icon(Icons.sync_rounded),
+                        label: const Text('Synchroniser alias connus'),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton.icon(
-                    onPressed: () => _showGameDialog(context, null),
-                    icon: const Icon(Icons.add_rounded),
-                    label: const Text('Ajouter un jeu'),
-                  ),
-                ],
+                    // D2 : compte principal connecté au serveur (masqué en
+                    // aperçu, §6.14).
+                    if (showReadyGamesButton(
+                        isOwner: isOwner, hasSync: hasSync))
+                      OutlinedButton.icon(
+                        key: const Key('games-ready-open'),
+                        onPressed: _readyRunning
+                            ? null
+                            : () => _runReadyGames(store),
+                        icon: _readyRunning
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2),
+                              )
+                            : const Icon(Icons.playlist_add_check_rounded),
+                        label: const Text('Activer les jeux prêts'),
+                      ),
+                    FilledButton.icon(
+                      onPressed: () => _showGameDialog(context, null),
+                      icon: const Icon(Icons.add_rounded),
+                      label: const Text('Ajouter un jeu'),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -301,7 +401,25 @@ class _GamesScreenState extends State<GamesScreen> {
                   borderRadius: BorderRadius.circular(10)),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 8),
+          // ── Jeux inactifs (D2) : lus au serveur, jamais dans le tableau ──
+          InactiveGamesSection(
+            games: inactive,
+            total: allInactive.length,
+            loading: store.inactiveGamesLoading,
+            error: store.inactiveGamesError,
+            hasSync: hasSync,
+            busyIds: _busyGameIds,
+            contentCountLabel: (Game g) => gameContentCountLabel(
+              contentsCached: contentsCached,
+              count: store.contentCountFor(g.id),
+            ),
+            onReload: () => unawaited(store.loadInactiveGames()),
+            onReactivate: (Game g) => _setActive(context, store, g, true),
+            onEdit: (Game g) => _showGameDialog(context, g),
+            onDelete: (Game g) => _confirmDelete(context, g),
+          ),
+          const SizedBox(height: 8),
           // ── Barre de pagination ──
           if (totalPages > 1) ...[
             Row(
@@ -350,7 +468,13 @@ class _GamesScreenState extends State<GamesScreen> {
           AdminDataTable(
             columns: const ['Jeu', 'Éditeur', 'Contenus', 'Statut', 'Actions'],
             rows: pagedGames
-                .map((g) => [
+                .map((g) {
+                  // Id temporaire en production (jeu pas encore créé côté
+                  // serveur) : un envoi CRÉERAIT un jeu → bascule et
+                  // modification bloquées.
+                  final bool blocked = gameWriteBlocked(g, hasSync: hasSync);
+                  final bool busy = _busyGameIds.contains(g.id);
+                  return [
                       Row(
                         children: [
                           ClipRRect(
@@ -374,7 +498,7 @@ class _GamesScreenState extends State<GamesScreen> {
                                       // muette). Le bucket game-covers
                                       // résout structurellement le
                                       // CORS/hotlink des URLs externes.
-                                      errorBuilder: (_, __, ___) => Tooltip(
+                                      errorBuilder: (_, _, _) => Tooltip(
                                             message:
                                                 _isHostedCoverUrl(g.coverUrl)
                                                     ? 'Image indisponible (Supabase Storage)'
@@ -425,25 +549,49 @@ class _GamesScreenState extends State<GamesScreen> {
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          IconButton(
-                            tooltip: g.active
-                                ? 'Désactiver'
-                                : 'Activer',
-                            icon: Icon(
-                              g.active
-                                  ? Icons.toggle_on_rounded
-                                  : Icons.toggle_off_outlined,
-                              color: g.active
-                                  ? AppColors.neonGreen
-                                  : null,
+                          if (busy)
+                            const SizedBox(
+                              width: 40,
+                              height: 40,
+                              child: Center(
+                                child: SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2),
+                                ),
+                              ),
+                            )
+                          else
+                            IconButton(
+                              key: ValueKey<String>('games-toggle-${g.id}'),
+                              tooltip: blocked
+                                  ? kGameWriteBlockedTooltip
+                                  : g.active
+                                      ? 'Désactiver'
+                                      : 'Activer',
+                              icon: Icon(
+                                g.active
+                                    ? Icons.toggle_on_rounded
+                                    : Icons.toggle_off_outlined,
+                                color: g.active
+                                    ? AppColors.neonGreen
+                                    : null,
+                              ),
+                              // D2 : désactiver passe par une confirmation.
+                              onPressed: blocked
+                                  ? null
+                                  : () => _setActive(
+                                      context, store, g, !g.active),
                             ),
-                            onPressed: () =>
-                                store.toggleGameActive(g),
-                          ),
                           IconButton(
-                            tooltip: 'Modifier',
+                            key: ValueKey<String>('games-edit-${g.id}'),
+                            tooltip:
+                                blocked ? kGameWriteBlockedTooltip : 'Modifier',
                             icon: const Icon(Icons.edit_outlined, size: 20),
-                            onPressed: () => _showGameDialog(context, g),
+                            onPressed: blocked || busy
+                                ? null
+                                : () => _showGameDialog(context, g),
                           ),
                           IconButton(
                             tooltip: 'Traductions',
@@ -461,11 +609,14 @@ class _GamesScreenState extends State<GamesScreen> {
                             icon: const Icon(Icons.delete_outline_rounded,
                                 size: 20),
                             color: AppColors.categoryVideo,
-                            onPressed: () => _confirmDelete(context, g),
+                            onPressed: busy
+                                ? null
+                                : () => _confirmDelete(context, g),
                           ),
                         ],
                       ),
-                    ])
+                    ];
+                })
                 .toList(),
           ),
         ],
@@ -473,11 +624,30 @@ class _GamesScreenState extends State<GamesScreen> {
     );
   }
 
-  void _showGameDialog(BuildContext context, Game? existing) {
-    showDialog<void>(
+  /// Ajout ([existing] null) ou édition : le dialogue attend la réponse du
+  /// serveur en édition et rend le message de la SnackBar à afficher
+  /// (« Aucune modification. », jeu créé inactif…).
+  Future<void> _showGameDialog(BuildContext context, Game? existing) async {
+    final StoreController store = context.read<StoreController>();
+    final String? message = await showDialog<String>(
       context: context,
-      builder: (_) => GameEditDialog(game: existing),
+      builder: (_) => GameEditDialog(
+        game: existing,
+        savePatch: store.saveGamePatch,
+        create: (GameDraft d) => store.addGame(
+          name: d.name,
+          publisher: d.publisher,
+          coverUrl: d.coverUrl,
+          releaseDate: d.releaseDate,
+          active: d.active,
+        ),
+        onOpenTranslations: existing == null
+            ? null
+            : (Game current) => _showTranslationsDialog(context, current),
+      ),
     );
+    if (message == null || !context.mounted) return;
+    showGamesSnack(context, message);
   }
 
   void _showTranslationsDialog(BuildContext context, Game game) {
@@ -505,179 +675,6 @@ class _GamesScreenState extends State<GamesScreen> {
         destructive: true,
         onConfirm: () => context.read<StoreController>().deleteGame(game.id),
       ),
-    );
-  }
-}
-
-/// Dialog d'ajout / édition d'un jeu.
-class GameEditDialog extends StatefulWidget {
-  const GameEditDialog({super.key, this.game});
-  final Game? game;
-
-  @override
-  State<GameEditDialog> createState() => _GameEditDialogState();
-}
-
-class _GameEditDialogState extends State<GameEditDialog> {
-  late final TextEditingController _name;
-  late final TextEditingController _publisher;
-  late final TextEditingController _cover;
-  late final TextEditingController _releaseDate;
-  bool _active = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _name = TextEditingController(text: widget.game?.name ?? '');
-    _publisher = TextEditingController(text: widget.game?.publisher ?? '');
-    _cover = TextEditingController(text: widget.game?.coverUrl ?? '');
-    _releaseDate = TextEditingController(text: widget.game?.releaseDate ?? '');
-    _active = widget.game?.active ?? true;
-  }
-
-  @override
-  void dispose() {
-    _name.dispose();
-    _publisher.dispose();
-    _cover.dispose();
-    _releaseDate.dispose();
-    super.dispose();
-  }
-
-  /// Normalise la date saisie : accepte `yyyy`, `yyyy-MM` ou `yyyy-MM-dd`
-  /// (complétée en `yyyy-01-01` / `yyyy-MM-01`). null si vide/invalide —
-  /// jamais de valeur inventée.
-  static String? _normalizeReleaseDate(String raw) {
-    final s = raw.trim();
-    if (s.isEmpty) return null;
-    final m = RegExp(r'^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$').firstMatch(s);
-    if (m == null) return null;
-    final y = int.parse(m.group(1)!);
-    if (y < 1970 || y > DateTime.now().year + 2) return null;
-    final mo = m.group(2) ?? '01';
-    final d = m.group(3) ?? '01';
-    final month = int.parse(mo), day = int.parse(d);
-    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-    return '$y-${mo.padLeft(2, '0')}-${d.padLeft(2, '0')}';
-  }
-
-  void _save() {
-    final StoreController store = context.read<StoreController>();
-    final String name = _name.text.trim();
-    if (name.isEmpty) return;
-    final String? releaseDate = _normalizeReleaseDate(_releaseDate.text);
-    if (widget.game == null) {
-      store.addGame(
-        name: name,
-        publisher: _publisher.text,
-        coverUrl: _cover.text,
-        releaseDate: releaseDate,
-        active: _active,
-      );
-    } else {
-      store.updateGame(widget.game!.copyWith(
-        name: name,
-        publisher: () => _publisher.text.trim(),
-        coverUrl: () => _cover.text.trim(),
-        releaseDate: () => releaseDate,
-        active: _active,
-      ));
-    }
-    Navigator.pop(context);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bool edit = widget.game != null;
-    return AlertDialog(
-      title: Text(edit ? 'Modifier le jeu' : 'Ajouter un jeu'),
-      content: SizedBox(
-        width: 420,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _name,
-                    decoration:
-                        const InputDecoration(labelText: 'Nom du jeu *'),
-                  ),
-                ),
-                // Bouton "+" : ouvre le dialog des traductions (12 langues).
-                // Visible seulement en mode édition (un jeu existant a un ID).
-                if (edit) ...[
-                  const SizedBox(width: 8),
-                  IconButton(
-                    tooltip: 'Traductions (12 langues)',
-                    icon: const Icon(Icons.translate_rounded, size: 22),
-                    onPressed: () {
-                      // Construit un Game à jour avec le nom actuellement saisi
-                      // (pour que le dialog affiche le bon nom par défaut).
-                      final currentGame = widget.game!.copyWith(
-                        name: _name.text.trim().isEmpty
-                            ? widget.game!.name
-                            : _name.text.trim(),
-                      );
-                      showDialog(
-                        context: context,
-                        builder: (_) =>
-                            GameTranslationsDialog(game: currentGame),
-                      );
-                    },
-                  ),
-                ],
-              ],
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _publisher,
-              decoration:
-                  const InputDecoration(labelText: 'Éditeur (optionnel)'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _cover,
-              decoration: const InputDecoration(
-                  labelText: 'URL de la pochette (optionnel)',
-                  helperText: 'Lien direct vers l\'image'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _releaseDate,
-              decoration: const InputDecoration(
-                labelText: 'Date de sortie (optionnel)',
-                helperText:
-                    'AAAA, AAAA-MM ou AAAA-MM-JJ — aide Sentinelle à '
-                    'différencier les éditions homonymes (ex. CoD MW3 2011 '
-                    'vs MW III 2023) : une vidéo plus ancienne que la date '
-                    'est rattachée à l\'édition précédente.',
-                helperMaxLines: 3,
-              ),
-              keyboardType: TextInputType.datetime,
-            ),
-            const SizedBox(height: 12),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Jeu actif (visible dans l\'app)'),
-              value: _active,
-              onChanged: (v) => setState(() => _active = v),
-              activeColor: Theme.of(context).colorScheme.primary,
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Annuler'),
-        ),
-        FilledButton(
-          onPressed: _save,
-          child: Text(edit ? 'Enregistrer' : 'Ajouter'),
-        ),
-      ],
     );
   }
 }

@@ -6,6 +6,18 @@
 #
 # Déclencheur : chaque push sur main.
 #
+# P4b-3 (T13) : Flutter ÉPINGLÉ (3.44.2, version du poste de développement),
+# dépendances conformes au pubspec.lock (--enforce-lockfile), tests VM
+# (flutter test) AVANT la construction : un test en échec bloque la
+# publication (deploy dépend de build ; l'ancien panneau reste en ligne).
+# flutter analyze n'est PAS lancé ici (constats d'information existants) :
+# vérification locale avant chaque synchronisation.
+# Permissions par job (moindre privilège) : build sans écriture ni OIDC.
+# Revue P4b-3 (SEC-P4b3-08) : chaque action est ÉPINGLÉE par SHA de commit
+# (étiquette en commentaire) — une étiquette déplacée chez l'éditeur ne
+# change plus le code exécuté ni l'artefact publié. Mise à jour = nouveau
+# SHA relu (git ls-remote --tags <dépôt de l'action>).
+#
 # ⚠️ CONFIGURATION REQUISE (une seule fois) :
 #   - Settings → Pages → Source = "GitHub Actions"
 #   - Settings → Secrets → Actions → New secret :
@@ -19,10 +31,7 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+permissions: {}            # aucun droit par défaut ; chaque job déclare les siens
 
 concurrency:
   group: deploy-admin
@@ -31,17 +40,24 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read       # checkout
+      pages: read          # actions/configure-pages lit la configuration Pages
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (= v4 au 28/09/2026)
 
       - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0 (= v2 au 28/09/2026)
         with:
           channel: stable
+          flutter-version: 3.44.2
 
       - name: Récupération des dépendances
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
+
+      - name: Tests (VM)
+        run: flutter test
 
       - name: Build Web (production)
         run: |
@@ -53,20 +69,23 @@ jobs:
             --dart-define=MGT_ADMIN_CATALOG_ENDPOINT="https://odqbazwyjdpppbameype.supabase.co/functions/v1/admin-catalog"
 
       - name: Configuration GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0 (= v5 au 28/09/2026)
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1 (= v3 au 28/09/2026)
         with:
           path: build/web
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write         # publication
+      id-token: write      # jeton OIDC de deploy-pages
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Déploiement GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5 (= v4 au 28/09/2026)

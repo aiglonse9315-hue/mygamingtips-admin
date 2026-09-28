@@ -4,14 +4,19 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/auth/auth_controller.dart';
 import '../../core/theme/colors.dart';
 import '../../data/supabase_sync.dart' show AdminAuthException;
+import '../../domain/models/banned_user.dart';
 import '../../domain/models/plus_user.dart';
+import '../../domain/moderation_actions.dart' show ModerationFocus;
 import '../../domain/plus_paging.dart';
 import '../../state/store_controller.dart';
+import '../widgets/account_ban_flows.dart';
 import '../widgets/admin_data_table.dart';
-import '../widgets/confirm_dialog.dart';
 import '../widgets/delete_plus_user_dialog.dart';
+import '../widgets/moderation/account_ban_widgets.dart';
+import '../widgets/moderation/moderation_ui.dart' show UntrustedLine;
 import '../widgets/stat_card.dart' show StatusBadge;
 import 'dashboard_screen.dart' show AddPlusUserDialog;
 
@@ -20,7 +25,11 @@ import 'dashboard_screen.dart' show AddPlusUserDialog;
 /// bannissement. Aucun plafond de volume : seule la page affichée transite
 /// (demande propriétaire du 25/09/2026 — fin de la limite des 100 000).
 class AbonnementsScreen extends StatefulWidget {
-  const AbonnementsScreen({super.key});
+  const AbonnementsScreen({super.key, this.onOpenModeration});
+
+  /// Ouvre le menu Modération (« Ouvrir dans Modération » de la levée d'un
+  /// ban automatique) ; nul = pas de lien.
+  final void Function([ModerationFocus? focus])? onOpenModeration;
 
   @override
   State<AbonnementsScreen> createState() => _AbonnementsScreenState();
@@ -83,6 +92,10 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
       if (!mounted) return;
       store.refreshPlusStats();
       _load(0);
+      // P4b-3 (§5.2, ETAT-01) : liste des bannis relue à l'ouverture →
+      // origine du ban (T3) à jour avant le clic ; le 409 du déban reste le
+      // filet de sécurité.
+      unawaited(store.reloadBannedList(reportErrors: false));
     });
   }
 
@@ -213,11 +226,58 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
     }
   }
 
+  /// Ban MANUEL de la ligne [u] (P4b-3, §6.11) : catégorie + motif, SANS la
+  /// garde locale `isAuthorBanned` (le bouton suit `u.isBanned` du
+  /// serveur) ; page relue ensuite (`reload`).
+  Future<void> _banRow(PlusUser u) => _runRowAction(
+    u,
+    () => banAccountFlow(context, userId: u.id, displayName: u.displayName),
+    reload: true,
+  );
+
+  /// Déban de la ligne [u] (T3) : origine connue (liste des bannis) →
+  /// débannir (ban manuel) ou lever (ban automatique, compte principal) ;
+  /// origine inconnue → confirmation puis traitement du 409 ; page relue
+  /// ensuite (`reload`).
+  Future<void> _unbanRow(PlusUser u) => _runRowAction(
+    u,
+    () => accountUnbanFlow(
+      context,
+      userId: u.id,
+      name: u.displayName,
+      entry: context.read<StoreController>().bannedEntry(u.id),
+      onOpenModeration: widget.onOpenModeration,
+    ),
+    reload: true,
+  );
+
+  /// Empreinte des bans connus des lignes affichées (origine, statut,
+  /// événement) : le tableau se reconstruit quand la relecture de la liste
+  /// des bannis les change.
+  String _bannedSignature(StoreController s) {
+    final StringBuffer b = StringBuffer();
+    for (final PlusUser u in _items) {
+      final BannedUser? e = s.bannedEntry(u.id);
+      if (e == null) continue;
+      b
+        ..write(u.id)
+        ..write(':')
+        ..write(e.origin)
+        ..write('/')
+        ..write(e.status)
+        ..write('/')
+        ..write(e.banEventId)
+        ..write(';');
+    }
+    return b.toString();
+  }
+
   @override
   Widget build(BuildContext context) {
     final PlusStats? stats = context.select<StoreController, PlusStats?>(
       (StoreController s) => s.plusStats,
     );
+    context.select<StoreController, String>(_bannedSignature);
     final Color? muted = Theme.of(context).textTheme.bodySmall?.color;
 
     return SingleChildScrollView(
@@ -419,6 +479,9 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
 
   Widget _table(BuildContext context) {
     final StoreController store = context.read<StoreController>();
+    final bool isOwner = context.select<AuthController, bool>(
+      (AuthController a) => a.isOwner,
+    );
     final Color? muted = Theme.of(context).textTheme.bodySmall?.color;
     return AdminDataTable(
       columns: const [
@@ -447,8 +510,11 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Flexible(
-                    child: Text(
+                    // Nom choisi par un tiers (revue P4b-3, SEC-P4b3-02) :
+                    // une ligne, invisibles révélés, longueur bornée.
+                    child: UntrustedLine(
                       u.displayName,
+                      max: 60,
                       style: const TextStyle(
                         fontWeight: FontWeight.w700,
                         fontSize: 13,
@@ -476,6 +542,11 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
                         ),
                       ),
                     ),
+                    // P4b-3 (T3) : ban automatique → pastille « auto ».
+                    if (store.bannedEntry(u.id)?.isAuto ?? false) ...[
+                      const SizedBox(width: 4),
+                      AutoBanPill(status: store.bannedEntry(u.id)?.status),
+                    ],
                   ],
                 ],
               ),
@@ -547,52 +618,27 @@ class _AbonnementsScreenState extends State<AbonnementsScreen> {
                     PopupMenuItem(value: 'yearly', child: Text('Annuel')),
                   ],
                 ),
-              // Bannir / Débannir selon le statut de la ligne.
-              IconButton(
-                tooltip: u.isBanned ? 'Débannir' : 'Bannir',
-                icon: u.isBanned
-                    ? const Icon(
-                        Icons.lock_open_rounded,
-                        size: 20,
-                        color: Colors.green,
-                      )
-                    : const Icon(
-                        Icons.block_rounded,
-                        size: 20,
-                        color: Colors.red,
-                      ),
-                onPressed: busy
-                    ? null
-                    : () {
-                        if (u.isBanned) {
-                          _runRowAction(
-                            u,
-                            () => store.unban(u.id),
-                            reload: true,
-                          );
-                          return;
-                        }
-                        showDialog<void>(
-                          context: context,
-                          builder: (_) => ConfirmDialog(
-                            title: 'Bannir ${u.displayName} ?',
-                            message:
-                                'Cet utilisateur ne pourra plus soumettre '
-                                'de suggestions dans l\'application.',
-                            confirmLabel: 'Bannir',
-                            destructive: true,
-                            onConfirm: () => _runRowAction(
-                              u,
-                              () => store.banAuthorId(
-                                u.id,
-                                displayName: u.displayName,
-                              ),
-                              reload: true,
-                            ),
-                          ),
-                        );
-                      },
-              ),
+              // Bannir / Débannir selon le statut de la ligne (P4b-3, T3) :
+              // déban selon l'origine connue ; ban avec catégorie + motif.
+              if (u.isBanned)
+                AccountUnbanIconButton(
+                  control: accountUnbanControl(
+                    store.bannedEntry(u.id),
+                    isOwner: isOwner,
+                  ),
+                  onUnban: busy ? null : () => _unbanRow(u),
+                  onLift: busy ? null : () => _unbanRow(u),
+                )
+              else
+                IconButton(
+                  tooltip: 'Bannir',
+                  icon: const Icon(
+                    Icons.block_rounded,
+                    size: 20,
+                    color: Colors.red,
+                  ),
+                  onPressed: busy ? null : () => _banRow(u),
+                ),
               // « Supprimer » = suppression DÉFINITIVE (compte principal
               // uniquement), double confirmation — aussi pour une ligne
               // expirée (nettoyage).

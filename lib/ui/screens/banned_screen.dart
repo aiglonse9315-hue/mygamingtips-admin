@@ -12,22 +12,38 @@
 //   - Pagination 100/page (sublist locale, pattern contents_screen.dart)
 //   - Tri cliquable sur la colonne « % Rejets » (pattern contents_screen.dart)
 //   - Sélection multiple (pattern scruteur_screen.dart : Set<String>)
-//   - « Bannir sélection » et « Bannir la page » via store.banBatch()
+//   - « Bannir sélection » et « Bannir la page » : catégorie + motif communs
+//     (BanBatchDialog) → store.banAccounts() → bilan (BanBatchReportDialog)
+//   - Ban / déban unitaire : chemin commun des bans de comptes (P4b-3, T3 :
+//     origine connue avant le clic, déban NON optimiste)
 //   - Badge Premium doré « PLUS » si is_premium == true
 //   - Filtre : rejection_rate >= 10.0
 //   - Recherche par nom d'utilisateur (pattern games_screen.dart)
 // ============================================================================
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/auth/auth_controller.dart';
 import '../../core/theme/colors.dart';
+import '../../domain/models/banned_user.dart';
+import '../../domain/moderation_actions.dart'
+    show BanBatchReport, ModerationFocus;
 import '../../state/store_controller.dart';
-import '../widgets/confirm_dialog.dart';
+import '../widgets/account_ban_flows.dart';
+import '../widgets/moderation/account_ban_widgets.dart';
+import '../widgets/moderation/ban_batch_dialog.dart';
+import '../widgets/moderation/moderation_ui.dart' show UntrustedLine;
 
 /// Menu « Comptes à bannir » : détection des mauvais contributeurs.
 class BannedScreen extends StatefulWidget {
-  const BannedScreen({super.key});
+  const BannedScreen({super.key, this.onOpenModeration});
+
+  /// Ouvre le menu Modération (« Ouvrir dans Modération » de la levée d'un
+  /// ban automatique) ; nul = pas de lien.
+  final void Function([ModerationFocus? focus])? onOpenModeration;
 
   @override
   State<BannedScreen> createState() => _BannedScreenState();
@@ -54,8 +70,6 @@ class _BannedScreenState extends State<BannedScreen> {
   // ── Pagination (pattern contents_screen.dart) ──
   int _currentPage = 0;
   static const int _pageSize = 100;
-
-  bool _banning = false;
 
   @override
   void dispose() {
@@ -203,9 +217,9 @@ class _BannedScreenState extends State<BannedScreen> {
               const SizedBox(width: 12),
               // Bannir la sélection.
               FilledButton.icon(
-                onPressed: _selected.isEmpty || _banning
+                onPressed: _selected.isEmpty
                     ? null
-                    : () => _banSelection(store, _selected.toList()),
+                    : () => _banBatch(store, _selected.toList()),
                 icon: const Icon(Icons.block_rounded, size: 18),
                 label: Text(
                   _selected.isEmpty
@@ -220,9 +234,9 @@ class _BannedScreenState extends State<BannedScreen> {
               const SizedBox(width: 8),
               // Bannir la page courante.
               OutlinedButton.icon(
-                onPressed: pageIds.isEmpty || _banning
+                onPressed: pageIds.isEmpty
                     ? null
-                    : () => _banPage(store, pageIds),
+                    : () => _banBatch(store, pageIds),
                 icon: const Icon(Icons.layers_rounded, size: 18),
                 label: const Text('Bannir la page'),
               ),
@@ -312,44 +326,6 @@ class _BannedScreenState extends State<BannedScreen> {
             )
           else
             _buildContributorsTable(store, pageRows),
-
-          // Indicateur de traitement pendant le bannissement en masse.
-          if (_banning) ...[
-            const SizedBox(height: 16),
-            const Center(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  SizedBox(width: 12),
-                  Text(
-                    'Bannissement en cours…',
-                    style: TextStyle(fontSize: 13),
-                  ),
-                ],
-              ),
-            ),
-          ],
-
-          if (store.lastActionError != null) ...[
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.red.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.red.withValues(alpha: 0.4)),
-              ),
-              child: Text(
-                '⚠️ ${store.lastActionError}',
-                style: const TextStyle(color: Colors.red, fontSize: 13),
-              ),
-            ),
-          ],
         ],
       ),
     );
@@ -484,7 +460,9 @@ class _BannedScreenState extends State<BannedScreen> {
     final rejected = c['rejected_count'] as int? ?? 0;
     final rate = (c['rejection_rate'] as num?)?.toDouble() ?? 0.0;
     final isPremium = c['is_premium'] as bool? ?? false;
-    final isBanned = store.isAuthorBanned(authorId);
+    // Entrée de la liste des bannis (origine, statut, événement du ban).
+    final BannedUser? entry = store.bannedEntry(authorId);
+    final isBanned = entry != null;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -515,8 +493,11 @@ class _BannedScreenState extends State<BannedScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Flexible(
-                      child: Text(
+                      // Nom choisi par un tiers (revue P4b-3, SEC-P4b3-02) :
+                      // une ligne, invisibles révélés, longueur bornée.
+                      child: UntrustedLine(
                         displayName,
+                        max: 60,
                         style: const TextStyle(
                             fontWeight: FontWeight.w700, fontSize: 13),
                       ),
@@ -536,6 +517,11 @@ class _BannedScreenState extends State<BannedScreen> {
                                 fontWeight: FontWeight.w800,
                                 color: Colors.red)),
                       ),
+                      // P4b-3 (T3) : ban automatique → pastille « auto ».
+                      if (entry.isAuto) ...[
+                        const SizedBox(width: 4),
+                        AutoBanPill(status: entry.status),
+                      ],
                     ],
                   ],
                 ),
@@ -589,54 +575,54 @@ class _BannedScreenState extends State<BannedScreen> {
                 ? const _PremiumBadge()
                 : const Text('—', textAlign: TextAlign.center),
           ),
-          // Actions
+          // Actions (P4b-3, T3) : déban selon l'origine connue ; ban avec
+          // catégorie + motif.
           SizedBox(
             width: 50,
-            child: IconButton(
-              tooltip: isBanned ? 'Débannir' : 'Bannir',
-              icon: isBanned
-                  ? const Icon(Icons.lock_open_rounded, size: 18, color: Colors.green)
-                  : const Icon(Icons.block_rounded, size: 18, color: Colors.red),
-              onPressed: isBanned
-                  ? () => store.unban(authorId)
-                  : () => showDialog<void>(
-                      context: context,
-                      builder: (_) => ConfirmDialog(
-                        title: 'Bannir $displayName ?',
-                        message:
-                            'Cet utilisateur ne pourra plus soumettre de suggestions.',
-                        confirmLabel: 'Bannir',
-                        destructive: true,
-                        onConfirm: () =>
-                            store.banAuthorId(authorId, displayName: displayName),
-                      ),
+            child: isBanned
+                ? AccountUnbanIconButton(
+                    size: 18,
+                    control: accountUnbanControl(
+                      entry,
+                      isOwner: context.read<AuthController>().isOwner,
                     ),
-            ),
+                    onUnban: () => _unban(authorId, displayName, entry),
+                    onLift: () => _unban(authorId, displayName, entry),
+                  )
+                : IconButton(
+                    tooltip: 'Bannir',
+                    icon: const Icon(Icons.block_rounded,
+                        size: 18, color: Colors.red),
+                    onPressed: () => banAccountFlow(
+                      context,
+                      userId: authorId,
+                      displayName: displayName,
+                    ),
+                  ),
           ),
         ],
       ),
     );
   }
 
-  /// Bannit une liste d'utilisateurs (sélection arbitraire).
-  Future<void> _banSelection(
-    StoreController store,
-    List<String> userIds,
-  ) async {
-    await _banBatch(store, userIds, 'Bannir la sélection');
+  /// Déban unitaire (T3) : chemin commun des bans de comptes (confirmation
+  /// d'un ban manuel, levée d'un ban automatique par le compte principal).
+  void _unban(String authorId, String displayName, BannedUser? entry) {
+    unawaited(
+      accountUnbanFlow(
+        context,
+        userId: authorId,
+        name: displayName,
+        entry: entry,
+        onOpenModeration: widget.onOpenModeration,
+      ),
+    );
   }
 
-  /// Bannit tous les utilisateurs de la page courante.
-  Future<void> _banPage(StoreController store, List<String> userIds) async {
-    await _banBatch(store, userIds, 'Bannir la page (${userIds.length})');
-  }
-
-  /// Exécute le bannissement en masse avec confirmation et feedback.
-  Future<void> _banBatch(
-    StoreController store,
-    List<String> userIds,
-    String actionLabel,
-  ) async {
+  /// Bannissement en masse (T6) : catégorie + motif COMMUNS choisis dans
+  /// `BanBatchDialog` → `store.banAccounts` (séquentiel, arrêt au premier
+  /// 401) → bilan (bannis, déjà bannis, erreurs avec id court + message).
+  Future<void> _banBatch(StoreController store, List<String> userIds) async {
     // Exclut les utilisateurs déjà bannis pour ne pas bannir deux fois.
     final toBan = userIds.where((id) => !store.isAuthorBanned(id)).toList();
     if (toBan.isEmpty) {
@@ -645,56 +631,36 @@ class _BannedScreenState extends State<BannedScreen> {
           content: Text('Tous les utilisateurs sélectionnés sont déjà bannis.'),
         ),
       );
-      _selected.clear();
+      setState(_selected.clear);
       return;
     }
-
-    // ConfirmDialog ferme lui-même le dialogue puis appelle onConfirm :
-    // on effectue le bannissement directement dans le callback.
-    showDialog<void>(
+    unawaited(store.loadBanCategories());
+    final BanBatchReport? report = await showDialog<BanBatchReport>(
       context: context,
-      builder: (_) => ConfirmDialog(
-        title: '$actionLabel ?',
-        message:
-            'Vous allez bannir ${toBan.length} compte(s). '
-            'Ils ne pourront plus soumettre de suggestions.',
-        confirmLabel: 'Bannir',
-        destructive: true,
-        onConfirm: () => _executeBanBatch(store, toBan),
+      barrierDismissible: false,
+      builder: (BuildContext ctx) => BanBatchDialog(
+        count: toBan.length,
+        categories: ctx.watch<StoreController>().manualBanCategories,
+        submit: (String category, String? reason) =>
+            store.banAccounts(toBan, category: category, reason: reason),
       ),
     );
-  }
-
-  /// Exécute réellement le bannissement en masse (appelé après confirmation).
-  Future<void> _executeBanBatch(
-    StoreController store,
-    List<String> toBan,
-  ) async {
-    setState(() => _banning = true);
-    int count = 0;
-    try {
-      count = await store.banBatch(toBan);
-    } finally {
-      if (mounted) setState(() => _banning = false);
-    }
-    // Nettoie la sélection des comptes maintenant bannis.
+    if (report == null) return;
+    if (!mounted) return;
+    // Nettoie la sélection des comptes traités (les erreurs restent
+    // sélectionnées pour un nouvel essai ; lot interrompu : seuls les
+    // comptes non tentés et les erreurs restent).
+    final Set<String> kept = <String>{
+      for (final ({String id, String message}) e in report.errors) e.id,
+    };
+    final int processed =
+        report.applied + report.alreadyBanned + report.errors.length;
     setState(() {
-      for (final id in toBan) {
-        _selected.remove(id);
+      for (final String id in toBan.take(processed)) {
+        if (!kept.contains(id)) _selected.remove(id);
       }
     });
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            count > 0
-                ? '$count compte(s) banni(s) avec succès.'
-                : 'Aucun compte n\'a pu être banni (erreur serveur).',
-          ),
-          backgroundColor: count > 0 ? Colors.green : Colors.red,
-        ),
-      );
-    }
+    await BanBatchReportDialog.show(context, report);
   }
 
   /// Applique le tri sur [list] en place, selon la colonne et le sens choisis.

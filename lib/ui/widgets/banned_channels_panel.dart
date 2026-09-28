@@ -3,27 +3,50 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/auth/auth_controller.dart';
 import '../../core/theme/colors.dart';
 import '../../data/supabase_sync.dart';
+import '../../domain/banned_channels_rules.dart';
+import '../../domain/models/ban_category.dart';
 import '../../domain/models/banned_channel.dart';
+import '../../domain/models/moderation.dart';
+import '../../domain/moderation_actions.dart';
+import '../../domain/moderation_text.dart';
 import '../../state/store_controller.dart';
-import 'admin_data_table.dart';
-import 'confirm_dialog.dart';
+import '../screens/moderation/moderation_common.dart'
+    show offerChannelPurge, showModerationSnack;
+import 'moderation/auto_ban_lift_dialog.dart';
+import 'moderation/ban_channel_report_dialog.dart';
+import 'moderation/banned_channels_view.dart';
+import 'moderation/moderation_ui.dart' show decisionForAction;
+import 'moderation/review_decision_dialog.dart';
+import 'moderation/review_detail_dialog.dart';
+import 'moderation/unban_confirm_dialog.dart';
 
 /// Panneau « 🚫 Chaînes bannies » (chantier B, migration 0064, contrat
-/// §70.3), ouvert depuis le menu Chaîne YT (bouton « 🚫 Bannir »).
+/// §70.3 ; P4b-3 lot L8, T10, conception §6.12), ouvert depuis le menu
+/// Chaîne YT (bouton « 🚫 Bannir »).
 ///
 /// Contient :
-///  - le formulaire de bannissement (URL ou handle + motif libre + nom
-///    affiché optionnel) — la normalisation est faite côté serveur (EF
-///    `channels/ban`) ; un ban réussi ouvre le rapport ([_BanReportDialog])
-///    avec la purge de la file pending et les contenus publiés (retrait
-///    MANUEL au clic, jamais automatique) ;
-///  - la liste paginée des chaînes bannies (handle, nom, motif, date
-///    JJ/MM/AAAA, auteur) avec retrait après confirmation.
+///  - le formulaire de bannissement (URL ou handle, nom affiché optionnel,
+///    catégorie parmi les 4 du ban manuel (D4), motif 1-500 points de code)
+///    — la normalisation est faite côté serveur (EF `channels/ban`) ; un ban
+///    réussi ouvre le rapport ([BanChannelReportDialog]) selon `result`
+///    (`applied` / `updated` / `auto_en_revue`), avec le retrait MANUEL et
+///    CONFIRMÉ des contenus publiés (jamais automatique) ;
+///  - la liste paginée des chaînes bannies (Chaîne · Plateforme · État ·
+///    Catégorie · Motif · Date · Par · Actions) : « Débannir » pour une
+///    ligne manuelle (confirmation, NON optimiste) ; pour une ligne AUTO, le
+///    compte principal a « Détail », « Confirmer », « Lever » (motif
+///    obligatoire) et « Purger » ; un autre admin voit « Débannir »
+///    désactivé.
 ///
 /// Comme l'écran Chaînes YT hôte, ce panneau fait ses propres appels EF
 /// (pas de dataset synchronisé) : états chargement / erreur / vide / données.
+/// 401 (chargement ou action) : les dialogues ouverts se ferment, puis le
+/// panneau se ferme et `store.onAuthError` déconnecte (S-08). 403 des
+/// actions du compte principal : « Réservé au compte principal. » (dans les
+/// dialogues) ; le CHARGEMENT n'est pas réservé (pas de branche 403).
 class BannedChannelsPanel extends StatefulWidget {
   const BannedChannelsPanel({super.key});
 
@@ -43,6 +66,8 @@ class _BannedChannelsPanelState extends State<BannedChannelsPanel> {
   /// Taille de page demandée au serveur (le serveur borne à 100).
   static const int _pageSize = 10;
 
+  late final StoreController _store;
+
   List<BannedChannel> _items = <BannedChannel>[];
   int _total = 0;
   int _page = 0;
@@ -50,79 +75,98 @@ class _BannedChannelsPanelState extends State<BannedChannelsPanel> {
   bool _loading = false;
   String? _error;
 
-  /// Identifiants des lignes en cours de retrait — une opération à la fois.
+  /// Séquence des lectures : seule la plus récente est appliquée.
+  int _loadSeq = 0;
+
+  /// Catégories demandées au serveur (une fois, après la 1re lecture
+  /// réussie : un jeton expiré ne déclenche qu'UNE déconnexion).
+  bool _categoriesRequested = false;
+
+  /// Identifiants des lignes dont une action est en cours.
   final Set<int> _busyIds = <int>{};
 
-  // Formulaire de bannissement.
-  final TextEditingController _handleCtrl = TextEditingController();
-  final TextEditingController _reasonCtrl = TextEditingController();
-  final TextEditingController _nameCtrl = TextEditingController();
-  bool _banning = false;
-  String? _formMessage;
-  bool _formError = false;
+  /// Session expirée : le panneau se ferme (il reste monté pendant
+  /// l'animation de sortie) — plus aucun dialogue ni aucune lecture.
+  bool _expired = false;
+
+  /// Monté ET session valide : garde après chaque `await` d'un enchaînement.
+  bool get _alive => mounted && !_expired;
 
   int get _totalPages => (_total / _pageSize).ceil().clamp(1, 1 << 30);
 
   @override
   void initState() {
     super.initState();
+    _store = context.read<StoreController>();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _load(0);
+      if (mounted) unawaited(_load(0));
     });
   }
 
-  @override
-  void dispose() {
-    _handleCtrl.dispose();
-    _reasonCtrl.dispose();
-    _nameCtrl.dispose();
-    super.dispose();
-  }
-
-  /// Extrait un message d'erreur lisible (retire le préfixe « Exception: »).
-  static String _errorMessage(Object e) {
-    const prefix = 'Exception: ';
-    final String msg = e.toString();
-    return msg.startsWith(prefix) ? msg.substring(prefix.length) : msg;
-  }
-
-  /// Date au format JJ/MM/AAAA (contrat §70.3), heure locale.
-  static String _fmtDate(DateTime? d) {
-    if (d == null) return '—';
-    final l = d.toLocal();
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${two(l.day)}/${two(l.month)}/${l.year}';
+  /// Session expirée (401) : ferme les dialogues encore ouverts au-dessus du
+  /// panneau (en général déjà fermés d'eux-mêmes, S-08), puis le panneau,
+  /// PUIS déconnecte — une seule fois, même si plusieurs appels reçoivent
+  /// le 401.
+  void _sessionExpired() {
+    if (_expired) return;
+    _expired = true;
+    final VoidCallback? logout = _store.onAuthError;
+    if (mounted) {
+      final ModalRoute<Object?>? route = ModalRoute.of(context);
+      if (route != null && route.isActive) {
+        final NavigatorState nav = Navigator.of(context);
+        nav.popUntil((Route<dynamic> r) => r == route);
+        if (route.isCurrent) nav.pop();
+      }
+    }
+    logout?.call();
   }
 
   Future<void> _load(int page) async {
-    final sync = context.read<StoreController>().sync;
+    if (_expired) return;
+    final SupabaseSync? sync = _store.sync;
     if (sync == null) {
       setState(() => _error = 'Mode démo : pas de connexion Supabase.');
       return;
     }
+    final int seq = ++_loadSeq;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final res = await sync.fetchBannedChannels(
+      final ({List<BannedChannel> items, int total}) res = await sync
+          .fetchBannedChannels(page: page, pageSize: _pageSize);
+      if (!mounted || seq != _loadSeq) return;
+      // Page revenue vide (dernière ligne retirée, liste raccourcie
+      // ailleurs) : recule jusqu'à la dernière page existante.
+      final int? fallback = channelsPageFallback(
         page: page,
+        itemCount: res.items.length,
+        total: res.total,
         pageSize: _pageSize,
       );
-      if (!mounted) return;
+      if (fallback != null) {
+        await _load(fallback);
+        return;
+      }
       setState(() {
         _items = res.items;
         _total = res.total;
         _page = page;
         _loading = false;
       });
+      if (!_categoriesRequested) {
+        _categoriesRequested = true;
+        unawaited(_store.loadBanCategories());
+      }
     } on AdminAuthException {
-      if (!mounted) return;
-      context.read<StoreController>().onAuthError?.call();
+      if (mounted && seq == _loadSeq) setState(() => _loading = false);
+      _sessionExpired();
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || seq != _loadSeq) return;
       setState(() {
-        _error = _errorMessage(e);
+        _error = errorText(e);
         _loading = false;
       });
     }
@@ -130,121 +174,247 @@ class _BannedChannelsPanelState extends State<BannedChannelsPanel> {
 
   // ── Bannissement ──
 
-  Future<void> _ban() async {
-    final store = context.read<StoreController>();
-    final sync = store.sync;
-    if (_banning || sync == null) return;
-    final handleOrUrl = _handleCtrl.text.trim();
-    final reason = _reasonCtrl.text.trim();
-    if (handleOrUrl.isEmpty || reason.isEmpty) {
-      setState(() {
-        _formMessage = 'URL/handle et motif sont requis.';
-        _formError = true;
-      });
-      return;
-    }
-    setState(() {
-      _banning = true;
-      _formMessage = null;
-    });
+  /// Envoi du formulaire : null = succès (le formulaire se vide), sinon le
+  /// message affiché sous le formulaire.
+  Future<String?> _submitBan(ChannelBanRequest r) async {
+    final SupabaseSync? sync = _store.sync;
+    if (sync == null) return 'Mode démo : pas de connexion Supabase.';
     try {
-      final report = await sync.banChannel(
-        handleOrUrl: handleOrUrl,
-        reason: reason,
-        displayName: _nameCtrl.text.trim().isEmpty ? null : _nameCtrl.text,
+      final BanChannelReport report = await sync.banChannel(
+        handleOrUrl: r.handleOrUrl,
+        reason: r.reason,
+        displayName: r.displayName,
+        category: r.category,
       );
-      if (!mounted) return;
       // Chantier B (fix revue I-002) : propage le ban aux bots vivants —
       // demande de sync TOTALE fire-and-forget (chantier C) ; les bots
       // rechargeront la liste noire au prochain cycle/démarrage.
-      unawaited(store.requestTotalSync());
-      setState(() => _banning = false);
-      _handleCtrl.clear();
-      _reasonCtrl.clear();
-      _nameCtrl.clear();
-      // Recharge la liste (la nouvelle chaîne est en tête — tri created_at
-      // desc côté serveur) puis ouvre le rapport de bannissement.
-      await _load(0);
-      if (!mounted) return;
-      await _BanReportDialog.show(context, report);
+      unawaited(_store.requestTotalSync());
+      if (_alive) unawaited(_showReport(sync, report));
+      return null;
     } on AdminAuthException {
-      if (!mounted) return;
-      store.onAuthError?.call();
+      _sessionExpired();
+      return null;
     } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _banning = false;
-        _formMessage = _errorMessage(e);
-        _formError = true;
-      });
+      // Issue inconnue (coupure, 5xx après rejeux) : le ban a pu passer →
+      // relire la liste (T2).
+      if (isUncertainFailure(e) && _alive) unawaited(_load(0));
+      return errorText(e);
     }
   }
 
-  // ── Retrait d'un bannissement ──
-
-  void _confirmUnban(BannedChannel channel) {
-    showDialog<void>(
-      context: context,
-      builder: (_) => ConfirmDialog(
-        title: 'Débannir ${channel.displayHandle} ?',
-        message:
-            'La chaîne ${channel.displayHandle} ne sera plus bannie : '
-            'les bots pourront de nouveau la proposer. Les suggestions déjà '
-            'rejetées ne sont pas restaurées.',
-        confirmLabel: 'Débannir',
-        destructive: true,
-        onConfirm: () => _unban(channel),
-      ),
+  /// Recharge la liste (la nouvelle chaîne est en tête — tri created_at
+  /// desc côté serveur) puis ouvre le rapport de bannissement.
+  Future<void> _showReport(SupabaseSync sync, BanChannelReport report) async {
+    await _load(0);
+    if (!mounted) return;
+    if (_expired) return;
+    await BanChannelReportDialog.show(
+      context,
+      report: report,
+      unpublish: () => sync.unpublishByChannel(report.banned.handle),
+      onAuthError: _sessionExpired,
     );
   }
 
-  Future<void> _unban(BannedChannel channel) async {
-    final sync = context.read<StoreController>().sync;
-    if (sync == null || _busyIds.contains(channel.id)) return;
-    setState(() => _busyIds.add(channel.id));
+  // ── Débannir (ligne manuelle) ──
+
+  Future<void> _unban(BannedChannel c) async {
+    final SupabaseSync? sync = _store.sync;
+    if (sync == null || _busyIds.contains(c.id)) return;
+    setState(() => _busyIds.add(c.id));
     try {
-      await sync.unbanChannel(channel.id);
-      if (!mounted) return;
+      final UnbanOutcome? o = await UnbanConfirmDialog.show(
+        context,
+        name: c.displayLabel,
+        channel: true,
+        submit: () async {
+          final UnbanOutcome o = await runChannelUnban(
+            () => sync.unbanChannel(c.id),
+          );
+          // Échec (le dialogue reste ouvert) : la liste a pu changer.
+          if (o.kind == UnbanKind.failure && mounted) {
+            unawaited(_load(_page));
+          }
+          return o;
+        },
+      );
+      if (o == null || !mounted) return;
+      if (o.kind == UnbanKind.sessionExpired) {
+        _sessionExpired();
+        return;
+      }
+      if (_expired) return;
+      if (o.kind == UnbanKind.autoBan) {
+        // Liste périmée : la ligne est un ban AUTOMATIQUE (409).
+        final int? eventId = o.banEventId;
+        if (context.read<AuthController>().isOwner && eventId != null) {
+          await _decide(c, ReviewDecision.lift, eventId: eventId);
+          // Levée annulée ou non : la ligne affichée était périmée.
+          if (mounted) await _load(_page);
+        } else {
+          showModerationSnack(
+            context,
+            unbanMessage(
+              o,
+              name: oneLinePreview(c.displayLabel, max: 60),
+              channel: true,
+            ),
+            tone: OutcomeTone.warning,
+          );
+          await _load(_page);
+        }
+        return;
+      }
+      final ({String message, OutcomeTone tone, bool totalSync})? f =
+          channelUnbanFeedback(
+            o,
+            name: oneLinePreview(c.displayLabel, max: 60),
+          );
+      if (f == null) return;
       // Chantier B (fix revue I-002) : propage le débannissement aux bots
-      // vivants — sync totale fire-and-forget (chantier C), monté-guardée.
-      unawaited(context.read<StoreController>().requestTotalSync());
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Chaîne ${channel.displayHandle} débannie. Les bots '
-            'synchroniseront la liste noire au prochain cycle.',
-          ),
-          duration: const Duration(seconds: 4),
-        ),
-      );
-      // Reste sur une page valide si on vient d'y retirer la dernière ligne.
-      final target = _items.length == 1 && _page > 0 ? _page - 1 : _page;
-      await _load(target);
-    } on AdminAuthException {
-      if (!mounted) return;
-      context.read<StoreController>().onAuthError?.call();
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_errorMessage(e)),
-          backgroundColor: Colors.red.shade700,
-          duration: const Duration(seconds: 5),
-        ),
-      );
+      // vivants — sync totale fire-and-forget (chantier C).
+      if (f.totalSync) unawaited(_store.requestTotalSync());
+      showModerationSnack(context, f.message, tone: f.tone);
+      await _load(_page);
     } finally {
-      if (mounted) setState(() => _busyIds.remove(channel.id));
+      if (mounted) setState(() => _busyIds.remove(c.id));
     }
+  }
+
+  // ── Ligne AUTO (compte principal) ──
+
+  Future<void> _onAction(BannedChannel c, ReviewAction a) async {
+    final int? eventId = c.banEventId;
+    if (_store.sync == null || eventId == null || _busyIds.contains(c.id)) {
+      return;
+    }
+    setState(() => _busyIds.add(c.id));
+    try {
+      await _runAction(c, a, eventId: eventId);
+    } finally {
+      if (mounted) setState(() => _busyIds.remove(c.id));
+    }
+  }
+
+  Future<void> _runAction(
+    BannedChannel c,
+    ReviewAction a, {
+    required int eventId,
+    bool fromDetail = false,
+  }) async {
+    final SupabaseSync? sync = _store.sync;
+    if (sync == null || !mounted) return;
+    if (_expired) return;
+    switch (a) {
+      case ReviewAction.detail:
+        final ReviewAction? chosen = await ReviewDetailDialog.show(
+          context,
+          load: () => sync.fetchReviewDetail(eventId),
+          // Revue P4b-3 (SEC-P4b3-06) : boutons calculés avec le statut
+          // RÉEL du compte (jamais « principal » supposé).
+          actions: channelRowControl(
+            c,
+            isOwner: context.read<AuthController>().isOwner,
+          ).actions,
+          onAuthError: _sessionExpired,
+        );
+        if (chosen == null || chosen == ReviewAction.detail || !mounted) {
+          return;
+        }
+        await _runAction(c, chosen, eventId: eventId, fromDetail: true);
+      case ReviewAction.purge:
+        await offerChannelPurge(
+          context,
+          sync: sync,
+          rowId: c.id,
+          channelLabel: c.displayLabel,
+          onAuthError: _sessionExpired,
+        );
+        if (mounted) await _load(_page);
+      case ReviewAction.confirm ||
+          ReviewAction.lift ||
+          ReviewAction.apply ||
+          ReviewAction.dismiss:
+        final ReviewDecision? decision = decisionForAction(a);
+        if (decision == null) return;
+        await _decide(c, decision, eventId: eventId, fromDetail: fromDetail);
+    }
+  }
+
+  /// Décision de revue sur l'événement [eventId] de la ligne [c] : levée
+  /// depuis la liste = `AutoBanLiftDialog` (détail replié + motif
+  /// obligatoire) ; depuis le détail déjà ouvert ou pour « Confirmer » =
+  /// `ReviewDecisionDialog`. Après une levée : synchro totale des bots +
+  /// relecture ; après une confirmation : relecture, purge proposée.
+  Future<void> _decide(
+    BannedChannel c,
+    ReviewDecision decision, {
+    required int eventId,
+    bool fromDetail = false,
+  }) async {
+    final SupabaseSync? sync = _store.sync;
+    if (sync == null || !mounted) return;
+    if (_expired) return;
+    Future<ReviewDecideResult> submit(String? reason) =>
+        sync.reviewDecide(eventId, decision, reason: reason);
+    final DecisionDialogOutcome? r =
+        decision == ReviewDecision.lift && !fromDetail
+        ? await AutoBanLiftDialog.show(
+            context,
+            loadDetail: () => sync.fetchReviewDetail(eventId),
+            submit: submit,
+            targetLabel: c.displayLabel,
+            manualBanPresent: c.hasManualIntent,
+            onAuthError: _sessionExpired,
+          )
+        : await ReviewDecisionDialog.show(
+            context,
+            decision: decision,
+            targetLabel: c.displayLabel,
+            targetKind: 'channel',
+            manualBanPresent: c.hasManualIntent,
+            submit: submit,
+            onAuthError: _sessionExpired,
+          );
+    // Annulé ou fermé sur 401 (déconnexion déjà lancée).
+    if (r == null || !mounted) return;
+    if (_expired) return;
+    final DecisionOutcome o = channelDecisionOutcome(
+      r.outcome,
+      result: r.result?.result,
+      stillBanned: r.result?.stillBanned,
+    );
+    if (decision == ReviewDecision.lift && o.reloadQueue) {
+      // Ligne supprimée ou convertie : la liste noire des bots change.
+      unawaited(_store.requestTotalSync());
+    }
+    showModerationSnack(context, o.message, tone: o.tone);
+    if (o.reloadQueue) await _load(_page);
+    if (!o.offerPurge || !mounted) return;
+    if (_expired) return;
+    await offerChannelPurge(
+      context,
+      sync: sync,
+      rowId: c.id,
+      channelLabel: c.displayLabel,
+      onAuthError: _sessionExpired,
+    );
+    if (mounted) await _load(_page);
   }
 
   // ── Construction ──
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final ThemeData theme = Theme.of(context);
+    final List<BanCategory> categories = context
+        .watch<StoreController>()
+        .manualBanCategories;
+    final bool isOwner = context.watch<AuthController>().isOwner;
     return Dialog(
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 880, maxHeight: 640),
+        constraints: const BoxConstraints(maxWidth: 1180, maxHeight: 720),
         child: Padding(
           padding: const EdgeInsets.all(20),
           child: Column(
@@ -279,17 +449,11 @@ class _BannedChannelsPanelState extends State<BannedChannelsPanel> {
                 ],
               ),
               const SizedBox(height: 4),
-              Text(
-                'Bannir une chaîne rejette automatiquement ses suggestions en '
-                'attente (motif « Chaîne bannie ») et les bots (Vision + '
-                'Sentinelle) l\'écartent sans analyse. Les contenus déjà '
-                'publiés sont signalés dans le rapport — retrait manuel.',
-                style: theme.textTheme.bodySmall,
-              ),
+              Text(kBannedChannelsHelp, style: theme.textTheme.bodySmall),
               const SizedBox(height: 12),
-              _buildBanForm(theme),
+              ChannelBanForm(categories: categories, submit: _submitBan),
               const SizedBox(height: 12),
-              Expanded(child: _buildBody(theme)),
+              Expanded(child: _buildBody(theme, categories, isOwner)),
               const SizedBox(height: 8),
               _buildPagination(theme),
             ],
@@ -299,102 +463,11 @@ class _BannedChannelsPanelState extends State<BannedChannelsPanel> {
     );
   }
 
-  /// Formulaire d'ajout : URL/handle + motif + nom affiché (optionnel).
-  Widget _buildBanForm(ThemeData theme) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppColors.categoryVideo.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: AppColors.categoryVideo.withValues(alpha: 0.35),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                flex: 3,
-                child: TextField(
-                  controller: _handleCtrl,
-                  enabled: !_banning,
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    labelText: 'URL ou handle de la chaîne *',
-                    hintText: 'https://youtube.com/@xxx ou @xxx',
-                    border: OutlineInputBorder(),
-                  ),
-                  onSubmitted: (_) => _ban(),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                flex: 2,
-                child: TextField(
-                  controller: _nameCtrl,
-                  enabled: !_banning,
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    labelText: 'Nom affiché (optionnel)',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _reasonCtrl,
-                  enabled: !_banning,
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    labelText: 'Motif *',
-                    hintText: 'Ex. : contenus marqués guide — walkthroughs',
-                    border: OutlineInputBorder(),
-                  ),
-                  onSubmitted: (_) => _ban(),
-                ),
-              ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.categoryVideo,
-                ),
-                onPressed: _banning ? null : _ban,
-                icon: _banning
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.block_rounded, size: 18),
-                label: const Text('Bannir'),
-              ),
-            ],
-          ),
-          if (_formMessage != null) ...[
-            const SizedBox(height: 6),
-            Text(
-              _formMessage!,
-              style: TextStyle(
-                fontSize: 12,
-                color: _formError
-                    ? AppColors.categoryVideo
-                    : AppColors.neonGreen,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildBody(ThemeData theme) {
+  Widget _buildBody(
+    ThemeData theme,
+    List<BanCategory> categories,
+    bool isOwner,
+  ) {
     if (_error != null && _items.isEmpty) {
       return Center(
         child: Column(
@@ -428,40 +501,14 @@ class _BannedChannelsPanelState extends State<BannedChannelsPanel> {
       );
     }
     return SingleChildScrollView(
-      child: AdminDataTable(
-        columns: const ['Handle', 'Nom', 'Motif', 'Date', 'Par', 'Actions'],
-        rows: [
-          for (final c in _items)
-            [
-              Text(
-                c.displayHandle,
-                style: const TextStyle(fontWeight: FontWeight.w700),
-                overflow: TextOverflow.ellipsis,
-              ),
-              Text(c.displayName ?? '—', overflow: TextOverflow.ellipsis),
-              Tooltip(
-                message: c.reason ?? '',
-                child: Text(c.reason ?? '—', overflow: TextOverflow.ellipsis),
-              ),
-              Text(_fmtDate(c.createdAt)),
-              Text(c.bannedBy ?? '—', overflow: TextOverflow.ellipsis),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: _busyIds.contains(c.id)
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : IconButton(
-                        tooltip: 'Débannir cette chaîne',
-                        onPressed: () => _confirmUnban(c),
-                        icon: const Icon(Icons.undo_rounded, size: 18),
-                        color: AppColors.categoryVideo,
-                      ),
-              ),
-            ],
-        ],
+      child: BannedChannelsTable(
+        channels: _items,
+        isOwner: isOwner,
+        busyIds: _busyIds,
+        categories: categories,
+        onUnban: (BannedChannel c) => unawaited(_unban(c)),
+        onAction: (BannedChannel c, ReviewAction a) =>
+            unawaited(_onAction(c, a)),
       ),
     );
   }
@@ -501,190 +548,6 @@ class _BannedChannelsPanelState extends State<BannedChannelsPanel> {
           onPressed: _page + 1 < _totalPages && !_loading
               ? () => _load(_totalPages - 1)
               : null,
-        ),
-      ],
-    );
-  }
-}
-
-/// Rapport affiché après un bannissement réussi (contrat §70.3) :
-///  - « X suggestions en file rejetées (motif : Chaîne bannie) » ;
-///  - si des contenus de la chaîne sont déjà publiés : la liste + bouton
-///    « Retirer aussi ces N contenus publiés » (retrait MANUEL — route EF
-///    `contents/unpublish-by-channel`) puis compte-rendu.
-class _BanReportDialog extends StatefulWidget {
-  const _BanReportDialog({required this.report});
-
-  final BanChannelReport report;
-
-  static Future<void> show(BuildContext context, BanChannelReport report) {
-    return showDialog<void>(
-      context: context,
-      builder: (_) => _BanReportDialog(report: report),
-    );
-  }
-
-  @override
-  State<_BanReportDialog> createState() => _BanReportDialogState();
-}
-
-class _BanReportDialogState extends State<_BanReportDialog> {
-  bool _unpublishing = false;
-  int? _deleted;
-
-  static String _errorMessage(Object e) {
-    const prefix = 'Exception: ';
-    final String msg = e.toString();
-    return msg.startsWith(prefix) ? msg.substring(prefix.length) : msg;
-  }
-
-  Future<void> _unpublish() async {
-    final store = context.read<StoreController>();
-    final sync = store.sync;
-    if (_unpublishing || sync == null) return;
-    setState(() => _unpublishing = true);
-    try {
-      final res = await sync.unpublishByChannel(widget.report.banned.handle);
-      if (!mounted) return;
-      setState(() {
-        _unpublishing = false;
-        _deleted = res.deleted;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '${res.deleted} contenu(s) publié(s) retiré(s) de '
-            '${widget.report.banned.displayHandle}.',
-          ),
-          duration: const Duration(seconds: 4),
-        ),
-      );
-    } on AdminAuthException {
-      if (!mounted) return;
-      store.onAuthError?.call();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _unpublishing = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_errorMessage(e)),
-          backgroundColor: Colors.red.shade700,
-          duration: const Duration(seconds: 5),
-        ),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final report = widget.report;
-    final published = report.published;
-    return AlertDialog(
-      title: Text('🚫 ${report.banned.displayHandle} bannie'),
-      content: SizedBox(
-        width: 560,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '${report.purged} suggestion(s) en file rejetée(s) '
-                '(motif : Chaîne bannie).',
-                style: theme.textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Les bots synchroniseront la liste noire au prochain cycle.',
-                style: theme.textTheme.bodySmall,
-              ),
-              if (published.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: Colors.orange.withValues(alpha: 0.4),
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '⚠️ ${published.length} contenu(s) de cette chaîne '
-                        'sont déjà PUBLIÉS dans l\'app :',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      for (final c in published.take(20))
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 2),
-                          child: Text(
-                            '• ${c['title'] ?? c['url'] ?? ''}',
-                            style: theme.textTheme.bodySmall,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      if (published.length > 20)
-                        Text(
-                          '… et ${published.length - 20} autre(s).',
-                          style: theme.textTheme.bodySmall,
-                        ),
-                      const SizedBox(height: 8),
-                      if (_deleted == null)
-                        FilledButton.icon(
-                          style: FilledButton.styleFrom(
-                            backgroundColor: AppColors.categoryVideo,
-                          ),
-                          onPressed: _unpublishing ? null : _unpublish,
-                          icon: _unpublishing
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(
-                                  Icons.delete_outline_rounded,
-                                  size: 18,
-                                ),
-                          label: Text(
-                            'Retirer aussi ces ${published.length} contenus '
-                            'publiés',
-                          ),
-                        )
-                      else
-                        Text(
-                          '✅ ${_deleted!} contenu(s) publié(s) retiré(s).',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: AppColors.neonGreen,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ] else ...[
-                const SizedBox(height: 12),
-                Text(
-                  'Aucun contenu publié connu pour cette chaîne.',
-                  style: theme.textTheme.bodySmall,
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        FilledButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Fermer'),
         ),
       ],
     );

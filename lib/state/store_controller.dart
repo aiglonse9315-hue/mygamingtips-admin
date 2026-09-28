@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -8,19 +7,33 @@ import '../data/store.dart';
 import '../data/supabase_sync.dart';
 import '../domain/analytics_calc.dart';
 import '../domain/game_alias_payload.dart';
+import '../domain/game_patch.dart';
+import '../domain/ids.dart';
+import '../domain/jwt_payload.dart';
+import '../domain/models/ban_category.dart';
 import '../domain/models/banned_user.dart';
 import '../domain/models/category.dart';
 import '../domain/models/content.dart';
 import '../domain/models/game.dart';
 import '../domain/models/game_alias.dart';
 import '../domain/models/plus_user.dart';
+import '../domain/models/ready_games.dart';
 import '../domain/models/suggestion.dart';
 import '../domain/models/sync_status.dart';
+import '../domain/moderation_actions.dart';
 import '../domain/plus_paging.dart';
+import '../domain/store_write_rules.dart';
 import '../domain/title_cleaning.dart';
+import '../domain/write_outcome.dart';
 
 /// Détecte si une erreur provient d'un token admin expiré/invalide (HTTP 401).
 bool _isAuthError(Object e) => e is AdminAuthException;
+
+/// D4 : catégories proposées au ban MANUEL parmi celles lues au serveur.
+/// Fonction de niveau fichier : dans la classe, le nom
+/// `manualBanCategories` désigne le getter du contrôleur.
+List<BanCategory> _manualOnly(List<BanCategory> all) =>
+    manualBanCategories(all);
 
 /// Datasets synchronisables indépendamment (chargement paresseux par menu).
 ///
@@ -314,29 +327,23 @@ class StoreController extends ChangeNotifier {
   /// Identifiant du compte connecté (claim `username` du JWT), null sinon.
   String? get currentUsername => _currentUsername;
 
-  /// Décode le payload JWT (segment du milieu, base64url + padding) et met
-  /// à jour [_isOwner] / [_currentUsername]. Tolérant aux jetons malformés
-  /// (mode aperçu, jeton factice) : les claims connus sont conservés.
+  /// Décode le payload JWT (segment du milieu, [decodeJwtPayload] : base64
+  /// standard du serveur ou base64url, Latin-1 de `btoa` accepté — P4b-3,
+  /// T14) et met à jour [_isOwner] / [_currentUsername]. Tolérant aux jetons
+  /// malformés (mode aperçu, jeton factice) : les claims connus sont
+  /// conservés.
   void _applySessionClaims(String? token) {
     if (token == null || token.isEmpty) {
       _isOwner = false;
       _currentUsername = null;
       return;
     }
-    try {
-      final parts = token.split('.');
-      if (parts.length != 3) return;
-      final b64 = parts[1].replaceAll('-', '+').replaceAll('_', '/');
-      final padded = b64.padRight((b64.length + 3) ~/ 4 * 4, '=');
-      final claims = jsonDecode(utf8.decode(base64.decode(padded)))
-          as Map<String, dynamic>;
-      final owner = claims['is_owner'];
-      if (owner is bool) _isOwner = owner;
-      final user = claims['username'];
-      if (user is String && user.isNotEmpty) _currentUsername = user;
-    } catch (_) {
-      // Jeton malformé → on conserve les claims déjà connus.
-    }
+    final Map<String, dynamic>? claims = decodeJwtPayload(token);
+    if (claims == null) return; // malformé → claims déjà connus conservés
+    final owner = claims['is_owner'];
+    if (owner is bool) _isOwner = owner;
+    final user = claims['username'];
+    if (user is String && user.isNotEmpty) _currentUsername = user;
   }
 
   /// Callback invoqué quand une écriture reçoit un 401 (token expiré/invalide).
@@ -381,6 +388,50 @@ class StoreController extends ChangeNotifier {
   List<Suggestion> _scruteurSuggestions = <Suggestion>[];
   List<Suggestion> _gamesToCreate = <Suggestion>[];
   List<BannedUser> _banned = <BannedUser>[];
+
+  /// Message de la dernière relecture ÉCHOUÉE de `profiles/banned-list`
+  /// (null si la dernière relecture a réussi) — lu par [reloadBannedList].
+  String? _bannedListError;
+
+  // ── Catégories de ban (D4, P4b-3 §5.1) : cache de session ──
+
+  /// Catégories lues au serveur (`moderation/categories`) ; vide = pas encore
+  /// lues (ou échec : repli [kManualBanCategoriesFallback]).
+  List<BanCategory> _banCategories = const <BanCategory>[];
+
+  /// Vrai une fois la liste lue au serveur dans cette session : pas de
+  /// relecture à l'ouverture des dialogues suivants (sauf `force`).
+  bool _banCategoriesFromServer = false;
+
+  /// Lecture en cours (plusieurs dialogues ouverts coup sur coup : une seule
+  /// requête).
+  Future<void>? _banCategoriesInFlight;
+
+  /// Incrémenté à la déconnexion : une lecture partie avant n'est pas
+  /// appliquée après.
+  int _banCategoriesEpoch = 0;
+
+  // ── Jeux inactifs (T7, D2, P4b-3 §5.5) ──
+  //
+  // Lus par `games/list {active:false}` (la lecture publique ne voit que les
+  // jeux actifs). JAMAIS fusionnés dans [_games] (la synchro complète des
+  // jeux remplace [_games] par la liste publique) et jamais persistés :
+  // rechargés à l'ouverture du menu Jeux.
+  List<Game> _inactiveGames = <Game>[];
+
+  /// Chargement de la liste des jeux inactifs en cours.
+  bool inactiveGamesLoading = false;
+
+  /// Erreur du dernier chargement des jeux inactifs (null si réussi).
+  String? inactiveGamesError;
+
+  /// Vrai une fois la liste des jeux inactifs chargée au moins une fois.
+  bool inactiveGamesLoaded = false;
+
+  /// Numéro du dernier chargement des jeux inactifs demandé : seul le plus
+  /// récent est appliqué (un chargement parti AVANT une écriture ne doit pas
+  /// écraser celui qui la suit).
+  int _inactiveLoadSeq = 0;
 
   /// Abonnés Plus du MODE APERÇU LOCAL uniquement (sans Supabase). En
   /// production, la liste n'est JAMAIS chargée en entier ni persistée
@@ -511,6 +562,61 @@ class StoreController extends ChangeNotifier {
   /// L'auteur d'une suggestion est-il actuellement banni ?
   bool isAuthorBanned(String authorId) => _banned.any((b) => b.id == authorId);
 
+  /// Entrée de la liste des bannis pour le compte [id] (origine, statut,
+  /// événement du ban…), ou null si le compte n'y figure pas.
+  BannedUser? bannedEntry(String id) {
+    for (final BannedUser b in _banned) {
+      if (b.id == id) return b;
+    }
+    return null;
+  }
+
+  /// Catégories proposées au ban MANUEL (D4 : les 4 catégories dont
+  /// `auto_allowed = false`, jamais « Injection IA ») : liste du serveur si
+  /// elle a été lue, sinon le repli local (mêmes 4 codes, acceptés par le
+  /// serveur).
+  List<BanCategory> get manualBanCategories => _banCategories.isEmpty
+      ? kManualBanCategoriesFallback
+      : _manualOnly(_banCategories);
+
+  /// Lit les catégories de ban au serveur (à l'ouverture du PREMIER dialogue
+  /// de ban, compte ou chaîne) ; aucune relecture une fois lues dans la
+  /// session, sauf [force]. Échec (réseau, 500) → repli gardé, nouvel essai
+  /// à la prochaine ouverture, aucun message ; 401 → [onAuthError]. Aperçu :
+  /// repli directement. Ne lève jamais.
+  Future<void> loadBanCategories({bool force = false}) async {
+    if (sync == null) return;
+    if (_banCategoriesFromServer && !force) return;
+    final Future<void>? inFlight = _banCategoriesInFlight;
+    if (inFlight != null) return inFlight;
+    final Future<void> current = _fetchBanCategories();
+    _banCategoriesInFlight = current;
+    try {
+      await current;
+    } finally {
+      if (identical(_banCategoriesInFlight, current)) {
+        _banCategoriesInFlight = null;
+      }
+    }
+  }
+
+  Future<void> _fetchBanCategories() async {
+    final int epoch = _banCategoriesEpoch;
+    try {
+      final List<BanCategory> all = await sync!.fetchBanCategories();
+      // Déconnexion pendant la lecture, ou liste vide / illisible : rien
+      // n'est retenu (repli, nouvel essai à la prochaine ouverture).
+      if (epoch != _banCategoriesEpoch || all.isEmpty) return;
+      _banCategories = List<BanCategory>.unmodifiable(all);
+      _banCategoriesFromServer = true;
+      notifyListeners();
+    } on AdminAuthException {
+      onAuthError?.call();
+    } catch (e) {
+      debugPrint('moderation/categories échec (repli local) : $e');
+    }
+  }
+
   /// Un utilisateur est-il abonné Plus ACTIF (is_active) ?
   ///
   /// Production : indicateur `author_is_plus` des suggestions lues, corrigé
@@ -573,8 +679,13 @@ class StoreController extends ChangeNotifier {
     return (byLang: byLang, noLang: noLang);
   }
 
-  /// Ajoute un jeu. En mode production, attend la confirmation serveur.
-  /// En cas d'échec, le jeu est retiré (rollback) et l'erreur est notifiée.
+  /// Ajoute un jeu (création : id temporaire `g-<ms>`, 6 clés via
+  /// `upsertGame`). En mode production, attend la confirmation serveur. En
+  /// cas d'échec, le jeu est retiré (rollback) et l'erreur est notifiée.
+  ///
+  /// P4b-3 (§5.5, REG-02) : en production, un jeu créé INACTIF va dans
+  /// [inactiveGames] (ajout optimiste ET ligne créée), jamais dans [games] ;
+  /// en aperçu, tout reste dans [games] (le getter [inactiveGames] filtre).
   Future<void> addGame({
     required String name,
     String? publisher,
@@ -592,23 +703,34 @@ class StoreController extends ChangeNotifier {
       active: active,
       createdAt: DateTime.now(),
     );
-    // Ajout optimiste local.
-    _games = [..._games, game]..sort(_byName);
-    _store.saveGames(_games);
+    // Ajout optimiste local (liste des inactifs pour un jeu créé inactif en
+    // production : la liste principale ne montre que les jeux actifs).
+    if (sync != null && !game.active) {
+      _inactiveGames = [..._inactiveGames, game]..sort(_byName);
+    } else {
+      _games = [..._games, game]..sort(_byName);
+      _store.saveGames(_games);
+    }
     notifyListeners();
 
     // Sync Supabase : attend la confirmation.
     if (sync == null) return;
     try {
       final created = await sync!.upsertGame(game);
-      // Remplace l'ID temporaire par l'ID serveur (UUID).
-      _games = _games.map((g) => g.id == game.id ? created : g).toList()
-        ..sort(_byName);
-      _store.saveGames(_games);
-      notifyListeners();
+      // Remplace l'ID temporaire par la ligne serveur (UUID), rangée selon
+      // son état RÉEL (la ligne renvoyée fait foi).
+      _applyGameLists(
+        placeGameRow(
+          active: _games,
+          inactive: _inactiveGames,
+          id: game.id,
+          row: created,
+        ),
+      );
     } catch (e) {
       // Rollback : retire le jeu qui n'a pas pu être synchronisé.
       _games = _games.where((g) => g.id != game.id).toList();
+      _inactiveGames = _inactiveGames.where((g) => g.id != game.id).toList();
       _store.saveGames(_games);
       if (_isAuthError(e)) {
         onAuthError?.call();
@@ -619,29 +741,194 @@ class StoreController extends ChangeNotifier {
     }
   }
 
-  Future<void> updateGame(Game game) async {
-    final Game? previous = gameById(game.id);
-    _games = _games.map((g) => g.id == game.id ? game : g).toList()
-      ..sort(_byName);
+  /// Remplace les deux listes de jeux, persiste les actifs (cache) et
+  /// notifie. Les inactifs ne sont jamais persistés.
+  void _applyGameLists(({List<Game> active, List<Game> inactive}) lists) {
+    _games = lists.active;
+    _inactiveGames = lists.inactive;
     _store.saveGames(_games);
     notifyListeners();
-    if (sync == null) return;
+    _supersedeInactiveLoad();
+  }
+
+  /// Une écriture de jeu vient de modifier les listes (revue P4b-3, ARC-03) :
+  /// un chargement des jeux inactifs parti AVANT elle rendrait une liste
+  /// périmée (jeu tout juste désactivé absent des deux listes, jeu tout juste
+  /// réactivé retiré de [games] par la réconciliation). Ce chargement est
+  /// donc ignoré (numéro avancé) puis RELANCÉ : la nouvelle lecture part
+  /// après l'écriture. Aucun chargement en cours : rien.
+  void _supersedeInactiveLoad() {
+    if (sync == null || !inactiveGamesLoading) return;
+    _inactiveLoadSeq++;
+    inactiveGamesLoading = false;
+    unawaited(loadInactiveGames());
+  }
+
+  /// Jeux INACTIFS (D2). Production : liste lue par [loadInactiveGames]
+  /// (jamais mêlée à [games]). Aperçu : jeux locaux inactifs de [games],
+  /// calculés à chaque lecture (les jeux de l'aperçu ne vivent que dans
+  /// [games], persisté en localStorage).
+  List<Game> get inactiveGames => sync == null
+      ? List<Game>.unmodifiable(_games.where((Game g) => !g.active))
+      : List<Game>.unmodifiable(_inactiveGames);
+
+  /// Charge TOUS les jeux inactifs (`games/list {active:false}`, toutes les
+  /// pages) à l'ouverture du menu Jeux ou sur « Recharger ». Réconciliation :
+  /// un jeu listé inactif est retiré de [games] (jeu désactivé encore en
+  /// cache). Erreur → [inactiveGamesError] ; 401 → [onAuthError]. Seul le
+  /// chargement le plus récent est appliqué. Ne lève jamais.
+  Future<void> loadInactiveGames() async {
+    if (sync == null) {
+      // Aperçu : pas de liste séparée (getter calculé sur [games]).
+      if (!inactiveGamesLoaded) {
+        inactiveGamesLoaded = true;
+        notifyListeners();
+      }
+      return;
+    }
+    final int seq = ++_inactiveLoadSeq;
+    inactiveGamesLoading = true;
+    inactiveGamesError = null;
+    notifyListeners();
     try {
-      await sync!.upsertGame(game);
-    } catch (e) {
-      // Rollback vers l'état précédent.
-      if (previous != null) {
-        _games = _games.map((g) => g.id == game.id ? previous : g).toList()
-          ..sort(_byName);
+      final List<Game> rows = await sync!.fetchAllGames(active: false);
+      if (seq != _inactiveLoadSeq) return;
+      _inactiveGames = rows.where((Game g) => !g.active).toList()
+        ..sort(_byName);
+      final List<Game> kept = withoutInactiveIds(_games, _inactiveGames);
+      if (kept.length != _games.length) {
+        _games = kept;
         _store.saveGames(_games);
       }
-      lastActionError = 'Jeu non modifié (erreur serveur) : $e';
-      notifyListeners();
+      inactiveGamesLoaded = true;
+    } on AdminAuthException {
+      if (seq == _inactiveLoadSeq) inactiveGamesError = 'Session expirée.';
+      onAuthError?.call();
+    } catch (e) {
+      debugPrint('games/list (inactifs) échec : $e');
+      if (seq == _inactiveLoadSeq) inactiveGamesError = errorText(e);
+    } finally {
+      if (seq == _inactiveLoadSeq) {
+        inactiveGamesLoading = false;
+        notifyListeners();
+      }
     }
   }
 
-  void toggleGameActive(Game game) {
-    updateGame(game.copyWith(active: !game.active));
+  /// Envoi PARTIEL d'un jeu existant (T7) : [patch] = clés modifiées en
+  /// snake_case (`buildGamePatch`). NON optimiste : le dialogue attend la
+  /// réponse. Patch vide → succès sans requête ; id temporaire `g-…` →
+  /// échec sans requête (un envoi CRÉERAIT un jeu) ; aperçu → application
+  /// locale. Succès : la ligne renvoyée par le serveur fait foi et est rangée
+  /// dans [games] ou [inactiveGames] selon `active`. 404 → jeu retiré des
+  /// deux listes ; 400 → message du serveur ; 401 → [onAuthError] +
+  /// `WriteOutcome.sessionExpired` ; issue inconnue → listes relues.
+  Future<WriteOutcome> saveGamePatch(
+    Game original,
+    Map<String, Object?> patch,
+  ) async {
+    if (patch.isEmpty) return const WriteOutcome.ok();
+    // Aperçu AVANT le contrôle d'UUID (écart documenté) : les jeux de
+    // démonstration ont des ids non UUID (« g-eldenring ») et restent
+    // modifiables localement (§6.14) ; aucune requête n'est envoyée.
+    if (sync == null) {
+      final Game updated = applyGamePatch(original, patch);
+      final bool present = _games.any((Game g) => g.id == original.id);
+      _games = [
+        for (final Game g in _games) g.id == original.id ? updated : g,
+        if (!present) updated,
+      ]..sort(_byName);
+      _store.saveGames(_games);
+      notifyListeners();
+      return const WriteOutcome.ok();
+    }
+    if (!isUuid(original.id)) {
+      return const WriteOutcome.failed(kGameTempIdMessage);
+    }
+    try {
+      final Game row = await sync!.patchGame(original.id, patch);
+      _applyGameLists(
+        placeGameRow(
+          active: _games,
+          inactive: _inactiveGames,
+          id: original.id,
+          row: row,
+        ),
+      );
+      return const WriteOutcome.ok();
+    } on AdminAuthException {
+      onAuthError?.call();
+      return const WriteOutcome.sessionExpired();
+    } catch (e) {
+      final WriteOutcome out = gamePatchFailureOutcome(
+        statusCode: e is AdminApiException ? e.statusCode : null,
+        message: errorText(e),
+        uncertain: isUncertainFailure(e),
+      );
+      if (e is AdminApiException && e.isNotFound) {
+        _applyGameLists(
+          placeGameRow(
+            active: _games,
+            inactive: _inactiveGames,
+            id: original.id,
+          ),
+        );
+      } else if (out.uncertain) {
+        await syncFromSupabase(datasets: const {SyncDataset.games});
+        await loadInactiveGames();
+      }
+      return out;
+    }
+  }
+
+  /// Active ou désactive un jeu : envoi `{id, active}` seul.
+  Future<WriteOutcome> setGameActive(Game game, bool active) =>
+      saveGamePatch(game, <String, Object?>{'active': active});
+
+  /// Aperçu de « Activer les jeux prêts » (compte principal) : les erreurs
+  /// sont RELANCÉES telles quelles au dialogue (401 compris : c'est lui qui
+  /// ferme et appelle la déconnexion). Indisponible en aperçu (bouton
+  /// masqué, §6.14).
+  Future<ReadyGamesPreview> previewReadyGames() async {
+    final SupabaseSync? s = sync;
+    if (s == null) {
+      throw StateError('Mode démo : pas de connexion Supabase.');
+    }
+    return s.previewReadyGames();
+  }
+
+  /// Active les jeux prêts choisis (1 à [kActivateReadyMax] ids, le dialogue
+  /// plafonne la sélection). Après un succès OU une erreur à l'issue
+  /// inconnue : synchro COMPLÈTE des jeux (T7) puis relecture des inactifs.
+  /// Les erreurs sont relancées au dialogue.
+  Future<ActivateReadyResult> activateReadyGames(List<String> ids) async {
+    assert(
+      ids.length <= kActivateReadyMax,
+      'activateReadyGames : $kActivateReadyMax jeux au plus',
+    );
+    final SupabaseSync? s = sync;
+    if (s == null) {
+      throw StateError('Mode démo : pas de connexion Supabase.');
+    }
+    try {
+      final ActivateReadyResult r = await s.activateReadyGames(ids);
+      await _reloadAllGames();
+      return r;
+    } catch (e) {
+      if (e is! AdminAuthException && isUncertainFailure(e)) {
+        await _reloadAllGames();
+      }
+      rethrow;
+    }
+  }
+
+  /// Synchro complète des jeux actifs puis relecture des inactifs.
+  Future<void> _reloadAllGames() async {
+    await syncFromSupabase(
+      datasets: const {SyncDataset.games},
+      forceFull: true,
+    );
+    await loadInactiveGames();
   }
 
   // ── Traductions de titres de jeux (table game_translations) ──
@@ -705,17 +992,33 @@ class StoreController extends ChangeNotifier {
   }
 
   /// Supprime un jeu. Attend la confirmation serveur, puis resync.
+  ///
+  /// P4b-3 (§5.5, REG-01) : le jeu est aussi retiré de [inactiveGames]
+  /// (retrait optimiste, restauré en cas d'échec) — un jeu inactif supprimé
+  /// disparaît de la section sans attendre un rechargement.
   Future<void> deleteGame(String id) async {
     final List<Game> backupGames = List<Game>.from(_games);
+    final List<Game> backupInactive = List<Game>.from(_inactiveGames);
     final List<Content> backupContents = List<Content>.from(_contents);
     _games = _games.where((g) => g.id != id).toList();
+    _inactiveGames = _inactiveGames.where((g) => g.id != id).toList();
     _contents = _contents.where((c) => c.gameId != id).toList();
     _store.saveGames(_games);
     _store.saveContents(_contents);
     notifyListeners();
     if (sync == null) return;
+    // ARC-03 : un chargement des inactifs parti avant ce retrait ne doit pas
+    // réafficher le jeu.
+    _supersedeInactiveLoad();
     try {
       await sync!.deleteGame(id);
+      // Suppression confirmée : un chargement des inactifs revenu entre-temps
+      // (parti avant la suppression côté serveur) a pu remettre le jeu.
+      if (_inactiveGames.any((Game g) => g.id == id)) {
+        _inactiveGames = _inactiveGames.where((g) => g.id != id).toList();
+        notifyListeners();
+      }
+      _supersedeInactiveLoad();
       // Resync ciblé : jeux + contenus (le jeu et ses contenus ont disparu).
       // Full sync des 2 datasets : les suppressions ne sont pas visibles en
       // incrémental (updated_at ne signale pas les DELETE).
@@ -726,6 +1029,7 @@ class StoreController extends ChangeNotifier {
     } catch (e) {
       // Rollback : le jeu n'a pas pu être supprimé, on le restaure.
       _games = backupGames..sort(_byName);
+      _inactiveGames = backupInactive..sort(_byName);
       _contents = backupContents;
       _store.saveGames(_games);
       _store.saveContents(_contents);
@@ -2399,90 +2703,258 @@ class StoreController extends ChangeNotifier {
   }
 
   // ---------- Bannissement ----------
-  /// Bannit le compte auteur d'une suggestion (modération disciplinaire).
-  Future<void> banAuthor(Suggestion suggestion, {String? reason}) async {
-    if (isAuthorBanned(suggestion.author.id)) return;
-    _banned = [
-      ..._banned,
-      BannedUser.fromAuthor(suggestion.author, reason: reason),
-    ];
-    _store.saveBanned(_banned);
-    notifyListeners();
+  //
+  // P4b-3 (§5.2-§5.4) : écritures sûres et traçables. `banAccount` /
+  // `banAccountByEmailOrId` / `banAccounts` / `unbanAccount` rendent un
+  // résultat que le dialogue appelant affiche (il reste ouvert sur échec, se
+  // FERME sur session expirée — 401 déjà traité par [onAuthError]) ; la liste
+  // des bannis est RELUE au serveur après chaque écriture (origine, statut,
+  // date et motif réels). Débannir est NON optimiste : la ligne ne disparaît
+  // qu'après la réponse (un ban automatique répond 409 et RESTE).
+
+  /// Relit la liste des bannis (`profiles/banned-list`, avec les mauvais
+  /// contributeurs du même dataset). Échec non-401 et [reportErrors] →
+  /// avertissement orange « Liste des bannis non relue : … ». Aperçu : rien.
+  Future<void> reloadBannedList({bool reportErrors = true}) async {
     if (sync == null) return;
-    try {
-      await sync!.banUser(suggestion.author.id, reason: reason);
-    } catch (e) {
-      // Rollback.
-      _banned = _banned.where((b) => b.id != suggestion.author.id).toList();
-      _store.saveBanned(_banned);
-      lastActionError = 'Bannissement échoué (erreur serveur) : $e';
+    await syncFromSupabase(datasets: const {SyncDataset.banned});
+    final String? err = _bannedListError;
+    if (err != null && reportErrors) {
+      lastActionNotice = 'Liste des bannis non relue : $err';
       notifyListeners();
     }
   }
 
-  /// Bannit directement un auteur identifié (depuis un id).
-  Future<void> banAuthorId(String authorId, {String? displayName}) async {
-    if (isAuthorBanned(authorId)) return;
-    _banned = [
-      ..._banned,
-      BannedUser(
-        id: authorId,
-        displayName: displayName ?? authorId,
-        bannedAt: DateTime.now(),
-        reason: 'Banni manuellement',
-      ),
-    ];
-    _store.saveBanned(_banned);
-    notifyListeners();
-    if (sync == null) return;
-    try {
-      await sync!.banUser(authorId, reason: 'Banni manuellement');
-    } catch (e) {
-      _banned = _banned.where((b) => b.id != authorId).toList();
-      _store.saveBanned(_banned);
-      lastActionError = 'Bannissement échoué (erreur serveur) : $e';
+  /// Ban MANUEL d'un compte connu (Suggestions, Abonnements, Comptes à
+  /// bannir) : [category] parmi [manualBanCategories], [reason] déjà
+  /// normalisé par le dialogue (null = sans motif). Ajout local optimiste
+  /// (badge immédiat) retiré en cas d'échec ; succès → relecture de la liste.
+  Future<WriteOutcome> banAccount(
+    String userId, {
+    String? displayName,
+    required String category,
+    String? reason,
+  }) async {
+    if (!isUuid(userId)) return const WriteOutcome.failed(kBanNotUuidMessage);
+    final bool knownLocally = bannedEntry(userId) != null;
+    // Optimiste (et seul effet en aperçu) : une entrée déjà présente (ban
+    // automatique en cours, par exemple) n'est ni dupliquée ni remplacée.
+    if (!knownLocally) {
+      _banned = [
+        ..._banned,
+        BannedUser(
+          id: userId,
+          displayName: displayName ?? userId,
+          bannedAt: DateTime.now(),
+          reason: reason,
+          category: category,
+        ),
+      ];
+      _persistBanned();
       notifyListeners();
+    }
+    if (sync == null) return const WriteOutcome.ok();
+    try {
+      final r = await sync!.banUser(userId, reason: reason, category: category);
+      unawaited(reloadBannedList());
+      return banSuccessOutcome(result: r.result, replayed: r.replayed);
+    } on AdminAuthException {
+      _dropOptimisticBan(userId, knownLocally);
+      onAuthError?.call();
+      return const WriteOutcome.sessionExpired();
+    } catch (e) {
+      _dropOptimisticBan(userId, knownLocally);
+      final WriteOutcome out = banFailureOutcome(
+        statusCode: e is AdminApiException ? e.statusCode : null,
+        message: errorText(e),
+        uncertain: isUncertainFailure(e),
+      );
+      // Issue inconnue : le ban a pu être posé → la liste est relue AVANT
+      // de rendre la main (le message le dit).
+      if (out.uncertain) await reloadBannedList();
+      return out;
     }
   }
 
-  Future<void> unban(String id) async {
-    _banned = _banned.where((b) => b.id != id).toList();
-    _store.saveBanned(_banned);
+  /// Retire l'entrée optimiste de [userId] si elle a été ajoutée par
+  /// [banAccount] (une entrée préexistante est conservée).
+  void _dropOptimisticBan(String userId, bool knownLocally) {
+    if (knownLocally) return;
+    _banned = _banned.where((b) => b.id != userId).toList();
+    _persistBanned();
     notifyListeners();
-    if (sync == null) return;
-    try {
-      await sync!.unbanUser(id);
-    } catch (e) {
-      // Rollback : on ne peut pas reconstruire l'entrée exacte, donc on resync.
-      lastActionError = 'Levée de ban échouée : $e';
-      notifyListeners();
-    }
   }
 
-  /// Bannit un lot d'utilisateurs (menu « Comptes à bannir »).
-  ///
-  /// Boucle sur [userIds] en appelant `banAuthorId` pour chaque identifiant.
-  /// Les utilisateurs déjà bannis sont ignorés (garde fourni par banAuthorId).
-  /// [reason] est appliqué à tous (information locale uniquement — la raison
-  /// envoyée au serveur reste « Banni manuellement » pour cohérence avec
-  /// banAuthorId).
-  ///
-  /// Retourne le nombre d'utilisateurs réellement bannis (excluant ceux qui
-  /// l'étaient déjà). En cas d'erreur serveur sur un utilisateur, on continue
-  /// le lot (meilleur effort) et on consolide l'erreur dans lastActionError.
-  Future<int> banBatch(List<String> userIds, {String? reason}) async {
-    if (userIds.isEmpty) return 0;
-    int count = 0;
-    for (final id in userIds) {
-      if (isAuthorBanned(id)) continue; // déjà banni → on saute
-      await banAuthorId(id);
-      if (!isAuthorBanned(id)) {
-        // banAuthorId a rollback (erreur serveur) → on signale et on continue.
+  /// Dialogue « Bannir un compte » du tableau de bord (T4) : [input] =
+  /// e-mail OU identifiant (UUID). Un e-mail est résolu par le serveur
+  /// (introuvable → message, erreur → message) ; plus jamais d'entrée locale
+  /// fictive (`manual-<ms>`). Aperçu : entrée locale `apercu-<ms>` (jamais en
+  /// production : purgée par [_purgeDemoData]).
+  Future<WriteOutcome> banAccountByEmailOrId(
+    String input, {
+    required String category,
+    String? reason,
+  }) async {
+    final BanTarget target = parseBanTarget(input);
+    final String? error = target.error;
+    if (error != null) return WriteOutcome.failed(error);
+    final String? directId = target.userId;
+    if (directId != null) {
+      return banAccount(directId, category: category, reason: reason);
+    }
+    final String email = target.email!;
+    if (sync == null) {
+      _banned = [
+        ..._banned,
+        BannedUser(
+          id: 'apercu-${DateTime.now().millisecondsSinceEpoch}',
+          displayName: email,
+          email: email,
+          bannedAt: DateTime.now(),
+          reason: reason,
+          category: category,
+        ),
+      ];
+      _persistBanned();
+      notifyListeners();
+      return const WriteOutcome.ok();
+    }
+    final String? id;
+    try {
+      id = await sync!.lookupProfileIdByEmail(email);
+    } on AdminAuthException {
+      onAuthError?.call();
+      return const WriteOutcome.sessionExpired();
+    } catch (e) {
+      return WriteOutcome.failed(
+        errorText(e),
+        uncertain: isUncertainFailure(e),
+      );
+    }
+    if (id == null) return const WriteOutcome.failed(kBanEmailUnknownMessage);
+    return banAccount(id, category: category, reason: reason);
+  }
+
+  /// Lot de bans (T6, « Comptes à bannir ») : SÉQUENTIEL, sans optimiste par
+  /// élément (les comptes déjà bannis localement sont exclus en amont par
+  /// l'écran) ; compte `applied` / `already_banned`, liste les erreurs (id +
+  /// message) ; s'arrête au premier 401 ([onAuthError],
+  /// `stoppedBySession`) ; relit la liste à la fin. Aucun [lastActionError] :
+  /// le bilan est affiché par l'écran.
+  Future<BanBatchReport> banAccounts(
+    List<String> userIds, {
+    required String category,
+    String? reason,
+  }) async {
+    int applied = 0;
+    int alreadyBanned = 0;
+    final List<({String id, String message})> errors =
+        <({String id, String message})>[];
+    bool stopped = false;
+    for (final String id in userIds) {
+      if (!isUuid(id)) {
+        errors.add((id: id, message: kBanNotUuidMessage));
         continue;
       }
-      count++;
+      if (sync == null) {
+        // Aperçu : entrée locale seulement.
+        if (isAuthorBanned(id)) {
+          alreadyBanned++;
+        } else {
+          _banned = [
+            ..._banned,
+            BannedUser(
+              id: id,
+              displayName: id,
+              bannedAt: DateTime.now(),
+              reason: reason,
+              category: category,
+            ),
+          ];
+          applied++;
+        }
+        continue;
+      }
+      try {
+        final r = await sync!.banUser(id, reason: reason, category: category);
+        if (r.result == 'already_banned') {
+          alreadyBanned++;
+        } else {
+          applied++;
+        }
+      } on AdminAuthException {
+        onAuthError?.call();
+        stopped = true;
+        break;
+      } catch (e) {
+        errors.add((id: id, message: errorText(e)));
+      }
     }
-    return count;
+    if (sync == null) {
+      _persistBanned();
+      notifyListeners();
+    } else if (!stopped && userIds.isNotEmpty) {
+      await reloadBannedList();
+    }
+    return BanBatchReport(
+      applied: applied,
+      alreadyBanned: alreadyBanned,
+      errors: List<({String id, String message})>.unmodifiable(errors),
+      stoppedBySession: stopped,
+    );
+  }
+
+  /// Débannir un compte (T3) — NON optimiste : aucune ligne retirée avant la
+  /// réponse. `lifted` / `not_banned` → retrait local + relecture ; 409
+  /// `auto_ban_use_review` → `UnbanKind.autoBan` (+ événement du ban), la
+  /// ligne RESTE et la liste est relue (l'origine réelle est « auto ») ;
+  /// 404 → `notFound` + relecture ; 401 → [onAuthError] +
+  /// `UnbanKind.sessionExpired` ; autre → `failure` (issue inconnue →
+  /// relecture). Identifiant non UUID (entrée de cache) ou aperçu → retrait
+  /// local seulement. La levée d'un ban AUTO n'est pas ici : dialogue de
+  /// levée (`review-decide lift`) puis [reloadBannedList].
+  Future<UnbanOutcome> unbanAccount(String userId) async {
+    if (!isUuid(userId) || sync == null) {
+      _removeLocalBan(userId);
+      return const UnbanOutcome(UnbanKind.lifted);
+    }
+    try {
+      final r = await sync!.unbanUser(userId);
+      final UnbanOutcome o = unbanOutcomeFromResult(
+        r.result,
+        replayed: r.replayed,
+      );
+      if (unbanRemovesLocalEntry(o.kind)) _removeLocalBan(userId);
+      unawaited(reloadBannedList());
+      return o;
+    } on AdminAuthException {
+      onAuthError?.call();
+      return const UnbanOutcome(UnbanKind.sessionExpired);
+    } on AdminApiException catch (e) {
+      final UnbanOutcome o = unbanOutcomeFromError(
+        statusCode: e.statusCode,
+        result: e.result,
+        banEventId: e.banEventId,
+        message: e.message,
+      );
+      if (isUncertainFailure(e)) {
+        await reloadBannedList();
+      } else if (o.kind == UnbanKind.autoBan || o.kind == UnbanKind.notFound) {
+        unawaited(reloadBannedList());
+      }
+      return o;
+    } catch (e) {
+      if (isUncertainFailure(e)) await reloadBannedList();
+      return UnbanOutcome(UnbanKind.failure, message: errorText(e));
+    }
+  }
+
+  /// Retire localement l'entrée de [userId] (et du cache persistant en
+  /// aperçu).
+  void _removeLocalBan(String userId) {
+    _banned = _banned.where((b) => b.id != userId).toList();
+    _persistBanned();
+    notifyListeners();
   }
 
   /// Synchronise les mauvais contributeurs depuis le serveur
@@ -2497,50 +2969,6 @@ class StoreController extends ChangeNotifier {
     } catch (e) {
       debugPrint('fetchBadContributors échec: $e');
     }
-  }
-
-  /// Bannit manuellement un compte (sans suggestion associée).
-  /// Utilisé par le bouton « Bannir » du dashboard.
-  /// Bannit manuellement un utilisateur par email.
-  ///
-  /// Résout l'email → UUID via `findProfileByEmail`, puis appelle
-  /// `banUser` sur Supabase pour réellement activer le ban côté base.
-  /// Si l'email n'est pas trouvé, on garde quand même une trace locale
-  /// pour information, mais le ban ne sera pas effectif côté mobile.
-  Future<void> banManually({
-    required String displayName,
-    String? email,
-    String? reason,
-  }) async {
-    final cleanReason = reason?.trim().isEmpty == true
-        ? 'Banni manuellement'
-        : reason!.trim();
-
-    // Tente de résoudre l'email → UUID pour un vrai ban côté base.
-    String? userId;
-    if (email != null && email.trim().isNotEmpty && sync != null) {
-      userId = await sync!.findProfileByEmail(email.trim());
-    }
-
-    if (userId != null && sync != null) {
-      // UUID trouvé → on bannit vraiment côté Supabase.
-      await sync!.banUser(userId, reason: cleanReason);
-    }
-
-    // Ajoute à la liste locale (avec le vrai UUID si trouvé, sinon un ID temp).
-    final id = userId ?? 'manual-${DateTime.now().millisecondsSinceEpoch}';
-    _banned = [
-      ..._banned,
-      BannedUser(
-        id: id,
-        displayName: displayName.trim(),
-        email: email?.trim().isEmpty == true ? null : email?.trim(),
-        bannedAt: DateTime.now(),
-        reason: cleanReason,
-      ),
-    ];
-    _store.saveBanned(_banned);
-    notifyListeners();
   }
 
   // ---------- Utilisateurs Plus (pagination serveur — migration 0085) ----------
@@ -2798,6 +3226,12 @@ class StoreController extends ChangeNotifier {
     // efface celle qu'avaient persistée les versions précédentes du panneau
     // (données réelles d'utilisateurs, périmées).
     _store.clearPlus();
+    // P4b-3 (T4) : la liste des bannis est celle du serveur (plus d'entrée
+    // de démonstration `g_user_666` ni de ban local fictif `manual-<ms>`).
+    // Revue SEC-P4b3-01 : en production, elle n'est plus du tout mise en
+    // cache (noms, motifs et e-mails de tiers, conception §6) — le cache
+    // laissé par les versions précédentes est effacé.
+    _store.clearBanned();
   }
 
   void _reload() {
@@ -4350,29 +4784,23 @@ class StoreController extends ChangeNotifier {
   /// « Comptes à bannir »). Sous-fetchs non critiques : en cas d'échec de
   /// l'un, on garde le cache précédent de celui-ci sans annuler l'autre.
   Future<void> _syncBanned() async {
-    // Bannis : la liste serveur (source de vérité) remplace les entrées
-    // synchronisées ; les bannis locaux non UUID (démo / manuels non
-    // synchronisables) sont conservés. Sans cette sync, un utilisateur banni
+    // Bannis (P4b-3 §5.2) : la liste SERVEUR seule (`profiles/banned-list`
+    // enrichie : catégorie, origine, statut, événement, ban manuel présent,
+    // date réelle) remplace la liste locale — plus aucune entrée locale non
+    // UUID conservée. E-mail et avatar (absents de la réponse) sont repris
+    // de l'entrée de même id déjà en mémoire (jamais mise en cache en
+    // production, revue SEC-P4b3-01). Sans cette sync, un utilisateur banni
     // depuis un autre menu n'apparaîtrait pas comme banni ici.
     try {
-      final bannedData = await sync!.fetchBannedUsers();
-      final serverBanned = bannedData
-          .map(
-            (b) => BannedUser(
-              id: b['id'] as String,
-              displayName: b['displayName'] as String? ?? 'Inconnu',
-              bannedAt: DateTime.now(),
-              reason: b['reason'] as String?,
-            ),
-          )
-          .toList();
-      final localOnlyBanned = _banned.where((b) => !_isUuid(b.id)).toList();
-      _banned = [...localOnlyBanned, ...serverBanned];
-      _store.saveBanned(_banned);
+      final List<BannedUser> server = await sync!.fetchBannedList();
+      _banned = mergeBannedWithCache(server, _banned);
+      _persistBanned();
+      _bannedListError = null;
     } on AdminAuthException {
       rethrow;
     } catch (e) {
-      debugPrint('fetchBanned échec: $e');
+      debugPrint('fetchBannedList échec: $e');
+      _bannedListError = errorText(e);
     }
     // Mauvais contributeurs : non critique, cache conservé en cas d'échec.
     try {
@@ -4385,13 +4813,17 @@ class StoreController extends ChangeNotifier {
     _markDatasetLoaded(SyncDataset.banned);
   }
 
+  /// Persiste la liste des bannis — MODE APERÇU seulement (revue
+  /// SEC-P4b3-01). En production, la liste (noms affichés, motifs, e-mails
+  /// de tiers) ne vit qu'en mémoire, le temps de la session : jamais dans le
+  /// localStorage (conception §6 : « jamais … cache local de ces champs »).
+  void _persistBanned() {
+    if (sync == null) _store.saveBanned(_banned);
+  }
+
   /// Vrai UUID Supabase ? (36 caractères, format xxxxxxxx-xxxx-...).
-  static bool _isUuid(String id) =>
-      id.length == 36 &&
-      RegExp(
-        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
-        caseSensitive: false,
-      ).hasMatch(id);
+  /// Délègue à [isUuid] (`domain/ids.dart`, P4b-3).
+  static bool _isUuid(String id) => isUuid(id);
 
   /// Met à jour le jeton admin pour les écritures Supabase (appelé après
   /// login/logout ET après chaque écriture via le fresh_token de la sliding
@@ -4428,11 +4860,34 @@ class StoreController extends ChangeNotifier {
       }
     } else {
       sync!.setAdminToken('');
+      // Déconnexion (P4b-3 §5.1, §5.5) : cache de session des catégories de
+      // ban remis à zéro (relu au prochain dialogue) et liste des jeux
+      // inactifs oubliée (relue à l'ouverture du menu Jeux) ; les lectures
+      // en vol ne sont plus appliquées. Pas de notification ici : appelé
+      // pendant la construction de l'écran de connexion.
+      _banCategories = const <BanCategory>[];
+      _banCategoriesFromServer = false;
+      _banCategoriesInFlight = null;
+      _banCategoriesEpoch++;
+      _inactiveLoadSeq++;
+      _inactiveGames = <Game>[];
+      inactiveGamesLoading = false;
+      inactiveGamesError = null;
+      inactiveGamesLoaded = false;
+      _bannedListError = null;
+      // Revue SEC-P4b3-01 : liste des bannis (textes de tiers) oubliée et
+      // cache éventuel effacé à la déconnexion.
+      _banned = <BannedUser>[];
+      _store.clearBanned();
+      // La liste vidée n'est plus « fraîche » : sans cela, une reconnexion
+      // dans les 2 min (même page) sautait sa relecture et affichait
+      // « Aucun compte banni » (essai local P4b-3 du 28/09/2026).
+      _loadedDatasets.remove(SyncDataset.banned);
+      _datasetLoadedAt.remove(SyncDataset.banned);
     }
   }
 
-  static int _byName(Game a, Game b) =>
-      a.name.toLowerCase().compareTo(b.name.toLowerCase());
+  static int _byName(Game a, Game b) => compareGamesByName(a, b);
 }
 
 /// Résumé d'une synchronisation des alias connus vers la base (bouton

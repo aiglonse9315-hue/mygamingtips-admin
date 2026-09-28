@@ -4,6 +4,8 @@ import 'dart:html' as html;
 
 import 'package:http/http.dart' as http;
 
+import '../../domain/jwt_payload.dart';
+
 /// Service d'authentification du panneau admin.
 ///
 /// ⚠️ AUCUN identifiant n'est stocké côté client. Les credentials sont
@@ -287,57 +289,36 @@ class AuthService {
 
   /// Décode le payload d'un JWT et vérifie son `exp`.
   /// Retourne `true` si le jeton est expiré (ou invalide).
+  ///
+  /// P4b-3 (T14) : le payload est lu par [decodeJwtPayload] (base64 standard
+  /// du serveur ET base64url, Latin-1 de `btoa` accepté) — l'ancien décodage
+  /// remplaçait `_` par `=` et refusait un nom de compte accentué.
   static bool _isTokenExpired(String jwt) {
-    try {
-      final parts = jwt.split('.');
-      if (parts.length != 3) return true;
-      // Le payload est en base64url (partie 1).
-      final payload = _decodeBase64Url(parts[1]);
-      final claims = jsonDecode(payload) as Map<String, dynamic>;
-      final exp = claims['exp'];
-      if (exp == null) return false; // pas d'exp → on accepte (rare)
-      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-      return now >= (exp as num).toInt();
-    } catch (_) {
-      // Jeton malformé → on le considère comme expiré (sécurité par défaut).
-      return true;
-    }
-  }
-
-  /// Décode une chaîne base64url en texte (payload JWT).
-  static String _decodeBase64Url(String b64url) {
-    // Ajoute le padding manquant si nécessaire.
-    final padded = b64url.replaceAll('-', '+').replaceAll('_', '=');
-    final normalized = padded.padRight((padded.length + 3) ~/ 4 * 4, '=');
-    return utf8.decode(base64.decode(normalized));
+    // Jeton malformé, SANS `exp`, `exp` illisible ou passé → expiré
+    // (sécurité par défaut ; revue P4b-3, SEC-P4b3-07 : un jeton sans
+    // échéance n'est plus accepté — le serveur pose toujours `exp`).
+    return !isJwtUsable(jwt);
   }
 
   /// Relit les claims de session (`is_owner`, `username`) depuis le payload
-  /// JWT (segment du milieu, base64url). Tolérant aux jetons malformés : en
-  /// cas d'échec de décodage, les valeurs connues sont conservées.
+  /// JWT (segment du milieu, [decodeJwtPayload]). Tolérant aux jetons
+  /// malformés : en cas d'échec de décodage, les valeurs connues sont
+  /// conservées.
   void _applyClaimsFromToken(String jwt) {
-    try {
-      final parts = jwt.split('.');
-      if (parts.length != 3) return;
-      final claims =
-          jsonDecode(_decodeBase64Url(parts[1])) as Map<String, dynamic>;
-      final owner = claims['is_owner'];
-      if (owner is bool) _isOwner = owner;
-      final user = claims['username'];
-      if (user is String && user.isNotEmpty) _username = user;
-    } catch (_) {
-      // Jeton malformé → on conserve les claims déjà connus.
-    }
+    final Map<String, dynamic>? claims = decodeJwtPayload(jwt);
+    if (claims == null) return; // malformé → claims déjà connus conservés
+    final owner = claims['is_owner'];
+    if (owner is bool) _isOwner = owner;
+    final user = claims['username'];
+    if (user is String && user.isNotEmpty) _username = user;
   }
 
   /// Programme un timer qui déconnecte automatiquement à l'expiration du JWT.
   void _scheduleAutoLogout(String jwt) {
     _expiryTimer?.cancel();
     try {
-      final parts = jwt.split('.');
-      if (parts.length != 3) return;
-      final payload = _decodeBase64Url(parts[1]);
-      final claims = jsonDecode(payload) as Map<String, dynamic>;
+      final Map<String, dynamic>? claims = decodeJwtPayload(jwt);
+      if (claims == null) return;
       final exp = claims['exp'];
       if (exp == null) return;
       final expDate =

@@ -1,15 +1,25 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/auth/auth_controller.dart';
 import '../../core/theme/colors.dart';
 import '../../data/supabase_sync.dart' show AdminAuthException;
+import '../../domain/models/banned_user.dart';
 import '../../domain/models/category.dart';
 import '../../domain/models/plus_user.dart';
 import '../../domain/models/suggestion.dart';
+import '../../domain/moderation_actions.dart' show ModerationFocus;
 import '../../domain/plus_paging.dart';
+import '../../domain/write_outcome.dart';
 import '../../state/store_controller.dart';
+import '../widgets/account_ban_flows.dart';
 import '../widgets/delete_plus_user_dialog.dart';
 import '../widgets/limits_alert_card.dart';
+import '../widgets/moderation/account_ban_widgets.dart';
+import '../widgets/moderation/ban_account_by_email_dialog.dart';
+import '../widgets/moderation_alert_card.dart';
 import '../widgets/stat_card.dart';
 
 /// Tableau de bord : vue d'ensemble statistiques + dernières suggestions.
@@ -18,6 +28,7 @@ class DashboardScreen extends StatelessWidget {
     super.key,
     required this.onOpenSuggestions,
     this.onOpenAbonnements,
+    this.onOpenModeration,
   });
 
   final VoidCallback onOpenSuggestions;
@@ -26,9 +37,17 @@ class DashboardScreen extends StatelessWidget {
   /// l'accordéon « Abonnés Plus ».
   final VoidCallback? onOpenAbonnements;
 
+  /// Ouvre le menu Modération (P4b-3 : carte « Modération automatique »,
+  /// « Ouvrir dans Modération » de la levée d'un ban automatique), avec
+  /// l'événement à afficher ; nul = pas de lien.
+  final void Function([ModerationFocus? focus])? onOpenModeration;
+
   @override
   Widget build(BuildContext context) {
     final StoreController store = context.watch<StoreController>();
+    // Statut « compte principal » de l'interface (T15) ; le serveur reste
+    // la barrière (403).
+    final bool isOwner = context.watch<AuthController>().isOwner;
 
     final int gamesCount = store.games.length;
     final int contentsCount = store.contents.where((c) => c.validated).length;
@@ -92,6 +111,16 @@ class DashboardScreen extends StatelessWidget {
           // Surveillance des limites : alerte orange ≥ 60 %, rouge ≥ 85 %
           // du plafond de prise en compte (anti saturation silencieuse).
           const LimitsAlertCard(),
+          // P4b-3 (T9, D1) : état de la modération automatique (compte
+          // principal, connexion Supabase) — disjoncteur ouvert en rouge.
+          if (isOwner && store.sync != null)
+            ModerationAlertCard(
+              key: const ValueKey<String>('moderation-alert-card'),
+              padding: const EdgeInsets.only(top: 16),
+              onOpenModeration: onOpenModeration == null
+                  ? null
+                  : () => onOpenModeration!(),
+            ),
           const SizedBox(height: 28),
           // Répartition par catégorie
           Card(
@@ -243,10 +272,7 @@ class DashboardScreen extends StatelessWidget {
                         vertical: 8,
                       ),
                     ),
-                    onPressed: () => showDialog<void>(
-                      context: context,
-                      builder: (_) => const _AddBannedUserDialog(),
-                    ),
+                    onPressed: () => _openBanDialog(context),
                     icon: const Icon(Icons.block_rounded, size: 18),
                     label: const Text('Bannir'),
                   ),
@@ -268,35 +294,28 @@ class DashboardScreen extends StatelessWidget {
                     child: Center(child: Text('Aucun compte banni.')),
                   )
                 : Column(
+                    // P4b-3 (§6.10, T3) : origine / statut visibles AVANT le
+                    // clic ; ban manuel → « Débannir » (confirmation, non
+                    // optimiste) ; ban automatique → « Lever… » (compte
+                    // principal) ou bouton désactivé (autre admin).
                     children: store.banned
                         .map(
-                          (b) => ListTile(
-                            leading: const CircleAvatar(
-                              backgroundColor: AppColors.categoryVideo,
-                              child: Icon(
-                                Icons.block_rounded,
-                                color: Colors.white,
-                                size: 18,
-                              ),
+                          (BannedUser b) => BannedAccountTile(
+                            entry: b,
+                            isOwner: isOwner,
+                            categories: store.manualBanCategories,
+                            onUnban: () => confirmUnbanFlow(
+                              context,
+                              userId: b.id,
+                              name: b.displayName,
+                              onOpenModeration: onOpenModeration,
                             ),
-                            title: Text(
-                              b.displayName,
-                              style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            subtitle: Text(
-                              '${b.id} • ${b.reason ?? "Sans motif"}',
-                              style: const TextStyle(fontSize: 11),
-                            ),
-                            trailing: TextButton.icon(
-                              onPressed: () => store.unban(b.id),
-                              icon: const Icon(
-                                Icons.lock_open_rounded,
-                                size: 18,
-                              ),
-                              label: const Text('Débannir'),
+                            onLift: () => accountUnbanFlow(
+                              context,
+                              userId: b.id,
+                              name: b.displayName,
+                              entry: b,
+                              onOpenModeration: onOpenModeration,
                             ),
                           ),
                         )
@@ -306,6 +325,21 @@ class DashboardScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// « Bannir un compte » (T4) : e-mail OU identifiant, catégorie (4),
+  /// motif ; le dialogue reste ouvert sur échec.
+  static Future<void> _openBanDialog(BuildContext context) async {
+    final StoreController store = context.read<StoreController>();
+    unawaited(store.loadBanCategories());
+    final WriteOutcome? o = await showDialog<WriteOutcome>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _AddBannedUserDialog(),
+    );
+    if (o == null) return;
+    if (!context.mounted) return;
+    showBanWriteOutcome(context, o);
   }
 
   static String _formatDate(DateTime d) {
@@ -629,6 +663,11 @@ class _PlusAccordionState extends State<_PlusAccordion> {
                 ),
               ),
             ),
+            // P4b-3 (T3) : ban automatique → pastille « auto ».
+            if (store.bannedEntry(n.id)?.isAuto ?? false) ...[
+              const SizedBox(width: 4),
+              AutoBanPill(status: store.bannedEntry(n.id)?.status),
+            ],
           ],
           const SizedBox(width: 6),
           Container(
@@ -911,133 +950,25 @@ class _AddPlusUserDialogState extends State<AddPlusUserDialog> {
   }
 }
 
-/// Dialog de bannissement manuel d'un compte utilisateur.
-class _AddBannedUserDialog extends StatefulWidget {
+/// Dialogue « Bannir un compte » (T4, conception §6.10) : colle Provider
+/// autour de `BanAccountByEmailDialog` (présentation, testée en VM) —
+/// e-mail OU identifiant (UUID), catégorie (4, D4), motif facultatif ; plus
+/// de champ « Nom / Pseudo » (le nom affiché vient du serveur après
+/// relecture). Rend l'issue (succès ou session expirée), `null` si annulé.
+class _AddBannedUserDialog extends StatelessWidget {
   const _AddBannedUserDialog();
 
   @override
-  State<_AddBannedUserDialog> createState() => _AddBannedUserDialogState();
-}
-
-class _AddBannedUserDialogState extends State<_AddBannedUserDialog> {
-  final TextEditingController _name = TextEditingController();
-  final TextEditingController _email = TextEditingController();
-  final TextEditingController _reason = TextEditingController();
-  bool _saving = false;
-
-  @override
-  void dispose() {
-    _name.dispose();
-    _email.dispose();
-    _reason.dispose();
-    super.dispose();
-  }
-
-  void _save() async {
-    if (_name.text.trim().isEmpty) return;
-    // Affiche un indicateur pendant la résolution email → UUID.
-    setState(() => _saving = true);
-    await context.read<StoreController>().banManually(
-      displayName: _name.text,
-      email: _email.text,
-      reason: _reason.text,
-    );
-    if (mounted) Navigator.pop(context);
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Row(
-        children: [
-          Icon(Icons.block_rounded, color: AppColors.categoryVideo),
-          SizedBox(width: 8),
-          Text('Bannir un compte'),
-        ],
-      ),
-      content: SizedBox(
-        width: 420,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: _name,
-              decoration: const InputDecoration(
-                labelText: 'Nom / Pseudo du compte *',
-                prefixIcon: Icon(Icons.person_outline_rounded),
-              ),
-              autofocus: true,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _email,
-              decoration: const InputDecoration(
-                labelText: 'Email du compte (optionnel)',
-                prefixIcon: Icon(Icons.mail_outline_rounded),
-              ),
-              keyboardType: TextInputType.emailAddress,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _reason,
-              decoration: const InputDecoration(
-                labelText: 'Motif du bannissement (optionnel)',
-                prefixIcon: Icon(Icons.report_outlined),
-                helperText: 'Ex. : contenu inapproprié, spam...',
-              ),
-              maxLines: 2,
-            ),
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: AppColors.categoryVideo.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: AppColors.categoryVideo.withValues(alpha: 0.3),
-                ),
-              ),
-              child: const Row(
-                children: [
-                  Icon(
-                    Icons.warning_amber_rounded,
-                    size: 16,
-                    color: AppColors.categoryVideo,
-                  ),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Le compte banni ne pourra plus soumettre de '
-                      'suggestions dans l\'application.',
-                      style: TextStyle(fontSize: 11),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: _saving ? null : () => Navigator.pop(context),
-          child: const Text('Annuler'),
-        ),
-        FilledButton.icon(
-          style: FilledButton.styleFrom(
-            backgroundColor: AppColors.categoryVideo,
+    final StoreController store = context.watch<StoreController>();
+    return BanAccountByEmailDialog(
+      categories: store.manualBanCategories,
+      submit: (String input, String category, String? reason) =>
+          store.banAccountByEmailOrId(
+            input,
+            category: category,
+            reason: reason,
           ),
-          onPressed: _saving ? null : _save,
-          icon: _saving
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.block_rounded),
-          label: Text(_saving ? 'Bannissement...' : 'Bannir'),
-        ),
-      ],
     );
   }
 }

@@ -10,7 +10,9 @@ class NavItem {
   const NavItem(this.label, this.icon, this.route);
 }
 
-/// Barre latérale fixe du panneau admin.
+/// Barre latérale fixe du panneau admin : en-tête (logo, « Administration »)
+/// fixe, entrées dans une liste DÉFILANTE (15 entrées pour le compte
+/// principal, ~812 px : elles doivent rester accessibles sur un portable).
 class AdminSidebar extends StatelessWidget {
   const AdminSidebar({
     super.key,
@@ -74,13 +76,20 @@ class AdminSidebar extends StatelessWidget {
           ),
           const Divider(height: 1),
           const SizedBox(height: 8),
-          // Items
-          ...items.map((item) => _SidebarTile(
-                item: item,
-                selected: item.route == current,
-                onTap: () => onSelected(item.route),
-              )),
-          const Spacer(),
+          // Items (défilants sous l'en-tête fixe).
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.only(bottom: 8),
+              children: [
+                for (final item in items)
+                  _SidebarTile(
+                    item: item,
+                    selected: item.route == current,
+                    onTap: () => onSelected(item.route),
+                  ),
+              ],
+            ),
+          ),
         ],
       ),
     );
