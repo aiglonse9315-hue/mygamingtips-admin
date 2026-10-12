@@ -23,7 +23,9 @@
 # ⚠️ CONFIGURATION REQUISE (une seule fois) :
 #   - Settings → Pages → Source = "GitHub Actions"
 #   - Settings → Secrets → Actions → New secret :
-#       MGT_SUPABASE_ANON_KEY  = ta clé anon Supabase
+#       MGT_SUPABASE_ANON_KEY  = ta clé PUBLIQUE Supabase (publishable
+#         sb_publishable_… depuis l'étape 3b de tools/PLAN_SUPABASE_CLES.md,
+#         ancienne clé anon avant ; le panneau ne l'envoie que dans apikey)
 # ============================================================================
 
 name: Deploy Admin

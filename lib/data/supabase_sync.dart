@@ -22,6 +22,7 @@ import '../domain/models/sync_status.dart';
 import '../domain/models/trusted_channel.dart';
 import '../domain/plus_paging.dart';
 import '../domain/trusted_channels_paging.dart';
+import 'supabase_key_headers.dart';
 
 /// Exception levée quand le token admin est expiré ou invalide (HTTP 401).
 ///
@@ -142,7 +143,9 @@ class SupabaseSync {
   /// URL du projet Supabase (ex. https://xxx.supabase.co).
   final String supabaseUrl;
 
-  /// Clé anon publique (lecture seule grâce à RLS).
+  /// Clé PUBLIQUE (ancienne `anon` ou publishable `sb_publishable_…` ;
+  /// lecture seule grâce à RLS), envoyée seulement dans `apikey`
+  /// ([supabaseKeyHeaders]).
   final String anonKey;
 
   /// URL de l'Edge Function admin-catalog.
@@ -163,23 +166,21 @@ class SupabaseSync {
   /// est géré par le StoreController (120 s full / 45 s incrémental).
   static const Duration requestTimeout = Duration(seconds: 30);
 
-  Map<String, String> get _anonHeaders => {
-    'apikey': anonKey,
-    'Authorization': 'Bearer $anonKey',
-  };
+  /// Headers des lectures PostgREST : la clé publique dans `apikey`
+  /// SEULEMENT (étape 3a, voir supabase_key_headers.dart) ; la passerelle
+  /// fournit le rôle `anon` à PostgREST.
+  Map<String, String> get _anonHeaders => supabaseKeyHeaders(anonKey);
 
-  /// Headers pour les écritures via l'Edge Function admin-catalog.
-  /// Stratégie pour franchir la passerelle Supabase SANS conflit de header :
-  ///   - `Authorization: Bearer <anon_key>` → la passerelle exige ce header
-  ///     (on y met l'anon key, ce qui suffit à franchir le gateway).
-  ///   - `apikey: <anon_key>` → requis également par la passerelle.
+  /// Headers pour les appels à l'Edge Function admin-catalog :
+  ///   - `apikey: <clé publique>` (seul en-tête de clé, étape 3a) ;
   ///   - `X-Admin-Token: <jwt_admin>` → notre code Deno lit ce header
-  ///     personnalisé (le header `Authorization` est réservé par la passerelle
-  ///     pour l'auth Supabase Auth, on ne doit pas y mettre notre JWT admin).
+  ///     personnalisé (le header `Authorization` est réservé à Supabase Auth,
+  ///     on n'y met ni la clé publique ni notre JWT admin).
+  /// admin-catalog tourne sans « Verify JWT » : la passerelle n'exige aucun
+  /// `Authorization`.
   Map<String, String> get _adminHeaders => {
     'Content-Type': 'application/json',
-    'Authorization': 'Bearer $anonKey',
-    'apikey': anonKey,
+    ...supabaseKeyHeaders(anonKey),
     'X-Admin-Token': adminToken,
   };
 
@@ -923,7 +924,7 @@ class SupabaseSync {
               '$supabaseUrl/rest/v1/game_translations'
               '?select=lang,title&game_id=eq.$gameId',
             ),
-            headers: {'apikey': anonKey, 'Authorization': 'Bearer $anonKey'},
+            headers: _anonHeaders,
           )
           .timeout(requestTimeout),
     );
@@ -960,7 +961,7 @@ class SupabaseSync {
                   '?select=game_id,lang,title'
                   '&limit=$pageSize&offset=${page * pageSize}',
                 ),
-                headers: {'apikey': anonKey, 'Authorization': 'Bearer $anonKey'},
+                headers: _anonHeaders,
               )
               .timeout(requestTimeout),
         );

@@ -62,9 +62,13 @@ Future<void> main() async {
 
   // --- Branchement Supabase (mode production) ---
   // Si les variables de build sont présentes, on active la synchronisation
-  // Supabase : les lectures se font via PostgREST (anon key suffit grâce aux
-  // politiques RLS publiques), les écritures via l'Edge Function admin-catalog
-  // (service_role, token admin fourni après login). Sinon, mode aperçu local.
+  // Supabase : les lectures se font via PostgREST (la clé publique suffit
+  // grâce aux politiques RLS publiques), les écritures via l'Edge Function
+  // admin-catalog (clé serveur, token admin fourni après login). Sinon, mode
+  // aperçu local. MGT_SUPABASE_ANON_KEY porte la clé PUBLIQUE : ancienne
+  // `anon`, puis publishable `sb_publishable_…` (étape 3b de
+  // tools/PLAN_SUPABASE_CLES.md : seule la valeur du secret GitHub change) ;
+  // elle n'est envoyée que dans l'en-tête `apikey` (supabase_key_headers.dart).
   final String supabaseUrl =
       const String.fromEnvironment('MGT_SUPABASE_URL');
   final String supabaseAnonKey =

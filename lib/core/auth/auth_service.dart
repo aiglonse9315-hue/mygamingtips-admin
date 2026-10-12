@@ -4,6 +4,7 @@ import 'dart:html' as html;
 
 import 'package:http/http.dart' as http;
 
+import '../../data/supabase_key_headers.dart';
 import '../../domain/jwt_payload.dart';
 
 /// Service d'authentification du panneau admin.
@@ -56,9 +57,13 @@ class AuthService {
   static const bool previewMode =
       bool.fromEnvironment('MGT_ADMIN_PREVIEW', defaultValue: false);
 
-  /// Clé anon publique Supabase — requise par la passerelle Supabase sur
-  /// TOUS les appels d'Edge Function (header Authorization). Publique par
-  /// conception (RLS protège les données). Fournie via dart-define au build.
+  /// Clé PUBLIQUE Supabase (ancienne `anon`, puis publishable
+  /// `sb_publishable_…` à l'étape 3b de tools/PLAN_SUPABASE_CLES.md).
+  /// Publique par conception (RLS protège les données). Fournie via
+  /// dart-define au build. Envoyée à admin-login dans l'en-tête `apikey`
+  /// SEULEMENT ([supabaseKeyHeaders], étape 3a) : jamais en
+  /// `Authorization: Bearer` (une clé publishable n'est pas un JWT) ;
+  /// admin-login tourne sans « Verify JWT ».
   static const String anonKey =
       String.fromEnvironment('MGT_SUPABASE_ANON_KEY', defaultValue: '');
 
@@ -187,7 +192,7 @@ class AuthService {
       // 2) Appel au backend de vérification.
       final Map<String, String> headers = {
         'Content-Type': 'application/json',
-        if (anonKey.isNotEmpty) 'Authorization': 'Bearer $anonKey',
+        ...supabaseKeyHeaders(anonKey),
       };
       final response = await http.post(
         Uri.parse(endpoint),
