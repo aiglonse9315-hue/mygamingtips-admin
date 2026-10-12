@@ -1601,12 +1601,28 @@ class _TrustedTableState extends State<_TrustedTable> {
   /// Nombre total de pages (au moins 1, même si la liste est vide).
   int get _totalPages => (_sorted.length / _pageSize).ceil().clamp(1, 999999);
 
+  /// Page AFFICHÉE : [_currentPage] bornée à la dernière page existante.
+  /// Revue L7-PAN-01 : la liste raccourcit sous le tableau (« Valider
+  /// sélection » de la page, « 1 clic », rechargement) sans recréer son
+  /// état ; sans borne, la dernière page disparue s'affichait VIDE, barre
+  /// de pagination masquée (ou « Page 3 / 2 »).
+  int get _shownPage => _currentPage.clamp(0, _totalPages - 1);
+
+  @override
+  void didUpdateWidget(covariant _TrustedTable oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // L7-PAN-01 : page recalée quand la liste raccourcit — elle ne revient
+    // pas sur une page quittée si la liste regrandit ensuite.
+    _currentPage = _shownPage;
+  }
+
   /// Sous-liste correspondant à la page courante (100 lignes max).
   /// On découpe sur la liste *triée* pour garder la cohérence du tri.
   List<Suggestion> get _paged {
     final sorted = _sorted;
-    final start = _currentPage * _pageSize;
-    final end = (_currentPage + 1) * _pageSize;
+    final page = _shownPage;
+    final start = page * _pageSize;
+    final end = (page + 1) * _pageSize;
     return sorted.sublist(
       start.clamp(0, sorted.length),
       end.clamp(0, sorted.length),
@@ -1643,8 +1659,8 @@ class _TrustedTableState extends State<_TrustedTable> {
         // Bouton précédent.
         IconButton(
           icon: const Icon(Icons.chevron_left_rounded),
-          onPressed: _currentPage > 0
-              ? () => _goToPage(_currentPage - 1)
+          onPressed: _shownPage > 0
+              ? () => _goToPage(_shownPage - 1)
               : null,
           tooltip: 'Page précédente',
         ),
@@ -1652,7 +1668,7 @@ class _TrustedTableState extends State<_TrustedTable> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: Text(
-            'Page ${_currentPage + 1} / $_totalPages',
+            'Page ${_shownPage + 1} / $_totalPages',
             style: TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w700,
@@ -1663,8 +1679,8 @@ class _TrustedTableState extends State<_TrustedTable> {
         // Bouton suivant.
         IconButton(
           icon: const Icon(Icons.chevron_right_rounded),
-          onPressed: _currentPage < _totalPages - 1
-              ? () => _goToPage(_currentPage + 1)
+          onPressed: _shownPage < _totalPages - 1
+              ? () => _goToPage(_shownPage + 1)
               : null,
           tooltip: 'Page suivante',
         ),
@@ -2184,9 +2200,21 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
 
   int get _totalPages => (_filtered.length / _pageSize).ceil().clamp(1, 999999);
 
+  /// Page AFFICHÉE, bornée à la dernière page existante (revue L7-PAN-01 :
+  /// même règle que [_TrustedTableState._shownPage]).
+  int get _shownPage => _currentPage.clamp(0, _totalPages - 1);
+
+  @override
+  void didUpdateWidget(covariant _ToVerifyTable oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // L7-PAN-01 : page recalée quand la liste raccourcit.
+    _currentPage = _shownPage;
+  }
+
   List<Suggestion> get _page {
-    final start = _currentPage * _pageSize;
-    final end = (_currentPage + 1) * _pageSize;
+    final page = _shownPage;
+    final start = page * _pageSize;
+    final end = (page + 1) * _pageSize;
     return _filtered.sublist(
       start.clamp(0, _filtered.length),
       end.clamp(0, _filtered.length),
@@ -2451,8 +2479,8 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
               // Bouton précédent.
               IconButton(
                 icon: const Icon(Icons.chevron_left_rounded),
-                onPressed: _currentPage > 0
-                    ? () => _goToPage(_currentPage - 1)
+                onPressed: _shownPage > 0
+                    ? () => _goToPage(_shownPage - 1)
                     : null,
                 tooltip: 'Page précédente',
               ),
@@ -2460,7 +2488,7 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: Text(
-                  'Page ${_currentPage + 1} / $_totalPages',
+                  'Page ${_shownPage + 1} / $_totalPages',
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
@@ -2471,8 +2499,8 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
               // Bouton suivant.
               IconButton(
                 icon: const Icon(Icons.chevron_right_rounded),
-                onPressed: _currentPage < _totalPages - 1
-                    ? () => _goToPage(_currentPage + 1)
+                onPressed: _shownPage < _totalPages - 1
+                    ? () => _goToPage(_shownPage + 1)
                     : null,
                 tooltip: 'Page suivante',
               ),
@@ -2891,9 +2919,21 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
   int get _totalPages =>
       (widget.suggestions.length / _pageSize).ceil().clamp(1, 999999);
 
+  /// Page AFFICHÉE, bornée à la dernière page existante (revue L7-PAN-01 :
+  /// même règle que [_TrustedTableState._shownPage]).
+  int get _shownPage => _currentPage.clamp(0, _totalPages - 1);
+
+  @override
+  void didUpdateWidget(covariant _GamesToCreateTable oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // L7-PAN-01 : page recalée quand la liste raccourcit.
+    _currentPage = _shownPage;
+  }
+
   List<Suggestion> get _page {
-    final start = _currentPage * _pageSize;
-    final end = (_currentPage + 1) * _pageSize;
+    final page = _shownPage;
+    final start = page * _pageSize;
+    final end = (page + 1) * _pageSize;
     return widget.suggestions.sublist(
       start.clamp(0, widget.suggestions.length),
       end.clamp(0, widget.suggestions.length),
@@ -3145,15 +3185,15 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
             children: [
               IconButton(
                 icon: const Icon(Icons.chevron_left_rounded),
-                onPressed: _currentPage > 0
-                    ? () => _goToPage(_currentPage - 1)
+                onPressed: _shownPage > 0
+                    ? () => _goToPage(_shownPage - 1)
                     : null,
                 tooltip: 'Page précédente',
               ),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: Text(
-                  'Page ${_currentPage + 1} / $_totalPages',
+                  'Page ${_shownPage + 1} / $_totalPages',
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
@@ -3163,8 +3203,8 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
               ),
               IconButton(
                 icon: const Icon(Icons.chevron_right_rounded),
-                onPressed: _currentPage < _totalPages - 1
-                    ? () => _goToPage(_currentPage + 1)
+                onPressed: _shownPage < _totalPages - 1
+                    ? () => _goToPage(_shownPage + 1)
                     : null,
                 tooltip: 'Page suivante',
               ),

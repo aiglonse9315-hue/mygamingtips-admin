@@ -267,6 +267,13 @@ class AiRevueP5 {
 class AiRecommendation {
   final AiVerdict verdict;
   final double confidence;
+
+  /// L7 (revue L7-DEC-07) — faux quand la clé `confidence` est absente ou
+  /// n'est pas un nombre (ancienne écriture, ligne réparée à la main) :
+  /// [confidence] vaut alors 0,0 pour l'affichage et le tri, mais un tel
+  /// recommandé n'entre jamais dans la 2e passe (`p5CandidateClassOf` du
+  /// cœur) : il reste dans « À vérifier ».
+  final bool hasConfidence;
   final String reason;
   final String? suggestedGame;
   final String? suggestedCategory;
@@ -330,6 +337,7 @@ class AiRecommendation {
   const AiRecommendation({
     required this.verdict,
     required this.confidence,
+    this.hasConfidence = true,
     required this.reason,
     this.suggestedGame,
     this.suggestedCategory,
@@ -364,12 +372,15 @@ class AiRecommendation {
   }
 
   factory AiRecommendation.fromJson(Map<String, dynamic> json) {
+    // L7-DEC-07 : seul un nombre est une confiance lue (comme le cœur).
+    final Object? confidence = json['confidence'];
     return AiRecommendation(
       verdict: AiVerdict.values.firstWhere(
         (e) => e.name == (json['verdict'] as String? ?? 'caution'),
         orElse: () => AiVerdict.caution,
       ),
-      confidence: (json['confidence'] as num?)?.toDouble() ?? 0.0,
+      confidence: confidence is num ? confidence.toDouble() : 0.0,
+      hasConfidence: confidence is num,
       // Chantier B (fix revue I-001) : les suggestions purgées au ban portent
       // leur motif dans `reject_reason` SANS clé `reason` ni verdict IA —
       // fallback pour que le board « Refusées » affiche le vrai motif au lieu
@@ -428,7 +439,8 @@ class AiRecommendation {
 
   Map<String, dynamic> toJson() => {
         'verdict': verdict.name,
-        'confidence': confidence,
+        // L7-DEC-07 : une confiance non lue reste absente (cache local).
+        if (hasConfidence) 'confidence': confidence,
         'reason': reason,
         if (suggestedGame != null) 'suggested_game': suggestedGame,
         if (suggestedCategory != null) 'suggested_category': suggestedCategory,

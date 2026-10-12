@@ -12,7 +12,8 @@
 ///   devra écrire un état de FIN pour chaque contenu retiré de la file,
 ///   sinon il resterait ici) ;
 /// - « À vérifier » : tout le reste (dont les recommandés ≤ 0,95 de RUTUBE,
-///   bilibili, Twitch et des pages web : aucune 2e passe ne les relira).
+///   bilibili, Twitch et des pages web : aucune 2e passe ne les relira ; et
+///   les recommandés à confiance absente, non finie ou négative — L7).
 ///
 /// Chaque contenu est dans UNE seule section (partition). La langue ne
 /// décide plus de rien (fin des seuils 0,90 FR / EN et 0,95). Fonctions
@@ -53,6 +54,11 @@ SentinelleSection sentinelleSectionOf(Suggestion s) {
   }
   if (ai.verdict != AiVerdict.recommended) return SentinelleSection.toVerify;
   final double c = ai.confidence;
+  // L7-DEC-07 : confiance absente, non finie ou négative → ni « 99% sûr »,
+  // ni candidat de la 2e passe (`p5CandidateClassOf` du cœur rend null).
+  if (!ai.hasConfidence || !c.isFinite || c < 0) {
+    return SentinelleSection.toVerify;
+  }
   if (c > kSentinelleSureAbove + _kEps) return SentinelleSection.sure;
   if (youTubeVideo && !ai.needsGameCreation && !ai.gameUnverified) {
     return SentinelleSection.awaitingSecondPass;

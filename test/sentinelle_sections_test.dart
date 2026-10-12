@@ -51,10 +51,11 @@ const Map<String, Map<String, Object?>?> kRevues = {
 
 int _seq = 0;
 
+/// [confidence] null = clé `confidence` ABSENTE (L7-DEC-07).
 Suggestion sug({
   required String url,
   String verdict = 'recommended',
-  num confidence = 0.9,
+  Object? confidence = 0.9,
   String? lang,
   Map<String, Object?>? revue,
   bool needsGameCreation = false,
@@ -73,7 +74,7 @@ Suggestion sug({
         ? null
         : AiRecommendation.fromJson(<String, dynamic>{
             'verdict': verdict,
-            'confidence': confidence,
+            'confidence': ?confidence,
             'reason': 'neutre',
             'youtube_language': ?lang,
             'revue_p5': ?revue,
@@ -84,12 +85,14 @@ Suggestion sug({
 }
 
 /// Section ATTENDUE (règle du §2.13 de la conception P5, écrite à part du
-/// code testé).
-SentinelleSection attendue(String plateforme, double c, String revue) {
+/// code testé). [c] null = confiance absente.
+SentinelleSection attendue(String plateforme, Object? c, String revue) {
   final bool youtube = plateforme == 'youtube';
   if (youtube && revue == 'a_faire') {
     return SentinelleSection.awaitingSecondPass;
   }
+  // L7-DEC-07 : confiance absente ou négative → hors 2e passe (cœur).
+  if (c is! num || c < 0) return SentinelleSection.toVerify;
   if (c > 0.95) return SentinelleSection.sure;
   return youtube
       ? SentinelleSection.awaitingSecondPass
@@ -98,9 +101,10 @@ SentinelleSection attendue(String plateforme, double c, String revue) {
 
 void main() {
   group('table de cas (langues × confiances × plateformes × revue_p5)', () {
-    test('chaque recommandé tombe dans la section attendue', () {
+    test('chaque recommandé tombe dans la section attendue (L7 L7-DEC-07 : '
+        'confiance absente et négative comprises)', () {
       for (final lang in ['FR', 'EN', 'JA', 'RU', null]) {
-        for (final c in [0.90, 0.95, 0.97, 1.0]) {
+        for (final c in <Object?>[0.90, 0.95, 0.97, 1.0, null, -0.1]) {
           for (final p in kUrls.keys) {
             for (final r in kRevues.keys) {
               final s = sug(
@@ -312,12 +316,72 @@ void main() {
         SentinelleSection.toVerify,
       );
     });
+
+    test('L7 L7-DEC-07 recommandé YouTube à confiance illisible (absente, '
+        'pas un nombre, non finie, négative) → « À vérifier », comme '
+        '`p5CandidateClassOf` du cœur ; 0 reste lisible', () {
+      final u = kUrls['youtube']!;
+      for (final c in <Object?>[
+        null,
+        -0.1,
+        -1,
+        '0.9',
+        true,
+        double.nan,
+        double.infinity,
+        double.negativeInfinity,
+      ]) {
+        expect(
+          sentinelleSectionOf(sug(url: u, confidence: c)),
+          SentinelleSection.toVerify,
+          reason: '$c',
+        );
+      }
+      // 0 est une confiance lue (classe A2 du cœur) : candidat.
+      expect(
+        sentinelleSectionOf(sug(url: u, confidence: 0)),
+        SentinelleSection.awaitingSecondPass,
+      );
+      // Lecture : confiance absente ou pas un nombre → 0,0 pour l'affichage,
+      // jamais d'exception ; absente aussi après l'aller-retour du cache.
+      for (final raw in <Object?>[null, '0.9', true, <Object?>[]]) {
+        final ai = AiRecommendation.fromJson(<String, dynamic>{
+          'verdict': 'recommended',
+          'confidence': ?raw,
+        });
+        expect(ai.hasConfidence, isFalse, reason: '$raw');
+        expect(ai.confidence, 0.0, reason: '$raw');
+        expect(ai.toJson().containsKey('confidence'), isFalse, reason: '$raw');
+        expect(
+          AiRecommendation.fromJson(ai.toJson()).hasConfidence,
+          isFalse,
+          reason: '$raw',
+        );
+      }
+      final entier = AiRecommendation.fromJson(<String, dynamic>{
+        'verdict': 'recommended',
+        'confidence': 1,
+      });
+      expect(entier.hasConfidence, isTrue);
+      expect(entier.confidence, 1.0);
+      expect(entier.toJson()['confidence'], 1.0);
+      // Constructeur (autres écrans, tests) : confiance lue par défaut.
+      expect(
+        const AiRecommendation(
+          verdict: AiVerdict.recommended,
+          confidence: 0.9,
+          reason: '',
+        ).hasConfidence,
+        isTrue,
+      );
+    });
   });
 
   group('partition et ordre', () {
-    test('chaque contenu dans UNE section, ordre de la liste gardé', () {
+    test('chaque contenu dans UNE section, ordre de la liste gardé (L7 '
+        'L7-DEC-07 : confiance absente et négative comprises)', () {
       final List<Suggestion> items = <Suggestion>[
-        for (final c in [0.90, 0.95, 0.97, 1.0])
+        for (final c in <Object?>[0.90, 0.95, 0.97, 1.0, null, -0.1])
           for (final p in kUrls.keys)
             for (final r in kRevues.keys)
               for (final verdict in ['recommended', 'caution', 'reject'])
@@ -346,6 +410,21 @@ void main() {
       }
       for (final s in sections.toVerify) {
         expect(sentinelleSectionOf(s), SentinelleSection.toVerify);
+      }
+      // L7-DEC-07 : recommandé YouTube hors file, confiance absente ou
+      // négative (2 revues × 2 confiances) → « À vérifier », jamais
+      // « Attente » (le cœur ne le mettra pas en file).
+      final illisibles = items.where((s) {
+        final ai = s.aiRecommendation;
+        return s.url == kUrls['youtube'] &&
+            ai != null &&
+            ai.verdict == AiVerdict.recommended &&
+            !(ai.revueP5?.isPending ?? false) &&
+            (!ai.hasConfidence || ai.confidence < 0);
+      }).toList();
+      expect(illisibles, hasLength(4));
+      for (final s in illisibles) {
+        expect(sections.toVerify, contains(s));
       }
       // Ordre de la liste gardé dans chaque section (aucune astuce courte).
       List<int> rangs(List<Suggestion> l) => [for (final s in l) items.indexOf(s)];

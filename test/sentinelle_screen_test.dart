@@ -46,7 +46,7 @@ class _Sync extends SupabaseSync {
   List<Suggestion> analyzed;
 
   /// Lignes « Jeux à créer » (mode `games-to-create`).
-  final List<Suggestion> gamesToCreate;
+  List<Suggestion> gamesToCreate;
 
   @override
   Future<({List<Suggestion> items, DateTime? maxUpdatedAt})>
@@ -204,6 +204,34 @@ Future<StoreController> _mount(
 /// Démonte l'écran (arrête le polling « Analyses en cours »).
 Future<void> _unmount(WidgetTester tester) =>
     tester.pumpWidget(const SizedBox.shrink());
+
+/// Recharge les 5 modes de suggestions depuis le faux serveur (sync
+/// COMPLÈTE : ses listes REMPLACENT les listes locales, comme
+/// « Actualiser ») ; les tableaux gardent leur état.
+Future<void> _resync(WidgetTester tester, StoreController store) async {
+  await tester.runAsync(() async {
+    await http.runWithClient(() async {
+      await store.syncFromSupabase(
+        datasets: <SyncDataset>{SyncDataset.sentinelleAnalyzed},
+        forceFull: true,
+      );
+      for (int i = 0; i < 30; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+    }, () => _neutralHttp);
+  });
+  await tester.pump();
+}
+
+/// Clique [button] après l'avoir amené à l'écran (la barre de pagination de
+/// « À vérifier » et des « Jeux à créer » est SOUS le tableau ; le défilement
+/// peut sortir les en-têtes de l'écran).
+Future<void> _tapVisible(WidgetTester tester, Finder button) async {
+  await tester.ensureVisible(button);
+  await tester.pump();
+  await tester.tap(button);
+  await tester.pump();
+}
 
 const ValueKey<String> _kWait = ValueKey<String>('tableau_attente_2e_passe');
 const ValueKey<String> _kSure = ValueKey<String>('tableau_99_sur');
@@ -550,6 +578,165 @@ void main() {
     );
     await tester.pump();
     expect(y('Haut') < y('Milieu') && y('Milieu') < y('Bas'), isTrue);
+
+    await _unmount(tester);
+  });
+
+  testWidgets('L7 L7-PAN-01 « Attente 2ème passe » : 150 lignes, page 2, '
+      'case de la page + « Valider sélection (50) » → les 100 lignes '
+      'restantes (page 1) restent affichées, pas un tableau vide ; la page '
+      'recalée ne revient pas sur la page 2 quand la liste regrandit', (
+    WidgetTester tester,
+  ) async {
+    String titre(int i) => 'Wait ${i.toString().padLeft(3, '0')}';
+    Suggestion ligne(int i) => _analyzed(
+      'https://www.youtube.com/watch?v=W${i.toString().padLeft(10, '0')}',
+      titre(i),
+    );
+    final List<Suggestion> rows = <Suggestion>[
+      for (int i = 1; i <= 150; i++) ligne(i),
+    ];
+    final StoreController store = await _mount(tester, rows);
+    final _Sync sync = store.sync! as _Sync;
+    expect(store.sentinelleAwaitingSecondPass, hasLength(150));
+    final Finder wait = find.byKey(_kWait);
+    Finder inWait(Finder f) => find.descendant(of: wait, matching: f);
+
+    // Page 2 (barre du haut) : les 50 dernières lignes.
+    expect(inWait(find.text('Page 1 / 2')), findsNWidgets(2));
+    await _tapVisible(
+      tester,
+      inWait(find.byTooltip('Page suivante')).first,
+    );
+    expect(inWait(find.text('Page 2 / 2')), findsNWidgets(2));
+    expect(inWait(find.text('1 clic')), findsNWidgets(50));
+    expect(inWait(find.text(titre(101))), findsWidgets);
+    expect(inWait(find.text(titre(1))), findsNothing);
+
+    // Case de la page puis « Valider sélection (50) » (§171 du 12/10).
+    await _tapVisible(
+      tester,
+      inWait(find.byTooltip('Sélectionner toute la page affichée')),
+    );
+    await http.runWithClient(() async {
+      await _tapVisible(tester, find.text('Valider sélection (50)'));
+      expect(find.text('Valider 50 suggestion(s) ?'), findsOneWidget);
+      await tester.tap(find.text('Valider la sélection'));
+      await tester.pump();
+      await tester.pump();
+    }, () => _neutralHttp);
+    expect(
+      sync.batches.single.toSet(),
+      <String>{for (final s in rows.sublist(100)) s.id},
+    );
+
+    // 100 lignes, une seule page : la page 1, sans barre (avant : page 2
+    // gardée → `sublist(100, 100)`, tableau vide, aucun bouton pour revenir).
+    void pageUneAffichee() {
+      expect(store.sentinelleAwaitingSecondPass, hasLength(100));
+      expect(inWait(find.text('1 clic')), findsNWidgets(100));
+      expect(inWait(find.text(titre(1))), findsWidgets);
+      expect(inWait(find.text(titre(100))), findsWidgets);
+      expect(inWait(find.byTooltip('Page suivante')), findsNothing);
+      expect(inWait(find.textContaining(RegExp(r'^Page \d'))), findsNothing);
+    }
+
+    // Pendant le lot (retrait optimiste), puis après.
+    pageUneAffichee();
+    await http.runWithClient(() async {
+      sync.pending!.complete(<String, dynamic>{
+        'ok': sync.batches.single,
+        'failed': <Object?>[],
+      });
+      for (int i = 0; i < 20; i++) {
+        await tester.pump();
+      }
+    }, () => _neutralHttp);
+    await tester.runAsync(() async {
+      for (int i = 0; i < 30; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+    });
+    await tester.pump();
+    pageUneAffichee();
+
+    // La liste regrandit (10 nouvelles lignes au rechargement) : la page
+    // RECALÉE reste la 1re, pas de retour sur la page 2 quittée.
+    sync.analyzed = <Suggestion>[
+      ...rows.sublist(0, 100),
+      for (int i = 151; i <= 160; i++) ligne(i),
+    ];
+    await _resync(tester, store);
+    expect(store.sentinelleAwaitingSecondPass, hasLength(110));
+    expect(inWait(find.text('Page 1 / 2')), findsNWidgets(2));
+    expect(inWait(find.text(titre(1))), findsWidgets);
+    expect(inWait(find.text(titre(151))), findsNothing);
+
+    await _unmount(tester);
+  });
+
+  testWidgets('L7 L7-PAN-01 « À vérifier » (page 3 / 3 → 2 pages) et « Jeux '
+      'à créer » (page 2 / 2 → 1 page) : la liste raccourcit sous le '
+      'tableau → la dernière page existante est affichée, pas une page vide', (
+    WidgetTester tester,
+  ) async {
+    String verif(int i) => 'Verify ${i.toString().padLeft(3, '0')}';
+    String gtc(int i) => 'Gtc ${i.toString().padLeft(2, '0')}';
+    final List<Suggestion> aVerifier = <Suggestion>[
+      for (int i = 1; i <= 250; i++)
+        _analyzed(
+          'https://www.jeuxvideo.com/news/$i.htm',
+          verif(i),
+          verdict: 'caution',
+          confidence: 0.5,
+        ),
+    ];
+    final List<Suggestion> jeux = <Suggestion>[
+      for (int i = 1; i <= 51; i++)
+        _analyzed(
+          'https://www.youtube.com/watch?v=G${i.toString().padLeft(10, '0')}',
+          gtc(i),
+          confidence: 1.0,
+          needsGameCreation: true,
+        ),
+    ];
+    final StoreController store = await _mount(
+      tester,
+      aVerifier,
+      gamesToCreate: jeux,
+    );
+    final _Sync sync = store.sync! as _Sync;
+    expect(store.sentinelleToVerify, hasLength(250));
+    expect(store.gamesToCreate, hasLength(51));
+    // Une barre (sous le tableau) par tableau : « À vérifier » puis « Jeux
+    // à créer » (ordre de l'écran).
+    Finder suivante() => find.byTooltip('Page suivante');
+    expect(suivante(), findsNWidgets(2));
+    await _tapVisible(tester, suivante().first);
+    await _tapVisible(tester, suivante().first);
+    expect(find.text('Page 3 / 3'), findsOneWidget);
+    expect(find.text(verif(201)), findsWidgets);
+    await _tapVisible(tester, suivante().last);
+    expect(find.text('Page 2 / 2'), findsOneWidget);
+    expect(find.text('Créer'), findsOneWidget);
+    expect(find.text(gtc(51)), findsWidgets);
+
+    // Listes raccourcies au rechargement : 150 « À vérifier », 50 jeux.
+    sync.analyzed = aVerifier.sublist(0, 150);
+    sync.gamesToCreate = jeux.sublist(0, 50);
+    await _resync(tester, store);
+    expect(store.sentinelleToVerify, hasLength(150));
+    expect(store.gamesToCreate, hasLength(50));
+    // « À vérifier » : la page 2, dernière existante (avant : « Page 3 / 2 »
+    // et un tableau vide).
+    expect(find.text('Page 3 / 2'), findsNothing);
+    expect(find.text('Page 2 / 2'), findsOneWidget);
+    expect(find.text(verif(101)), findsWidgets);
+    expect(find.text(verif(150)), findsWidgets);
+    // « Jeux à créer » : une seule page → ses 50 lignes, sans barre.
+    expect(find.text('Créer'), findsNWidgets(50));
+    expect(find.text(gtc(1)), findsWidgets);
+    expect(suivante(), findsOneWidget);
 
     await _unmount(tester);
   });
