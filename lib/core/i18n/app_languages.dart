@@ -7,8 +7,12 @@ import 'dart:ui';
 /// - `tools/vision/lib/app_languages.dart` (app desktop Vision/Sentinelle/Check)
 ///
 /// La langue est stockée en base sous forme de code majuscule 2 lettres
-/// (`contents.video_language`, type TEXT sans contrainte CHECK côté BD —
-/// cf. migration `0013_video_language.sql`).
+/// (`contents.video_language`, colonne TEXT ajoutée par la migration
+/// `0013_video_language.sql`). La contrainte CHECK
+/// `contents_video_language_check` (migration
+/// `0031_language_check_constraint.sql`) n'accepte que NULL ou l'un des 12
+/// codes FR, EN, ES, PT, DE, IT, RU, JA, ZH, KO, AR, HI : les 12 langues des
+/// contenus analysés par Vision et proposés dans l'app mobile.
 class AppLanguage {
   const AppLanguage({
     required this.code,

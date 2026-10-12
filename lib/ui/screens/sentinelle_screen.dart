@@ -9,15 +9,21 @@ import '../../state/store_controller.dart';
 import '../widgets/admin_data_table.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/stat_card.dart' show StatusBadge;
-import 'suggestions_screen.dart' show SuggestionReviewDialog;
+import '../widgets/suggestion_review_dialog.dart';
 
-/// Écran Sentinelle : suggestions analysées par l'IA, triées en 2 catégories.
+/// Écran Sentinelle : suggestions analysées par l'IA, réparties en 3
+/// sections (règle de `domain/sentinelle_sections.dart`, lot L6 du 12/10).
 ///
-/// 1. **99% sûr** (🟢) : verdict "recommended" + confiance ≥ 0.9 → bouton
-///    "Implémenter en 1 clic". Sélection multiple possible (checkbox) + boutons
-///    "Tout valider" et "Valider la sélection".
-/// 2. **À vérifier** (🟡🔴) : verdict "caution"/"reject" ou confiance < 0.9 →
-///    l'admin vérifie le lien puis ajoute manuellement ou rejette.
+/// 1. **99% sûr** (🟢) : verdict "recommended" + confiance > 0,95, toutes
+///    plateformes et langues → bouton "1 clic". Sélection multiple possible
+///    (checkbox) + boutons "Tout valider" et "Valider la sélection".
+/// 2. **Attente 2ème passe** (🔵) : vidéos YouTube recommandées à 0,95 ou
+///    moins, que la 2e passe de Sentinelle relira → mêmes possibilités que
+///    « 99% sûr » (décision du propriétaire du 12/10) : "1 clic", sélection,
+///    page, "Tout valider".
+/// 3. **À vérifier** (🟡🔴) : tout le reste → l'admin vérifie le lien puis
+///    ajoute manuellement ou rejette ; les « astuces courtes sans parole »
+///    de la 2e passe en tête.
 class SentinelleScreen extends StatefulWidget {
   const SentinelleScreen({super.key});
 
@@ -28,6 +34,15 @@ class SentinelleScreen extends StatefulWidget {
 class _SentinelleScreenState extends State<SentinelleScreen> {
   /// IDs des suggestions sélectionnées (section 99% sûr).
   final Set<String> _selected = <String>{};
+
+  /// IDs des suggestions sélectionnées (section « Attente 2ème passe » —
+  /// décision du propriétaire du 12/10 : mêmes possibilités que « 99% sûr »,
+  /// sélection, page et « Tout valider »).
+  final Set<String> _awaitingSelected = <String>{};
+
+  /// Section qui a lancé la validation en lot en cours (sa progression
+  /// « X / N » s'affiche dans SON en-tête) ; null hors lot.
+  _ValidateSection? _batchSection;
 
   /// Référence au store capturée SANS écoute au premier frame — nécessaire
   /// pour arrêter le polling dans [dispose] (où context.read n'est plus
@@ -220,37 +235,42 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     });
   }
 
-  void _toggleSelect(String id) {
+  /// Coche / décoche la ligne [id] dans [selection] (« 99% sûr » ou
+  /// « Attente 2ème passe »).
+  void _toggleIn(Set<String> selection, String id) {
     setState(() {
-      if (_selected.contains(id)) {
-        _selected.remove(id);
-      } else {
-        _selected.add(id);
-      }
+      if (!selection.remove(id)) selection.add(id);
     });
   }
 
-  void _selectAll(List<Suggestion> trusted) {
+  /// Toutes les lignes de [items] sont-elles cochées dans [selection] ?
+  static bool _allSelected(Set<String> selection, List<Suggestion> items) =>
+      items.isNotEmpty && items.every((s) => selection.contains(s.id));
+
+  /// « Tout sélectionner / Tout désélectionner » (toutes les pages) d'une
+  /// section.
+  void _selectAllIn(Set<String> selection, List<Suggestion> items) {
     setState(() {
-      if (_selected.length == trusted.length) {
-        _selected.clear();
-      } else {
-        _selected.clear();
-        _selected.addAll(trusted.map((s) => s.id));
-      }
+      final bool all = _allSelected(selection, items);
+      selection.clear();
+      if (!all) selection.addAll(items.map((s) => s.id));
     });
   }
 
   /// Sélectionne / désélectionne UNIQUEMENT les lignes de la page affichée
-  /// du board « 99% sûr » (case d'en-tête de la colonne de sélection dans
-  /// [_TrustedTable]). Contrairement à [_selectAll] qui couvre toutes les
+  /// d'une section (case d'en-tête de la colonne de sélection dans
+  /// [_TrustedTable]). Contrairement à [_selectAllIn] qui couvre toutes les
   /// pages, les sélections faites sur les autres pages sont conservées.
-  void _toggleSelectPage(List<String> pageIds, bool selectAll) {
+  void _togglePageIn(
+    Set<String> selection,
+    List<String> pageIds,
+    bool selectAll,
+  ) {
     setState(() {
       if (selectAll) {
-        _selected.addAll(pageIds);
+        selection.addAll(pageIds);
       } else {
-        _selected.removeAll(pageIds);
+        selection.removeAll(pageIds);
       }
     });
   }
@@ -327,7 +347,8 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     await _runRejectBatch(toReject);
   }
 
-  /// Valide toutes les suggestions "99% sûr" en une fois.
+  /// Valide toutes les suggestions d'une section (« 99% sûr » ou
+  /// « Attente 2ème passe ») en une fois.
   ///
   /// Chaque suggestion est rattachée au jeu sélectionné dans la colonne
   /// « Jeu IA » (jeu édité par l'admin s'il y en a un, sinon celui de l'IA)
@@ -338,21 +359,35 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   /// Correctif 27/08/2026 : passe par [StoreController.acceptSentinelleBatch]
   /// (1 appel EF par chunk de 100 + UNE sync finale) au lieu de N appels
   /// unitaires + N resyncs complets (~3 s/item → quasi-instantané).
-  Future<void> _validateAll(List<Suggestion> trusted) async {
-    await _runBatch(trusted);
+  Future<void> _validateAll(
+    _ValidateSection section,
+    List<Suggestion> items,
+  ) async {
+    await _runBatch(section, items);
   }
 
-  /// Valide uniquement les suggestions sélectionnées.
+  /// Valide uniquement les suggestions cochées d'une section.
   ///
   /// Comme [_validateAll], chaque suggestion utilise le jeu choisi par l'admin
   /// dans la colonne « Jeu IA » et la catégorie de la colonne « Catégorie »
   /// s'ils ont été modifiés.
-  Future<void> _validateSelected(List<Suggestion> trusted) async {
-    final selected = trusted.where((s) => _selected.contains(s.id)).toList();
-    await _runBatch(selected);
+  Future<void> _validateSelected(
+    _ValidateSection section,
+    List<Suggestion> items,
+  ) async {
+    final Set<String> selection = _selectionOf(section);
+    final selected = items.where((s) => selection.contains(s.id)).toList();
+    await _runBatch(section, selected);
   }
 
-  /// Exécute la validation EN LOT d'un ensemble de suggestions « 99% sûr ».
+  /// Sélection d'une section validable en lot.
+  Set<String> _selectionOf(_ValidateSection section) => switch (section) {
+    _ValidateSection.sure => _selected,
+    _ValidateSection.awaiting => _awaitingSelected,
+  };
+
+  /// Exécute la validation EN LOT d'un ensemble de suggestions (« 99% sûr »
+  /// ou « Attente 2ème passe »).
   ///
   /// Les overrides (jeu / catégorie) sont RÉSOLUS AVANT l'appel, avec la
   /// même logique que le « 1 clic » unitaire : le jeu édité par l'admin
@@ -365,7 +400,10 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
   /// : la sélection est vidée et les overrides des lignes qui ont DISPARU de
   /// la liste sont purgés — les overrides des lignes restaurées après un
   /// échec partiel sont conservés pour permettre une nouvelle tentative.
-  Future<void> _runBatch(List<Suggestion> items) async {
+  Future<void> _runBatch(
+    _ValidateSection section,
+    List<Suggestion> items,
+  ) async {
     if (items.isEmpty || _batchValidating) return;
     final store = context.read<StoreController>();
 
@@ -386,6 +424,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
 
     setState(() {
       _batchValidating = true;
+      _batchSection = section;
       _batchDone = 0;
       _batchTotal = items.length;
     });
@@ -411,9 +450,14 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
         final remaining = store.sentinelleSuggestions.map((s) => s.id).toSet();
         setState(() {
           _batchValidating = false;
+          _batchSection = null;
           _batchDone = 0;
           _batchTotal = 0;
-          _selected.clear();
+          // Sélection de la section du lot vidée ; dans l'autre, seuls les
+          // ids disparus (validés) sont retirés.
+          _selectionOf(section).clear();
+          _selected.removeWhere((id) => !remaining.contains(id));
+          _awaitingSelected.removeWhere((id) => !remaining.contains(id));
           _editedGames.removeWhere((id, _) => !remaining.contains(id));
           _editedCategories.removeWhere((id, _) => !remaining.contains(id));
           _editedTitles.removeWhere((id, _) => !remaining.contains(id));
@@ -470,11 +514,160 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     }
   }
 
+  /// Boutons d'en-tête d'une section validable en lot (« 99% sûr » et,
+  /// depuis la décision du propriétaire du 12/10, « Attente 2ème passe ») :
+  /// « Tout sélectionner », « Valider sélection (N) » et « Tout valider » —
+  /// remplacé par la progression « X / N » dans la section qui a lancé le
+  /// lot. Pendant un lot (validation ou rejet), les boutons des deux
+  /// sections sont désactivés (tableau figé).
+  /// Relecture (F1) : boutons d'en-tête dans un [Wrap] aligné à droite —
+  /// ils passent à la ligne au lieu de déborder (et d'être coupés) sur un
+  /// écran de 1 366 à 1 440 px.
+  Widget _actionsWrap(List<Widget> actions) => Expanded(
+    child: Wrap(
+      alignment: WrapAlignment.end,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      runSpacing: 8,
+      children: actions,
+    ),
+  );
+
+  /// Progression « Validation en cours… X / N » d'un lot.
+  Widget _batchProgress(Color color) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      SizedBox(
+        width: 16,
+        height: 16,
+        child: CircularProgressIndicator(strokeWidth: 2, color: color),
+      ),
+      const SizedBox(width: 8),
+      Text(
+        'Validation en cours… $_batchDone / $_batchTotal',
+        style: TextStyle(fontSize: 12, color: color),
+      ),
+    ],
+  );
+
+  List<Widget> _validateActions(
+    BuildContext context,
+    _ValidateSection section,
+    List<Suggestion> items,
+  ) {
+    final Set<String> selection = _selectionOf(section);
+    final bool awaiting = section == _ValidateSection.awaiting;
+    final Color color = awaiting ? AppColors.categoryLink : AppColors.neonGreen;
+    final bool batchHere = _batchValidating && _batchSection == section;
+    if (items.isEmpty) {
+      // Relecture (F5) : le lot retire ses lignes tout de suite (retrait
+      // optimiste) — la section peut se vider, la progression reste.
+      return <Widget>[if (batchHere) _batchProgress(color)];
+    }
+    final bool all = _allSelected(selection, items);
+    final int selectedCount = items
+        .where((s) => selection.contains(s.id))
+        .length;
+    final String what = awaiting ? '« Attente 2ème passe »' : '"99% sûr"';
+    // Relecture (F2) : une phrase à part, en fin de message.
+    final String howNote = awaiting
+        ? ' Elles n\'attendront pas la 2e passe de Sentinelle.'
+        : '';
+    return <Widget>[
+      // Checkbox "Tout sélectionner / Tout désélectionner" (toutes pages).
+      Padding(
+        padding: const EdgeInsets.only(right: 12),
+        child: InkWell(
+          onTap: () => _selectAllIn(selection, items),
+          borderRadius: BorderRadius.circular(4),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  all
+                      ? Icons.check_box_rounded
+                      : Icons.check_box_outline_blank_rounded,
+                  size: 18,
+                  color: all ? color : null,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  all ? 'Tout désélectionner' : 'Tout sélectionner',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      // Bouton : valider la sélection
+      if (selectedCount > 0 && !_batchValidating && !_batchRejecting)
+        Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: FilledButton.icon(
+            onPressed: () => showDialog<void>(
+              context: context,
+              builder: (_) => ConfirmDialog(
+                title: 'Valider $selectedCount suggestion(s) ?',
+                message:
+                    'Les $selectedCount suggestion(s) sélectionnée(s) '
+                    'seront implémentées automatiquement avec le jeu '
+                    'choisi dans la colonne « Jeu IA » et la catégorie '
+                    'choisie dans la colonne « Catégorie » (ou leurs '
+                    'valeurs intelligentes par défaut).$howNote',
+                confirmLabel: 'Valider la sélection',
+                onConfirm: () => _validateSelected(section, items),
+              ),
+            ),
+            icon: const Icon(Icons.check_circle_outline_rounded, size: 16),
+            label: Text('Valider sélection ($selectedCount)'),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.neonCyan,
+              foregroundColor: Colors.black,
+            ),
+          ),
+        ),
+      // Bouton : tout valider (remplacé par la progression « X / N » dans
+      // la section qui a lancé le lot).
+      if (batchHere)
+        _batchProgress(color)
+      else
+        FilledButton.icon(
+          // Désactivé pendant un lot (rejet, ou validation de l'autre
+          // section : tableau figé).
+          onPressed: _batchRejecting || _batchValidating
+              ? null
+              : () => showDialog<void>(
+                  context: context,
+                  builder: (_) => ConfirmDialog(
+                    title: 'Valider toutes les suggestions (${items.length}) ?',
+                    message:
+                        'Les ${items.length} suggestions $what seront '
+                        'implémentées automatiquement avec le jeu choisi '
+                        'dans la colonne « Jeu IA » et la catégorie choisie '
+                        'dans la colonne « Catégorie » (ou leurs valeurs '
+                        'intelligentes par défaut).$howNote',
+                    confirmLabel: 'Tout valider',
+                    onConfirm: () => _validateAll(section, items),
+                  ),
+                ),
+          icon: const Icon(Icons.done_all_rounded, size: 16),
+          label: const Text('Tout valider'),
+          style: FilledButton.styleFrom(
+            backgroundColor: color,
+            foregroundColor: Colors.black,
+          ),
+        ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final StoreController store = context.watch<StoreController>();
     final analyzing = store.sentinelleAnalyzing;
     final trusted = store.sentinelleTrusted;
+    final awaiting = store.sentinelleAwaitingSecondPass;
     final toVerify = store.sentinelleToVerify;
     final gamesToCreate = store.gamesToCreate;
 
@@ -505,7 +698,7 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
               ),
               const SizedBox(width: 12),
               Text(
-                '${analyzing.length + trusted.length + toVerify.length} suggestion(s)',
+                '${analyzing.length + trusted.length + awaiting.length + toVerify.length} suggestion(s)',
                 style: TextStyle(
                   fontSize: 12,
                   color: Theme.of(context).textTheme.bodySmall?.color,
@@ -565,125 +758,10 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
                 title: '99% sûr — Implémentable en 1 clic',
                 count: trusted.length,
               ),
-              const Spacer(),
-              if (trusted.isNotEmpty) ...[
-                // Checkbox "Tout sélectionner / Tout désélectionner".
-                Padding(
-                  padding: const EdgeInsets.only(right: 12),
-                  child: InkWell(
-                    onTap: () => _selectAll(trusted),
-                    borderRadius: BorderRadius.circular(4),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 4,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            _selected.length == trusted.length
-                                ? Icons.check_box_rounded
-                                : Icons.check_box_outline_blank_rounded,
-                            size: 18,
-                            color: _selected.length == trusted.length
-                                ? AppColors.neonGreen
-                                : null,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            _selected.length == trusted.length
-                                ? 'Tout désélectionner'
-                                : 'Tout sélectionner',
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                // Bouton : valider la sélection
-                if (_selected.isNotEmpty && !_batchValidating && !_batchRejecting)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: FilledButton.icon(
-                      onPressed: () => showDialog<void>(
-                        context: context,
-                        builder: (_) => ConfirmDialog(
-                          title: 'Valider ${_selected.length} suggestion(s) ?',
-                          message:
-                              'Les ${_selected.length} suggestion(s) sélectionnée(s) '
-                              'seront implémentées automatiquement avec le jeu '
-                              'choisi dans la colonne « Jeu IA » et la catégorie '
-                              'choisie dans la colonne « Catégorie » (ou leurs '
-                              'valeurs intelligentes par défaut).',
-                          confirmLabel: 'Valider la sélection',
-                          onConfirm: () => _validateSelected(trusted),
-                        ),
-                      ),
-                      icon: const Icon(
-                        Icons.check_circle_outline_rounded,
-                        size: 16,
-                      ),
-                      label: Text('Valider sélection (${_selected.length})'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: AppColors.neonCyan,
-                        foregroundColor: Colors.black,
-                      ),
-                    ),
-                  ),
-                // Bouton : tout valider (remplacé par la progression « X / N »
-                // pendant une validation en lot).
-                if (_batchValidating)
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: AppColors.neonGreen,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Validation en cours… $_batchDone / $_batchTotal',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: AppColors.neonGreen,
-                        ),
-                      ),
-                    ],
-                  )
-                else
-                  FilledButton.icon(
-                    // Désactivé pendant un rejet en lot (tableau figé).
-                    onPressed: _batchRejecting
-                        ? null
-                        : () => showDialog<void>(
-                            context: context,
-                            builder: (_) => ConfirmDialog(
-                              title:
-                                  'Valider toutes les suggestions (${trusted.length}) ?',
-                              message:
-                                  'Les ${trusted.length} suggestions "99% sûr" seront '
-                                  'implémentées automatiquement avec le jeu choisi '
-                                  'dans la colonne « Jeu IA » et la catégorie choisie '
-                                  'dans la colonne « Catégorie » (ou leurs valeurs '
-                                  'intelligentes par défaut).',
-                              confirmLabel: 'Tout valider',
-                              onConfirm: () => _validateAll(trusted),
-                            ),
-                          ),
-                    icon: const Icon(Icons.done_all_rounded, size: 16),
-                    label: const Text('Tout valider'),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: AppColors.neonGreen,
-                      foregroundColor: Colors.black,
-                    ),
-                  ),
-              ],
+              const SizedBox(width: 12),
+              _actionsWrap(
+                _validateActions(context, _ValidateSection.sure, trusted),
+              ),
             ],
           ),
           const SizedBox(height: 12),
@@ -694,11 +772,78 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
           else
             RepaintBoundary(
               child: _TrustedTable(
+                key: const ValueKey<String>('tableau_99_sur'),
                 suggestions: trusted,
                 selectedIds: _selected,
-                onToggle: _toggleSelect,
-                onTogglePageSelection: _toggleSelectPage,
-                onSelectAll: () => _selectAll(trusted),
+                onToggle: (String id) => _toggleIn(_selected, id),
+                onTogglePageSelection: (List<String> ids, bool all) =>
+                    _togglePageIn(_selected, ids, all),
+                editedGames: _editedGames,
+                onGameChanged: _setEditedGame,
+                editedCategories: _editedCategories,
+                onCategoryChanged: _setEditedCategory,
+                editedTitles: _editedTitles,
+                onTitleChanged: _setEditedTitle,
+                aliasUncheckedIds: _aliasCandidateUnchecked,
+                onAliasCandidateChanged: _setAliasCandidateChecked,
+              ),
+            ),
+
+          const SizedBox(height: 32),
+
+          // Section 1 bis (P5, lot L6) : Attente 2ème passe — recommandés
+          // YouTube ≤ 0,95 que la 2e passe de Sentinelle relira. Décision
+          // du propriétaire du 12/10 : mêmes possibilités que « 99% sûr »
+          // (cases, case de la page, « Tout sélectionner », « Valider
+          // sélection », « Tout valider »). Les réglages de jeu, de catégorie
+          // et de titre sont partagés avec « 99% sûr » (clés = id de
+          // suggestion, uniques).
+          Row(
+            children: [
+              _SectionHeader(
+                icon: Icons.pending_actions_rounded,
+                color: AppColors.categoryLink,
+                title: 'Attente 2ème passe',
+                count: awaiting.length,
+              ),
+              const SizedBox(width: 12),
+              _actionsWrap(
+                _validateActions(
+                  context,
+                  _ValidateSection.awaiting,
+                  awaiting,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Recommandés YouTube à 95 % ou moins (toutes langues) : la 2e '
+            'passe de Sentinelle relira le texte de la vidéo — 97 % → « 99% '
+            'sûr », sinon → « À vérifier ». Tant qu\'elle tourne à blanc dans '
+            'Vision2, rien ne quitte cette section tout seul : validation à '
+            'l\'unité (« 1 clic »), par sélection ou « Tout valider ».',
+            style: TextStyle(
+              fontSize: 12,
+              color: Theme.of(context).textTheme.bodySmall?.color,
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (awaiting.isEmpty)
+            const _EmptyHint(
+              text: 'Aucun recommandé en attente de la 2e passe.',
+            )
+          else
+            RepaintBoundary(
+              child: _TrustedTable(
+                key: const ValueKey<String>('tableau_attente_2e_passe'),
+                suggestions: awaiting,
+                selectedIds: _awaitingSelected,
+                onToggle: (String id) => _toggleIn(_awaitingSelected, id),
+                onTogglePageSelection: (List<String> ids, bool all) =>
+                    _togglePageIn(_awaitingSelected, ids, all),
+                accent: AppColors.categoryLink,
+                confidenceIcon: Icons.pending_rounded,
                 editedGames: _editedGames,
                 onGameChanged: _setEditedGame,
                 editedCategories: _editedCategories,
@@ -1157,13 +1302,19 @@ class _AnalyzingTable extends StatelessWidget {
   }
 }
 
+/// Tableau des recommandés validables en « 1 clic », avec sélection (case
+/// par ligne, case de la page) : section « 99% sûr » et, depuis L6, section
+/// « Attente 2ème passe » (mêmes possibilités : décision du propriétaire du
+/// 12/10).
 class _TrustedTable extends StatefulWidget {
   const _TrustedTable({
+    super.key,
     required this.suggestions,
     required this.selectedIds,
     required this.onToggle,
     required this.onTogglePageSelection,
-    required this.onSelectAll,
+    this.accent = AppColors.neonGreen,
+    this.confidenceIcon = Icons.check_circle_rounded,
     required this.editedGames,
     required this.onGameChanged,
     required this.editedCategories,
@@ -1175,6 +1326,8 @@ class _TrustedTable extends StatefulWidget {
   });
 
   final List<Suggestion> suggestions;
+
+  /// Sélection de la section (source de vérité : l'écran).
   final Set<String> selectedIds;
   final ValueChanged<String> onToggle;
 
@@ -1182,11 +1335,18 @@ class _TrustedTable extends StatefulWidget {
   /// sélection des lignes de la PAGE AFFICHÉE uniquement. [pageIds] = ids de
   /// [_paged], [selectAll] = true pour sélectionner la page, false pour la
   /// désélectionner. Les sélections des autres pages sont conservées
-  /// (contrairement à [onSelectAll] qui couvre toutes les pages).
+  /// (contrairement au bouton « Tout sélectionner » du parent, qui couvre
+  /// toutes les pages).
   final void Function(List<String> pageIds, bool selectAll)
       onTogglePageSelection;
 
-  final VoidCallback onSelectAll;
+  /// Couleur des cases cochées et de la confiance (vert « 99% sûr », bleu
+  /// « Attente 2ème passe »).
+  final Color accent;
+
+  /// Icône de la confiance (validé « 99% sûr », en attente « Attente 2ème
+  /// passe »).
+  final IconData confidenceIcon;
 
   /// Jeux modifiés par l'admin dans la colonne « Jeu IA »
   /// (key = suggestion ID, value = nom du jeu). Voir [_editedGames] dans
@@ -1237,8 +1397,26 @@ class _TrustedTable extends StatefulWidget {
 
 class _TrustedTableState extends State<_TrustedTable> {
   /// Tri local : index de colonne (null = tri par défaut = ordre d'origine).
-  /// Colonne 5 = Confiance, colonne 6 = Vues.
+  /// Colonne lue par son NOM ([_columns]) : « Confiance » ou « Vues ».
   int? _sortColumnIndex;
+
+  static const String _colSelect = '☐';
+  static const String _colConfidence = 'Confiance';
+  static const String _colViews = 'Vues';
+
+  /// Colonnes du tableau.
+  List<String> get _columns => [
+    _colSelect,
+    'Titre',
+    'Titre pour insertion (modifiable)',
+    'Jeu IA (modifiable)',
+    'Catégorie (modifiable)',
+    _colConfidence,
+    _colViews,
+    // D3.3 — insérée APRÈS « Vues » (index 7 avec la sélection).
+    'Alias candidat',
+    'Actions',
+  ];
   bool _sortAscending = true;
 
   /// Contrôleurs de texte pour le champ « Titre pour insertion » éditable.
@@ -1394,15 +1572,19 @@ class _TrustedTableState extends State<_TrustedTable> {
   List<Suggestion> get _sorted {
     if (_sortColumnIndex == null) return widget.suggestions;
     final list = List<Suggestion>.from(widget.suggestions);
+    final List<String> columns = _columns;
+    final int index = _sortColumnIndex!;
+    final String? column =
+        index >= 0 && index < columns.length ? columns[index] : null;
     int compare(Suggestion a, Suggestion b) {
       final ai = a.aiRecommendation!;
       final bi = b.aiRecommendation!;
       int cmp;
-      switch (_sortColumnIndex) {
-        case 5: // Confiance
+      switch (column) {
+        case _colConfidence:
           cmp = ai.confidence.compareTo(bi.confidence);
           break;
-        case 6: // Vues
+        case _colViews:
           cmp = (ai.youtubeViews ?? 0).compareTo(bi.youtubeViews ?? 0);
           break;
         default:
@@ -1626,9 +1808,10 @@ class _TrustedTableState extends State<_TrustedTable> {
     // du parent qui couvre toutes les pages). État tristate : cochée si
     // toute la page est sélectionnée, indéterminée (tiret) si une partie
     // seulement, décochée sinon.
+    final Set<String> selectedIds = widget.selectedIds;
     final List<String> pageIds = pageItems.map((s) => s.id).toList();
     final int selectedOnPage = pageItems
-        .where((s) => widget.selectedIds.contains(s.id))
+        .where((s) => selectedIds.contains(s.id))
         .length;
     final bool allPageSelected =
         pageIds.isNotEmpty && selectedOnPage == pageIds.length;
@@ -1640,54 +1823,42 @@ class _TrustedTableState extends State<_TrustedTable> {
         _buildPagination(context),
         // ── Tableau (page courante) ──
         AdminDataTable(
-          columns: const [
-            '☐',
-            'Titre',
-            'Titre pour insertion (modifiable)',
-            'Jeu IA (modifiable)',
-            'Catégorie (modifiable)',
-            'Confiance',
-            'Vues',
-            // D3.3 — insérée APRÈS « Vues » (index 7) pour préserver les
-            // index de tri existants (5 = Confiance, 6 = Vues).
-            'Alias candidat',
-            'Actions',
-          ],
+          columns: _columns,
           // En-tête interactif pour la colonne 0 : case « toute la page ».
           headerWidgets: {
             0: Tooltip(
-              message: 'Sélectionner toute la page affichée',
-              child: InkWell(
-                onTap: pageIds.isEmpty
-                    ? null
-                    : () => widget.onTogglePageSelection(
-                          pageIds,
-                          !allPageSelected,
-                        ),
-                borderRadius: BorderRadius.circular(4),
-                child: Padding(
-                  padding: const EdgeInsets.all(4),
-                  child: Icon(
-                    allPageSelected
-                        ? Icons.check_box_rounded
-                        : somePageSelected
-                            ? Icons.indeterminate_check_box_rounded
-                            : Icons.check_box_outline_blank_rounded,
-                    size: 18,
-                    color: (allPageSelected || somePageSelected)
-                        ? AppColors.neonGreen
-                        : Theme.of(context).textTheme.bodySmall?.color,
+                message: 'Sélectionner toute la page affichée',
+                child: InkWell(
+                  onTap: pageIds.isEmpty
+                      ? null
+                      : () => widget.onTogglePageSelection(
+                            pageIds,
+                            !allPageSelected,
+                          ),
+                  borderRadius: BorderRadius.circular(4),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(
+                      allPageSelected
+                          ? Icons.check_box_rounded
+                          : somePageSelected
+                              ? Icons.indeterminate_check_box_rounded
+                              : Icons.check_box_outline_blank_rounded,
+                      size: 18,
+                      color: (allPageSelected || somePageSelected)
+                          ? widget.accent
+                          : Theme.of(context).textTheme.bodySmall?.color,
+                    ),
                   ),
                 ),
               ),
-            ),
           },
           sortColumnIndex: _sortColumnIndex,
           sortAscending: _sortAscending,
           onSort: _onSort,
           // Colonnes non triables : la checkbox, le titre d'insertion, les actions.
           nonSortableColumns: const [
-            '☐',
+            _colSelect,
             'Titre',
             'Titre pour insertion (modifiable)',
             'Jeu IA (modifiable)',
@@ -1697,23 +1868,23 @@ class _TrustedTableState extends State<_TrustedTable> {
           ],
           rows: pageItems.map((s) {
             final ai = s.aiRecommendation!;
-            final isSelected = widget.selectedIds.contains(s.id);
+            final isSelected = selectedIds.contains(s.id);
             final titleController = _titleControllerFor(s, store);
             return [
               // Checkbox de sélection (cliquable).
               InkWell(
-                onTap: () => widget.onToggle(s.id),
-                child: Padding(
-                  padding: const EdgeInsets.all(4),
-                  child: Icon(
-                    isSelected
-                        ? Icons.check_box_rounded
-                        : Icons.check_box_outline_blank_rounded,
-                    size: 18,
-                    color: isSelected ? AppColors.neonGreen : null,
+                  onTap: () => widget.onToggle(s.id),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(
+                      isSelected
+                          ? Icons.check_box_rounded
+                          : Icons.check_box_outline_blank_rounded,
+                      size: 18,
+                      color: isSelected ? widget.accent : null,
+                    ),
                   ),
                 ),
-              ),
               _titleCell(context, s),
               // Titre pour insertion (éditable) : pré-rempli avec le titre
               // calculé (titre YouTube IA sinon texte partagé nettoyé) —
@@ -1760,23 +1931,30 @@ class _TrustedTableState extends State<_TrustedTable> {
               // utilisée par « 1 clic » / « Valider sélection » / « Tout
               // valider » (voir [StoreController.acceptOneClick]).
               _buildCategorySelector(context, s),
-              Row(
-                children: [
-                  const Icon(
-                    Icons.check_circle_rounded,
-                    color: AppColors.neonGreen,
-                    size: 16,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    '${(ai.confidence * 100).round()}%',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w800,
-                      fontSize: 13,
-                      color: AppColors.neonGreen,
+              // L6 : la raison de l'IA en infobulle (pourquoi 90 % et pas
+              // 100 % : utile pour valider un contenu en attente).
+              Tooltip(
+                message: ai.reason.isEmpty ? 'Pas de raison.' : ai.reason,
+                showDuration: const Duration(seconds: 10),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      widget.confidenceIcon,
+                      color: widget.accent,
+                      size: 16,
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 4),
+                    Text(
+                      '${(ai.confidence * 100).round()}%',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                        color: widget.accent,
+                      ),
+                    ),
+                  ],
+                ),
               ),
               Text(
                 _formatViews(ai.youtubeViews),
@@ -2084,6 +2262,19 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
       ),
       ai == null
           ? const Text('—')
+          : (ai.revueP5?.isShortTip ?? false)
+          // P5 (L6) : « astuce courte sans parole » de la 2e passe — montrée
+          // en tête de la section (décision du propriétaire du 12/10).
+          ? const Tooltip(
+              key: ValueKey<String>('badge_astuce_courte'),
+              message:
+                  'Analyse vidéo (2e passe) : astuce courte sans parole '
+                  '(titre et vues pertinents) — à vérifier en premier.',
+              child: StatusBadge(
+                label: 'Astuce courte',
+                color: AppColors.categoryLink,
+              ),
+            )
           : StatusBadge(
               label: ai.verdict.label,
               color: isReject ? AppColors.categoryVideo : AppColors.plusGold,
@@ -2974,4 +3165,13 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
       ],
     );
   }
+}
+
+/// Sections validables en lot de l'écran Sentinelle.
+enum _ValidateSection {
+  /// « 99% sûr — Implémentable en 1 clic ».
+  sure,
+
+  /// « Attente 2ème passe » (décision du propriétaire du 12/10).
+  awaiting,
 }

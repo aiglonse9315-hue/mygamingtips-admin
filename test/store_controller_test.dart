@@ -22,9 +22,12 @@ import 'package:mgt_admin/data/local_storage.dart';
 import 'package:mgt_admin/data/store.dart';
 import 'package:mgt_admin/data/supabase_sync.dart';
 import 'package:mgt_admin/domain/models/banned_user.dart';
+import 'package:mgt_admin/domain/models/category.dart';
 import 'package:mgt_admin/domain/models/content.dart';
 import 'package:mgt_admin/domain/models/game.dart';
 import 'package:mgt_admin/domain/models/moderation.dart';
+import 'package:mgt_admin/domain/models/suggestion.dart';
+import 'package:mgt_admin/domain/models/suggestion_author.dart';
 import 'package:mgt_admin/domain/moderation_actions.dart';
 import 'package:mgt_admin/domain/write_outcome.dart';
 import 'package:mgt_admin/state/store_controller.dart';
@@ -149,7 +152,122 @@ class _FakeSync extends SupabaseSync {
 
   @override
   Future<ManualUnbanResult> unbanUser(String userId) => onUnban(userId);
+
+  /// L6 — suggestions analysées du serveur (mode `analyzed`) : TOUTES sans
+  /// curseur, [analyzedDelta] avec un curseur (`since`).
+  List<Suggestion> serverAnalyzed = <Suggestion>[];
+  List<Suggestion> analyzedDelta = <Suggestion>[];
+
+  /// `since` reçu à chaque lecture du mode `analyzed` (page 0).
+  final List<String?> analyzedSinces = <String?>[];
+
+  /// Relecture L6 (F1 / F2) : modes « new » et « analyzing » du serveur.
+  /// null = non surchargé (réponse neutre du client HTTP : liste vide).
+  List<Suggestion>? serverNew;
+  List<Suggestion> newDelta = <Suggestion>[];
+  List<Suggestion>? serverAnalyzing;
+
+  @override
+  Future<({List<Suggestion> items, DateTime? maxUpdatedAt})> fetchSuggestions({
+    int page = 0,
+    int pageSize = 500,
+    String? since,
+  }) async {
+    final List<Suggestion>? all = serverNew;
+    if (all == null) {
+      return super.fetchSuggestions(page: page, pageSize: pageSize, since: since);
+    }
+    final List<Suggestion> rows = since == null ? all : newDelta;
+    return (
+      items: page == 0 ? List<Suggestion>.of(rows) : <Suggestion>[],
+      maxUpdatedAt: DateTime.utc(2026, 10, 12, 9),
+    );
+  }
+
+  @override
+  Future<({List<Suggestion> items, DateTime? maxUpdatedAt})>
+  fetchSentinelleAnalyzing({int page = 0, int pageSize = 500, String? since}) async {
+    final List<Suggestion>? all = serverAnalyzing;
+    if (all == null) {
+      return super.fetchSentinelleAnalyzing(
+        page: page,
+        pageSize: pageSize,
+        since: since,
+      );
+    }
+    return (
+      items: page == 0 ? List<Suggestion>.of(all) : <Suggestion>[],
+      maxUpdatedAt: null,
+    );
+  }
+
+  /// Validation d'une suggestion (`suggestions/accept`) : ids reçus ; lève
+  /// [acceptError] s'il est posé.
+  final List<String> accepted = <String>[];
+  Object? acceptError;
+
+  @override
+  Future<void> acceptSuggestion({
+    required String suggestionId,
+    required String gameId,
+    required ContentCategory category,
+    required String titleAdmin,
+    bool isVideo = false,
+    DateTime? publishedAt,
+    String? videoLanguage,
+  }) async {
+    accepted.add(suggestionId);
+    final Object? e = acceptError;
+    if (e != null) throw e;
+  }
+
+  @override
+  Future<({List<Suggestion> items, DateTime? maxUpdatedAt})>
+  fetchSentinelleSuggestions({
+    int page = 0,
+    int pageSize = 500,
+    String? since,
+  }) async {
+    if (page == 0) analyzedSinces.add(since);
+    final List<Suggestion> rows = since == null ? serverAnalyzed : analyzedDelta;
+    return (
+      items: page == 0 ? List<Suggestion>.of(rows) : <Suggestion>[],
+      maxUpdatedAt: DateTime.utc(2026, 10, 12, 9),
+    );
+  }
 }
+
+int _sugSeq = 0;
+
+/// Suggestion analysée par Sentinelle (L6), id UUID neutre.
+Suggestion _analyzed(
+  String url, {
+  String verdict = 'recommended',
+  double confidence = 0.9,
+  Map<String, Object?>? revue,
+  DateTime? startedAt,
+  String source = Suggestion.sourceVision,
+}) {
+  _sugSeq++;
+  return Suggestion(
+    id: '33333333-4444-4555-8666-${_sugSeq.toString().padLeft(12, '0')}',
+    url: url,
+    status: SuggestionStatus.pending,
+    sharedAt: DateTime.utc(2026, 10, 12),
+    author: const SuggestionAuthor(id: '', displayName: 'Vision'),
+    sentinelleStartedAt: startedAt,
+    source: source,
+    aiRecommendation: AiRecommendation.fromJson(<String, dynamic>{
+      'verdict': verdict,
+      'confidence': confidence,
+      'reason': 'neutre',
+      'revue_p5': ?revue,
+    }),
+  );
+}
+
+const String _ytUrl = 'https://www.youtube.com/watch?v=AAAAAAAAAAA';
+const String _webUrl = 'https://www.jeuxvideo.com/news/123.htm';
 
 Store _store() => Store(
   gamesSeed: '[]',
@@ -197,6 +315,309 @@ bool _storageMentions(String text) =>
 
 void main() {
   setUp(browserLocalStorage.clear);
+
+  group('Sections de Sentinelle (P5, lot L6)', () {
+    test('trois sections disjointes ; « 99% sûr » > 0,95, « Attente » = '
+        'YouTube ≤ 0,95, « À vérifier » = le reste, astuces courtes '
+        'd\'abord', () async {
+      await _run(() async {
+        final _FakeSync sync = _FakeSync();
+        final Suggestion web90 = _analyzed(_webUrl);
+        final Suggestion yt90 = _analyzed(_ytUrl);
+        final Suggestion yt95 = _analyzed(_ytUrl, confidence: 0.95);
+        final Suggestion yt97 = _analyzed(_ytUrl, confidence: 0.97);
+        final Suggestion web100 = _analyzed(_webUrl, confidence: 1.0);
+        final Suggestion astuce = _analyzed(
+          _ytUrl,
+          verdict: 'caution',
+          confidence: 0.0,
+          revue: const <String, Object?>{
+            'etat': 'sans_parole_court',
+            'motif': 'astuce_courte',
+          },
+        );
+        sync.serverAnalyzed = <Suggestion>[
+          web90,
+          yt90,
+          yt95,
+          yt97,
+          web100,
+          astuce,
+        ];
+        final StoreController c = await _production(sync);
+        await c.ensureDatasets(<SyncDataset>{SyncDataset.sentinelleAnalyzed});
+        await _settle();
+        List<String> ids(List<Suggestion> l) => [for (final s in l) s.id];
+        expect(ids(c.sentinelleTrusted), ids(<Suggestion>[yt97, web100]));
+        expect(
+          ids(c.sentinelleAwaitingSecondPass),
+          ids(<Suggestion>[yt90, yt95]),
+        );
+        expect(ids(c.sentinelleToVerify), ids(<Suggestion>[astuce, web90]));
+        // Calcul mis en cache : même liste tant que la source ne change pas.
+        expect(
+          identical(c.sentinelleToVerify, c.sentinelleToVerify),
+          isTrue,
+        );
+      });
+    });
+
+    test('correctif L6 : 1re sync du mode « analysées » COMPLÈTE même avec '
+        'un curseur valide gardé dans le navigateur (rechargement de la '
+        'page) ; la suivante est incrémentale', () async {
+      await _run(() async {
+        // Curseur de moins de 24 h laissé par une visite précédente.
+        _store().saveCursor(
+          'sug_analyzed',
+          '2026-10-12T08:00:00.000Z',
+          DateTime.now().toUtc(),
+        );
+        final _FakeSync sync = _FakeSync()
+          ..serverAnalyzed = <Suggestion>[
+            _analyzed(_ytUrl),
+            _analyzed(_webUrl, confidence: 1.0),
+          ]
+          ..analyzedDelta = <Suggestion>[];
+        final StoreController c = await _production(sync);
+        await c.ensureDatasets(<SyncDataset>{SyncDataset.sentinelleAnalyzed});
+        await _settle();
+        expect(sync.analyzedSinces, <String?>[null]);
+        expect(c.sentinelleAwaitingSecondPass, hasLength(1));
+        expect(c.sentinelleTrusted, hasLength(1));
+        // 2e sync de la session : delta seulement (curseur), rien de perdu.
+        await c.syncFromSupabase(
+          datasets: <SyncDataset>{SyncDataset.sentinelleAnalyzed},
+        );
+        await _settle();
+        expect(sync.analyzedSinces, hasLength(2));
+        expect(sync.analyzedSinces.last, isNotNull);
+        expect(c.sentinelleAwaitingSecondPass, hasLength(1));
+        expect(c.sentinelleTrusted, hasLength(1));
+      });
+    });
+
+    test('relecture R01 : une suggestion passée de « new » à « analysées » '
+        'panneau fermé ne reste pas en double dans « new » (gardée dans le '
+        'navigateur) ; une ligne du Scruteur (jamais démarrée) y reste',
+        () async {
+      await _run(() async {
+        final Suggestion r = _analyzed(
+          _ytUrl,
+          startedAt: DateTime.utc(2026, 10, 12, 8),
+        );
+        final Suggestion scruteur = _analyzed(
+          _webUrl,
+          confidence: 1.0,
+          source: Suggestion.sourceScruteur,
+        );
+        // Liste « new » d'une visite précédente : r encore sans analyse.
+        final Suggestion rAsNew = Suggestion(
+          id: r.id,
+          url: r.url,
+          status: SuggestionStatus.pending,
+          sharedAt: r.sharedAt,
+          author: r.author,
+          source: r.source,
+        );
+        _store()
+          ..ensureInitialized()
+          ..saveSuggestions(<Suggestion>[rAsNew, scruteur]);
+        final DateTime now = DateTime.now().toUtc();
+        for (final String n in <String>[
+          'sug_new',
+          'sug_analyzing',
+          'sug_analyzed',
+          'sug_scruteur',
+          'sug_gtc',
+        ]) {
+          _store().saveCursor(n, '2026-10-12T08:00:00.000Z', now);
+        }
+        final _FakeSync sync = _FakeSync()
+          ..serverAnalyzed = <Suggestion>[r, scruteur];
+        final StoreController c = await _production(sync);
+        expect(c.suggestions.map((Suggestion s) => s.id), contains(r.id));
+        await c.ensureDatasets(<SyncDataset>{SyncDataset.sentinelleAnalyzed});
+        await _settle();
+        expect(sync.analyzedSinces, <String?>[null]);
+        expect(
+          c.suggestions.map((Suggestion s) => s.id),
+          isNot(contains(r.id)),
+        );
+        expect(c.suggestions.map((Suggestion s) => s.id), contains(scruteur.id));
+        expect(
+          c.sentinelleSuggestions.map((Suggestion s) => s.id),
+          <String>[r.id, scruteur.id],
+        );
+        // Retrait aussi dans le navigateur (relu au prochain chargement).
+        expect(
+          _store().loadSuggestions().map((Suggestion s) => s.id),
+          isNot(contains(r.id)),
+        );
+      });
+    });
+  });
+
+  group('« Ajouter manuellement » depuis Sentinelle (correctif 12/10)', () {
+    test('la suggestion validée quitte « À vérifier » tout de suite et n\'y '
+        'revient pas après la resynchro (delta « analyzed » sans elle)', () async {
+      await _run(() async {
+        final Suggestion row = _analyzed(_webUrl, verdict: 'caution');
+        final Suggestion other = _analyzed(_webUrl, verdict: 'caution');
+        final _FakeSync sync = _FakeSync()
+          ..serverAnalyzed = <Suggestion>[row, other];
+        final StoreController c = await _production(sync);
+        await c.ensureDatasets(<SyncDataset>{SyncDataset.sentinelleAnalyzed});
+        await _settle();
+        expect(c.sentinelleToVerify, hasLength(2));
+        // Le serveur ne la renvoie plus (acceptée) : delta vide.
+        sync.analyzedDelta = <Suggestion>[];
+        final Future<void> done = c.acceptSuggestion(
+          suggestion: row,
+          gameId: _gameId,
+          category: ContentCategory.links,
+          titleAdmin: 'Titre neutre',
+        );
+        // Retrait OPTIMISTE, avant la réponse du serveur.
+        expect(c.sentinelleToVerify.map((Suggestion s) => s.id), [other.id]);
+        await done;
+        await _settle();
+        expect(sync.accepted, <String>[row.id]);
+        expect(c.sentinelleToVerify.map((Suggestion s) => s.id), [other.id]);
+        expect(c.sentinelleSuggestions.map((Suggestion s) => s.id), [
+          other.id,
+        ]);
+        expect(c.lastActionError, isNull);
+      });
+    });
+
+    test('échec du serveur : la suggestion revient dans « À vérifier », '
+        'message d\'erreur', () async {
+      await _run(() async {
+        final Suggestion row = _analyzed(_webUrl, verdict: 'caution');
+        final _FakeSync sync = _FakeSync()
+          ..serverAnalyzed = <Suggestion>[row]
+          ..acceptError = Exception('panne neutre');
+        final StoreController c = await _production(sync);
+        await c.ensureDatasets(<SyncDataset>{SyncDataset.sentinelleAnalyzed});
+        await _settle();
+        await c.acceptSuggestion(
+          suggestion: row,
+          gameId: _gameId,
+          category: ContentCategory.links,
+          titleAdmin: 'Titre neutre',
+        );
+        await _settle();
+        expect(c.sentinelleToVerify.map((Suggestion s) => s.id), [row.id]);
+        expect(c.lastActionError, contains('Suggestion non validée'));
+        // Le tombstone est tombé : une sync complète la garde affichée.
+        await c.syncFromSupabase(
+          datasets: <SyncDataset>{SyncDataset.sentinelleAnalyzed},
+          forceFull: true,
+        );
+        await _settle();
+        expect(c.sentinelleToVerify.map((Suggestion s) => s.id), [row.id]);
+      });
+    });
+
+    test('relecture F1 : une ligne du Scruteur (aussi dans « new ») validée '
+        'à la main quitte « À vérifier » mais RESTE dans les « Acceptées » '
+        'après une sync complète (aucun tombstone)', () async {
+      await _run(() async {
+        final Suggestion x = _analyzed(
+          _webUrl,
+          verdict: 'caution',
+          confidence: 0.5,
+          source: Suggestion.sourceScruteur,
+        );
+        final _FakeSync sync = _FakeSync()
+          ..serverNew = <Suggestion>[x]
+          ..serverAnalyzed = <Suggestion>[x];
+        final StoreController c = await _production(sync);
+        await c.ensureDatasets(<SyncDataset>{SyncDataset.sentinelleAnalyzed});
+        await _settle();
+        expect(c.suggestions.map((Suggestion s) => s.id), [x.id]);
+        expect(c.sentinelleToVerify.map((Suggestion s) => s.id), [x.id]);
+        // Côté serveur après la validation : acceptée, hors « analyzed ».
+        final Suggestion accepted = x.copyWith(
+          status: SuggestionStatus.accepted,
+        );
+        sync
+          ..serverNew = <Suggestion>[accepted]
+          ..newDelta = <Suggestion>[accepted]
+          ..serverAnalyzed = <Suggestion>[]
+          ..analyzedDelta = <Suggestion>[];
+        final Future<void> done = c.acceptSuggestion(
+          suggestion: x,
+          gameId: _gameId,
+          category: ContentCategory.links,
+          titleAdmin: 'Titre neutre',
+        );
+        expect(c.sentinelleToVerify, isEmpty);
+        await done;
+        await _settle();
+        await c.syncFromSupabase(forceFull: true);
+        await _settle();
+        expect(c.sentinelleToVerify, isEmpty);
+        final List<Suggestion> news = c.suggestions
+            .where((Suggestion s) => s.id == x.id)
+            .toList();
+        expect(news, hasLength(1));
+        expect(news.single.status, SuggestionStatus.accepted);
+      });
+    });
+  });
+
+  group('Polling « Analyses en cours » (relecture L6, F2)', () {
+    testWidgets('le tick (hors chaîne de sync) ne retire rien de « new »', (
+      WidgetTester tester,
+    ) async {
+      browserLocalStorage.clear();
+      {
+        final Suggestion x = _analyzed(_ytUrl);
+        final Suggestion xAsNew = Suggestion(
+          id: x.id,
+          url: x.url,
+          status: SuggestionStatus.pending,
+          sharedAt: x.sharedAt,
+          author: x.author,
+          source: x.source,
+        );
+        // Réponse du tick plus vieille qu'un « Débloquer » déjà fusionné :
+        // x encore « en analyse » (démarrée) alors qu'elle est revenue dans
+        // « new ».
+        final Suggestion xStarted = Suggestion(
+          id: x.id,
+          url: x.url,
+          status: SuggestionStatus.pending,
+          sharedAt: x.sharedAt,
+          author: x.author,
+          source: x.source,
+          sentinelleStartedAt: DateTime.utc(2026, 10, 12, 8),
+        );
+        final _FakeSync sync = _FakeSync()
+          ..serverNew = <Suggestion>[xAsNew]
+          ..serverAnalyzing = <Suggestion>[];
+        // Mise en place en temps RÉEL (synchros du contrôleur) ; seul le
+        // tick de 30 s passe par le temps simulé du test.
+        late StoreController c;
+        await tester.runAsync(
+          () => _run(() async {
+            c = await _production(sync);
+            await c.ensureDatasets(<SyncDataset>{SyncDataset.suggestionsNew});
+            await _settle();
+          }),
+        );
+        expect(c.suggestions.map((Suggestion s) => s.id), [x.id]);
+        sync.serverAnalyzing = <Suggestion>[xStarted];
+        c.startAnalyzingPolling();
+        await tester.pump(const Duration(seconds: 31));
+        await tester.pump();
+        expect(c.sentinelleAnalyzing.map((Suggestion s) => s.id), [x.id]);
+        expect(c.suggestions.map((Suggestion s) => s.id), [x.id]);
+        c.stopAnalyzingPolling();
+      }
+    });
+  });
 
   group('Bannis jamais mis en cache en production (SEC-P4b3-01)', () {
     test('cache hérité effacé au démarrage ; relecture gardée en mémoire '

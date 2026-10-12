@@ -83,8 +83,15 @@ class AdminDataTable extends StatelessWidget {
                         !(nonSortableColumns?.contains(c) ?? false);
                     final bool isActive = sortColumnIndex == idx;
 
+                    // Correctif (12/10/2026, signalé par le propriétaire) :
+                    // MÊME largeur que les cellules des lignes ([_kFlex]).
+                    // Avant, la colonne « Actions » de l'en-tête avait un
+                    // flex 0 (largeur de son seul libellé) alors que ses
+                    // cellules en avaient 1 : chaque titre était plus large
+                    // que sa colonne et le décalage grandissait vers la
+                    // droite.
                     return Expanded(
-                      flex: c == 'Actions' ? 0 : 1,
+                      flex: _kFlex,
                       child: headerOverride ??
                           (isSortable
                               ? _SortableHeader(
@@ -130,7 +137,7 @@ class AdminDataTable extends StatelessWidget {
                 child: Row(
                   children: rows[i]
                       .map((cell) => Expanded(
-                            flex: _flexFor(columns, cell),
+                            flex: _kFlex,
                             child: cell,
                           ))
                       .toList(),
@@ -143,11 +150,10 @@ class AdminDataTable extends StatelessWidget {
     );
   }
 
-  // Les colonnes d'actions (boutons) prennent une largeur fixe.
-  int _flexFor(List<String> columns, Widget cell) {
-    // Heuristique : les cellules contenant des boutons restent compactes.
-    return 1;
-  }
+  /// Part de largeur de CHAQUE colonne, identique dans l'en-tête et dans
+  /// les lignes (colonnes de même largeur : titres alignés sur leurs
+  /// cellules).
+  static const int _kFlex = 1;
 }
 
 /// En-tête de colonne triable : texte + icône de sens.

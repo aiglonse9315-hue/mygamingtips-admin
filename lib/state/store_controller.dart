@@ -22,6 +22,7 @@ import '../domain/models/suggestion.dart';
 import '../domain/models/sync_status.dart';
 import '../domain/moderation_actions.dart';
 import '../domain/plus_paging.dart';
+import '../domain/sentinelle_sections.dart';
 import '../domain/store_write_rules.dart';
 import '../domain/title_cleaning.dart';
 import '../domain/write_outcome.dart';
@@ -476,43 +477,37 @@ class StoreController extends ChangeNotifier {
   List<Suggestion> get sentinelleAnalyzing =>
       List<Suggestion>.unmodifiable(_sentinelleAnalyzing);
 
-  /// Suggestions Sentinelle "trusted" (implémentables en 1 clic).
-  ///
-  /// **Seuil de confiance conditionnel** :
-  /// - FR/EN (langues natives) → seuil ≥ 0.90 (comportement historique).
-  /// - Autres langues du pack 12 → seuil ≥ 0.95 (plus strict, car l'IA est
-  ///   moins fiable hors FR/EN et l'utilisateur a demandé > 95% pour les
-  ///   nouvelles langues).
-  /// - Langue inconnue/absente → fallback conservateur 0.95.
-  List<Suggestion> get sentinelleTrusted => _sentinelleSuggestions
-      .where(
-        (s) =>
-            s.aiRecommendation != null &&
-            s.aiRecommendation!.verdict == AiVerdict.recommended &&
-            s.aiRecommendation!.confidence >=
-                _trustThresholdFor(s.aiRecommendation!.youtubeLanguage),
-      )
-      .toList();
-
-  /// Suggestions Sentinelle "à vérifier" (tout ce qui n'est pas trusted).
-  List<Suggestion> get sentinelleToVerify => _sentinelleSuggestions
-      .where(
-        (s) =>
-            s.aiRecommendation == null ||
-            s.aiRecommendation!.verdict != AiVerdict.recommended ||
-            s.aiRecommendation!.confidence <
-                _trustThresholdFor(s.aiRecommendation?.youtubeLanguage),
-      )
-      .toList();
-
-  /// Seuil de confiance requis pour qu'une suggestion soit "trusted".
-  /// FR/EN = 0.90 (langues natives), autres = 0.95 (stricte).
-  static double _trustThresholdFor(String? youtubeLanguage) {
-    const nativeCodes = {'FR', 'EN'};
-    final lang = youtubeLanguage?.toUpperCase().trim();
-    if (lang == null || lang.isEmpty) return 0.95; // inconnu = strict
-    return nativeCodes.contains(lang) ? 0.90 : 0.95;
+  /// P5 (L6) — sections du menu Sentinelle ([SentinelleSections] : règle
+  /// PURE de `domain/sentinelle_sections.dart`), calculées UNE fois par
+  /// liste : [_sentinelleSuggestions] est toujours RÉASSIGNÉE (jamais
+  /// modifiée en place), son identité suffit à invalider le cache.
+  SentinelleSections get _sentinelleSections {
+    final SentinelleSections? cached = _sectionsCache;
+    if (cached != null && identical(_sectionsSource, _sentinelleSuggestions)) {
+      return cached;
+    }
+    _sectionsSource = _sentinelleSuggestions;
+    return _sectionsCache = SentinelleSections.of(_sentinelleSuggestions);
   }
+
+  List<Suggestion>? _sectionsSource;
+  SentinelleSections? _sectionsCache;
+
+  /// « 99% sûr — Implémentable en 1 clic » : recommandé de confiance
+  /// > 0,95, toutes plateformes et langues (L6, 12/10 — avant : ≥ 0,90 en
+  /// FR / EN, ≥ 0,95 sinon).
+  List<Suggestion> get sentinelleTrusted => _sentinelleSections.sure;
+
+  /// « Attente 2ème passe » (L6) : candidats de la 2e passe de Sentinelle
+  /// (vidéo YouTube recommandée ≤ 0,95, toutes langues) — mêmes
+  /// possibilités que « 99% sûr » (décision du propriétaire du 12/10) :
+  /// « 1 clic », sélection, « Tout valider ».
+  List<Suggestion> get sentinelleAwaitingSecondPass =>
+      _sentinelleSections.awaitingSecondPass;
+
+  /// « À vérifier » : tout le reste ; les « astuces courtes sans parole »
+  /// de la 2e passe d'abord.
+  List<Suggestion> get sentinelleToVerify => _sentinelleSections.toVerify;
 
   // --- Scruteur (sites web de guides) ---
   // Contrairement à Sentinelle, le seuil est UNIFORME 0.95 (toutes langues).
@@ -1302,6 +1297,62 @@ class StoreController extends ChangeNotifier {
   int get pendingSuggestionsCount =>
       _suggestions.where((s) => s.status == SuggestionStatus.pending).length;
 
+  /// Retire la suggestion [id] des listes tenues en MÉMOIRE (analysées par
+  /// Sentinelle, Scruteur, jeux à créer) — chaque liste RÉASSIGNÉE, jamais
+  /// modifiée en place (le cache des sections de Sentinelle en dépend) — et
+  /// pose un tombstone si elle figurait dans l'une d'elles (une sync en vol
+  /// ne la ramène pas). Rend les lignes retirées, pour [_restoreToMemoryModes].
+  ///
+  /// Relecture (F1) : PAS de tombstone pour une suggestion aussi présente
+  /// dans « new » (ligne du Scruteur ou d'un flux, jamais démarrée : dans
+  /// « new » ET « analysées » sur le serveur) — le tombstone l'aurait filtrée
+  /// de « new » et la sync complète suivante l'aurait fait disparaître des
+  /// « Acceptées » ; le delta de « new » qui suit la validation (acceptée)
+  /// la retire des listes en mémoire.
+  _MemoryModeRows _takeFromMemoryModes(String id) {
+    bool has(Suggestion s) => s.id == id;
+    bool hasNot(Suggestion s) => s.id != id;
+    final List<Suggestion> analyzed = _sentinelleSuggestions.where(has).toList();
+    final List<Suggestion> scruteur = _scruteurSuggestions.where(has).toList();
+    final List<Suggestion> gamesToCreate = _gamesToCreate.where(has).toList();
+    final _MemoryModeRows taken = (
+      analyzed: analyzed,
+      scruteur: scruteur,
+      gamesToCreate: gamesToCreate,
+      tombstoned:
+          (analyzed.isNotEmpty ||
+              scruteur.isNotEmpty ||
+              gamesToCreate.isNotEmpty) &&
+          !_suggestions.any(has),
+    );
+    if (taken.analyzed.isNotEmpty) {
+      _sentinelleSuggestions = _sentinelleSuggestions.where(hasNot).toList();
+    }
+    if (taken.scruteur.isNotEmpty) {
+      _scruteurSuggestions = _scruteurSuggestions.where(hasNot).toList();
+    }
+    if (taken.gamesToCreate.isNotEmpty) {
+      _gamesToCreate = _gamesToCreate.where(hasNot).toList();
+    }
+    if (taken.tombstoned) _pendingRemovalIds.add(id);
+    return taken;
+  }
+
+  /// Rollback de [_takeFromMemoryModes] : les lignes retirées reviennent en
+  /// fin de leur liste (comme les autres rollbacks) et le tombstone tombe.
+  void _restoreToMemoryModes(String id, _MemoryModeRows taken) {
+    if (taken.tombstoned) _pendingRemovalIds.remove(id);
+    if (taken.analyzed.isNotEmpty) {
+      _sentinelleSuggestions = [..._sentinelleSuggestions, ...taken.analyzed];
+    }
+    if (taken.scruteur.isNotEmpty) {
+      _scruteurSuggestions = [..._scruteurSuggestions, ...taken.scruteur];
+    }
+    if (taken.gamesToCreate.isNotEmpty) {
+      _gamesToCreate = [..._gamesToCreate, ...taken.gamesToCreate];
+    }
+  }
+
   /// Valide une suggestion : crée un contenu validé et marque la suggestion
   /// acceptée. C'est le cœur du workflow de modération.
   ///
@@ -1331,10 +1382,20 @@ class StoreController extends ChangeNotifier {
         )
         .toList();
     _store.saveSuggestions(_suggestions);
+    // Correctif (12/10/2026) : validée depuis le menu Sentinelle (« À
+    // vérifier » → « Ajouter manuellement »), la suggestion quitte aussi les
+    // listes tenues en mémoire (analysées, Scruteur, jeux à créer) —
+    // retrait optimiste + tombstone, comme [acceptOneClick]. Avant, elle
+    // restait affichée jusqu'à la prochaine sync complète : le delta de ces
+    // modes ne renvoie que les suggestions encore en attente.
+    final _MemoryModeRows taken = _takeFromMemoryModes(suggestion.id);
     notifyListeners();
 
     // Si l'ID n'est pas un vrai UUID (donnée de démo locale), on s'arrête.
-    if (sync == null || !_isUuid(suggestion.id)) return;
+    if (sync == null || !_isUuid(suggestion.id)) {
+      if (taken.tombstoned) _pendingRemovalIds.remove(suggestion.id);
+      return;
+    }
     try {
       await sync!.acceptSuggestion(
         suggestionId: suggestion.id,
@@ -1383,6 +1444,8 @@ class StoreController extends ChangeNotifier {
           )
           .toList();
       _store.saveSuggestions(_suggestions);
+      // … et revient dans les listes en mémoire qu'elle a quittées.
+      _restoreToMemoryModes(suggestion.id, taken);
       if (_isAuthError(e)) {
         onAuthError?.call();
         return;
@@ -3289,6 +3352,20 @@ class StoreController extends ChangeNotifier {
     SyncDataset.gamesToCreate,
   };
 
+  /// L6 (correctif, 12/10) : mode de suggestions dont la liste vit en
+  /// MÉMOIRE seulement (tous sauf « new », seul gardé dans le navigateur) et
+  /// pas encore chargé dans cette session. Son curseur, lui, est gardé dans
+  /// le navigateur : après un rechargement de la page (curseur de moins de
+  /// 24 h), la 1re sync fusionnait le seul delta dans une liste VIDE — les
+  /// sections de Sentinelle (« 99% sûr », « Attente 2ème passe », « À
+  /// vérifier »), du Scruteur et des jeux à créer ne montraient que les
+  /// lignes modifiées depuis la dernière visite. Une telle 1re sync est
+  /// désormais complète.
+  bool _memoryOnlyModeNotLoaded(SyncDataset dataset) =>
+      suggestionDatasets.contains(dataset) &&
+      dataset != SyncDataset.suggestionsNew &&
+      !_loadedDatasets.contains(dataset);
+
   /// Élargit [wanted] aux 5 modes de suggestions si l'un d'eux est demandé
   /// (correctif I-001 — voir [suggestionDatasets]).
   static Set<SyncDataset> _expandSuggestionModes(Set<SyncDataset> wanted) {
@@ -3503,7 +3580,8 @@ class StoreController extends ChangeNotifier {
           !forceFull &&
           wanted.every(
             (SyncDataset d) =>
-                !_cursorNames.containsKey(d) || _validCursorFor(d) != null,
+                !_cursorNames.containsKey(d) ||
+                (_validCursorFor(d) != null && !_memoryOnlyModeNotLoaded(d)),
           );
       final Duration budget = incrementalOnly
           ? const Duration(seconds: 45)
@@ -4228,6 +4306,7 @@ class StoreController extends ChangeNotifier {
         // Ensemble jetable : la purge des tombstones reste réservée aux
         // passes complètes des 5 modes (voir _doSyncFromSupabase).
         fullModeSyncs: <SyncDataset>{},
+        dropStartedFromNew: false,
       );
       // Succès : remise à zéro des compteurs d'échecs consécutifs et
       // réarmement du flag « déjà signalé ».
@@ -4661,6 +4740,9 @@ class StoreController extends ChangeNotifier {
   /// s'allongerait indéfiniment). Coût nul : Sentinelle analyse un contenu
   /// à la fois, le dataset tient en quelques lignes — l'économie du curseur
   /// est sans objet ici.
+  ///
+  /// L6 (correctif) : voir [_memoryOnlyModeNotLoaded] — la 1re sync d'un
+  /// mode tenu en mémoire seulement est complète.
   Future<void> _syncSuggestionMode(
     SyncDataset dataset,
     Future<({List<Suggestion> items, DateTime? maxUpdatedAt})> Function({
@@ -4671,10 +4753,13 @@ class StoreController extends ChangeNotifier {
     fetcher, {
     required bool forceFull,
     required Set<SyncDataset> fullModeSyncs,
+    bool dropStartedFromNew = true,
   }) async {
     const int pageSize = 500;
     final bool fullReplace =
-        forceFull || dataset == SyncDataset.sentinelleAnalyzing;
+        forceFull ||
+        dataset == SyncDataset.sentinelleAnalyzing ||
+        _memoryOnlyModeNotLoaded(dataset);
     final String? cursor = fullReplace ? null : _validCursorFor(dataset);
     final r = await _fetchPaged<Suggestion>(
       (p) => fetcher(page: p, pageSize: pageSize, since: cursor),
@@ -4696,6 +4781,13 @@ class StoreController extends ChangeNotifier {
       _mergeSuggestionsIncremental(dataset, items);
     } else {
       _setSuggestionModeList(dataset, items);
+      // Relecture (F2) : seulement dans les passes de sync, enchaînées et
+      // postérieures aux actions — jamais sur le tick du polling « Analyses
+      // en cours » (hors chaîne : sa réponse peut être plus vieille qu'un
+      // « Débloquer » déjà fusionné dans « new »).
+      if (dropStartedFromNew && dataset != SyncDataset.suggestionsNew) {
+        _dropStartedFromNew(items);
+      }
       fullModeSyncs.add(dataset);
     }
     _saveCursorFor(dataset, r.maxUpdatedAt);
@@ -4746,6 +4838,29 @@ class StoreController extends ChangeNotifier {
       byId[s.id] = s;
     }
     _setSuggestionModeList(dataset, byId.values.toList());
+  }
+
+  /// L6 (relecture R01) : après une sync COMPLÈTE d'un mode autre que
+  /// « new », retire de la liste « new » (gardée dans le navigateur) les
+  /// suggestions reçues dont l'analyse de Sentinelle a démarré — le serveur
+  /// ne range dans « new » que `sentinelle_started_at IS NULL`. Sans cela,
+  /// une suggestion passée de « new » à « analysées » pendant que le
+  /// panneau était fermé restait en double dans « new » après un
+  /// rechargement : la 1re sync des modes en mémoire est complète (sans
+  /// fusion croisée) et le delta de « new » ne la contient plus. Les lignes
+  /// du Scruteur (jamais démarrées) restent dans les deux modes, comme sur
+  /// le serveur.
+  void _dropStartedFromNew(List<Suggestion> incoming) {
+    final Set<String> started = <String>{
+      for (final Suggestion s in incoming)
+        if (s.sentinelleStartedAt != null) s.id,
+    };
+    if (started.isEmpty || !_suggestions.any((s) => started.contains(s.id))) {
+      return;
+    }
+    _suggestions = _suggestions
+        .where((Suggestion s) => !started.contains(s.id))
+        .toList();
   }
 
   /// Liste locale d'un mode de suggestions.
@@ -4919,3 +5034,12 @@ class KnownAliasesSyncReport {
   /// (alias ignorés — ex. jeu pas encore ajouté au catalogue).
   final List<String> orphanCanonicals;
 }
+
+/// Lignes retirées des listes de suggestions tenues en mémoire par
+/// `_takeFromMemoryModes` (rollback de `acceptSuggestion`).
+typedef _MemoryModeRows = ({
+  List<Suggestion> analyzed,
+  List<Suggestion> scruteur,
+  List<Suggestion> gamesToCreate,
+  bool tombstoned,
+});

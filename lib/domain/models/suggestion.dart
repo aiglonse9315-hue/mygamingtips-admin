@@ -174,6 +174,90 @@ class AiAliasCandidate {
   Map<String, dynamic> toJson() => {'alias': alias, 'game': game};
 }
 
+/// P5 (lot L6) — clé `revue_p5` de la recommandation : état de la 2e passe
+/// de Sentinelle (texte de la vidéo, Whisper), écrite par Vision2 à partir
+/// de P10 (`p5RevueJson` du cœur : `etat`, `version`, `at`, `source`,
+/// `motif`, `langue_origine`, `langues_disponibles`, `avant {verdict,
+/// confiance}`). Lecture TOLÉRANTE : une valeur d'un autre type est ignorée.
+/// Aucun texte ni extrait de la vidéo n'y figure.
+@immutable
+class AiRevueP5 {
+  /// États de la FILE de la 2e passe (contenu pas encore jugé) — les autres
+  /// états (`analyse`, `sans_parole`, `sans_parole_court`,
+  /// `audio_indisponible`, `texte_inutilisable`, `trop_long`,
+  /// `echec_outil`, `retire`) sont des états de fin (`P5Etat` du cœur).
+  static const Set<String> pendingStates = {'a_faire', 'audio', 'transcrit'};
+
+  /// Motif « astuce courte sans parole (titre et vues pertinents) » : ces
+  /// contenus sont montrés EN PREMIER dans « À vérifier » (décision du
+  /// propriétaire du 12/10, option A).
+  static const String motifShortTip = 'astuce_courte';
+
+  final String? etat;
+  final String? motif;
+  final String? version;
+  final String? at;
+  final String? source;
+  final String? langueOrigine;
+  final List<String> languesDisponibles;
+  final String? avantVerdict;
+  final double? avantConfiance;
+
+  const AiRevueP5({
+    this.etat,
+    this.motif,
+    this.version,
+    this.at,
+    this.source,
+    this.langueOrigine,
+    this.languesDisponibles = const <String>[],
+    this.avantVerdict,
+    this.avantConfiance,
+  });
+
+  /// Lecture défensive de la clé `revue_p5` ; null si elle n'est pas un
+  /// objet.
+  static AiRevueP5? tryParse(Object? raw) {
+    if (raw is! Map) return null;
+    String? s(Object? v) => v is String && v.isNotEmpty ? v : null;
+    final Object? avant = raw['avant'];
+    final Object? langues = raw['langues_disponibles'];
+    final Object? confiance = avant is Map ? avant['confiance'] : null;
+    return AiRevueP5(
+      etat: s(raw['etat']),
+      motif: s(raw['motif']),
+      version: s(raw['version']),
+      at: s(raw['at']),
+      source: s(raw['source']),
+      langueOrigine: s(raw['langue_origine']),
+      languesDisponibles: langues is List
+          ? List<String>.unmodifiable(langues.whereType<String>())
+          : const <String>[],
+      avantVerdict: avant is Map ? s(avant['verdict']) : null,
+      avantConfiance: confiance is num ? confiance.toDouble() : null,
+    );
+  }
+
+  /// Le contenu est dans la file de la 2e passe (pas encore jugé).
+  bool get isPending => etat != null && pendingStates.contains(etat);
+
+  /// Issue « astuce courte sans parole » de la 2e passe.
+  bool get isShortTip => motif == motifShortTip;
+
+  Map<String, dynamic> toJson() => {
+    'etat': ?etat,
+    'motif': ?motif,
+    'version': ?version,
+    'at': ?at,
+    'source': ?source,
+    'langue_origine': ?langueOrigine,
+    if (languesDisponibles.isNotEmpty)
+      'langues_disponibles': languesDisponibles,
+    if (avantVerdict != null || avantConfiance != null)
+      'avant': {'verdict': ?avantVerdict, 'confiance': ?avantConfiance},
+  };
+}
+
 /// Recommandation de l'IA Sentinelle sur une suggestion.
 ///
 /// L'IA analyse l'URL, la pertinence gaming, le contenu inapproprié, et les
@@ -197,12 +281,20 @@ class AiRecommendation {
   /// jeu depuis le tableau « Jeux à créer ».
   final bool needsGameCreation;
 
+  /// P5 (L6) — clé `game_unverified` : jeu proposé non vérifié dans le
+  /// catalogue (« jeu fantôme » des passes s2-4 / s2-5). Un tel contenu
+  /// n'entre jamais dans la 2e passe (`p5CandidateClassOf` du cœur) : il
+  /// reste dans « À vérifier ».
+  final bool gameUnverified;
+
   /// Code langue YouTube détecté par Sentinelle (ex : 'FR', 'EN', 'JA').
-  /// Utilisé pour appliquer un seuil de confiance plus strict (0.95) aux
-  /// langues non natives (tout sauf FR/EN), conformément à la demande
-  /// utilisateur : seules les suggestions > 95% sont auto-acceptées pour
-  /// les autres langues du pack 12.
+  /// Depuis L6 (12/10), la langue ne décide plus de la section du panneau
+  /// (fin des seuils 0,90 FR / EN et 0,95) : elle sert à `video_language`.
   final String? youtubeLanguage;
+
+  /// P5 (L6) — état de la 2e passe (clé `revue_p5`, écrite à partir de
+  /// P10) ; null quand elle est absente ou illisible.
+  final AiRevueP5? revueP5;
 
   /// D3.2 — alias candidat proposé par l'assistant de rattachement borné
   /// (clé `alias_candidate` du jsonb ai_recommendation, fusionné par l'EF —
@@ -247,7 +339,9 @@ class AiRecommendation {
     this.youtubePublishedAt,
     this.analyzedAt,
     this.needsGameCreation = false,
+    this.gameUnverified = false,
     this.youtubeLanguage,
+    this.revueP5,
     this.aliasCandidate,
     this.targetGame,
     this.searchLanguage,
@@ -290,11 +384,14 @@ class AiRecommendation {
           DateTime.tryParse(json['youtube_published_at'] as String? ?? ''),
       analyzedAt: DateTime.tryParse(json['analyzed_at'] as String? ?? ''),
       needsGameCreation: json['needs_game_creation'] as bool? ?? false,
+      // L6 : seul `true` compte (comme `p5CandidateClassOf` du cœur).
+      gameUnverified: json['game_unverified'] == true,
       // Langue détectée : Sentinelle utilise 'youtube_language', le Scruteur
       // utilise 'detected_language'. On lit les deux (youtube prioritaire)
-      // pour qu'un même champ serve au seuil de confiance et à video_language.
+      // pour qu'un même champ serve à video_language.
       youtubeLanguage:
           (json['youtube_language'] as String?) ?? (json['detected_language'] as String?),
+      revueP5: AiRevueP5.tryParse(json['revue_p5']),
       // D3.2 — alias candidat (rattachement assisté) : lu depuis la clé
       // `alias_candidate` du jsonb. Entrées vides → null (défensif).
       aliasCandidate: _parseAliasCandidate(json['alias_candidate']),
@@ -342,7 +439,9 @@ class AiRecommendation {
           'youtube_published_at': youtubePublishedAt!.toIso8601String(),
         if (analyzedAt != null) 'analyzed_at': analyzedAt!.toIso8601String(),
         if (needsGameCreation) 'needs_game_creation': true,
+        if (gameUnverified) 'game_unverified': true,
         if (youtubeLanguage != null) 'youtube_language': youtubeLanguage,
+        if (revueP5 != null) 'revue_p5': revueP5!.toJson(),
         if (aliasCandidate != null) 'alias_candidate': aliasCandidate!.toJson(),
         'target_game': ?targetGame,
         'search_language': ?searchLanguage,

@@ -7,12 +7,12 @@
   },
 
   "supabase_edge_function": {
-    "_comment": "Déployer une Edge Function (Deno) nommée 'admin-login' qui vérifie les identifiants et renvoie un jeton. Voir admin_login_function.ts fourni.",
+    "_comment": "Déployer une Edge Function (Deno) nommée 'admin-login' qui vérifie les identifiants et renvoie un jeton. Source : supabase/functions/admin-login/ du dépôt principal (index.ts, login_body.ts, rate_limit.ts) ; l'ancienne copie admin/supabase/admin_login_function.ts est retirée (04/10/2026).",
     "name": "admin-login",
     "method": "POST",
     "expected_body": { "username": "string", "password": "string" },
     "response_success": { "token": "jwt_court_terme_signe_serveur" },
-    "response_failure": "HTTP 401"
+    "response_failure": "HTTP 401 (identifiants), 429 (trop de tentatives), 503 (service indisponible)"
   },
 
   "credentials_storage": {
