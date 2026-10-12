@@ -104,8 +104,11 @@ class _AdminShellState extends State<AdminShell> {
       // Connexion du callback de logout auto sur 401 (token expiré).
       store.onAuthError = _onAuthError;
       // Connexion du sliding session : rafraîchit le token après chaque écriture.
+      // Après une déconnexion (bouton ou 401), le fresh_token d'une réponse
+      // encore en vol est ignoré : il ne doit pas reconnecter l'interface.
       store.onTokenRefreshed = (freshToken) {
-        context.read<AuthController>().refreshToken(freshToken);
+        final AuthController auth = context.read<AuthController>();
+        if (auth.isAuthenticated) auth.refreshToken(freshToken);
       };
     });
   }

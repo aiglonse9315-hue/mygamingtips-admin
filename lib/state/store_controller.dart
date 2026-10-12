@@ -309,6 +309,11 @@ class StoreController extends ChangeNotifier {
   /// Dernier token admin connu (pour éviter les resync inutiles).
   String? _lastToken;
 
+  /// Numéro de session : +1 à chaque connexion ([updateAdminToken] ; pas à
+  /// une rotation fresh_token). Lu par [_syncPass] pour ignorer un refus qui
+  /// concerne une session précédente (passe partie avant la connexion).
+  int _sessionEpoch = 0;
+
   /// Claims de session décodés du JWT admin courant (payload base64url).
   /// Relus à CHAQUE [updateAdminToken] — donc aussi après chaque fresh_token
   /// de la sliding session (qui porte les mêmes claims username/is_owner).
@@ -347,9 +352,33 @@ class StoreController extends ChangeNotifier {
     if (user is String && user.isNotEmpty) _currentUsername = user;
   }
 
-  /// Callback invoqué quand une écriture reçoit un 401 (token expiré/invalide).
-  /// Le `admin_shell` s'y branche pour forcer le logout automatique.
-  void Function()? onAuthError;
+  /// Session refusée (401, ou jeton absent / expiré : [SupabaseSync]
+  /// n'envoie rien) : point d'entrée UNIQUE de tous les appelants
+  /// (contrôleur, écrans, dialogues), qui appellent `onAuthError?.call()`.
+  /// Le getter rend toujours [_endSession] ; le setter branche le
+  /// `admin_shell` (déconnexion de l'interface), prévenu une seule fois.
+  void Function()? get onAuthError => _endSession;
+  set onAuthError(void Function()? handler) => _authErrorHandler = handler;
+  void Function()? _authErrorHandler;
+
+  /// Fin de session (journal du 12/10/2026 : un onglet masqué interrogeait
+  /// encore `suggestions/list` 45 min après l'expiration, car seul le
+  /// démontage de l'écran Sentinelle, qui attend une image, arrêtait le
+  /// rafraîchissement). Arrête les rafraîchissements périodiques et oublie
+  /// le jeton dans [sync] SANS attendre l'écran ; le shell n'est prévenu
+  /// que s'il restait un jeton : une seule fois, et jamais au démarrage sur
+  /// l'écran de connexion (jeton vide). Un nouveau jeton
+  /// ([updateAdminToken]) réarme.
+  void _endSession() {
+    stopAnalyzingPolling();
+    _stopSyncStatusPolling();
+    final SupabaseSync? s = sync;
+    if (s != null) {
+      if (s.adminToken.isEmpty) return; // déjà prévenu, ou jamais connecté
+      s.setAdminToken('');
+    }
+    _authErrorHandler?.call();
+  }
 
   /// Callback invoqué quand l'Edge Function renvoie un `fresh_token`
   /// (sliding session). Le `admin_shell` s'y branche pour rafraîchir le token.
@@ -2715,14 +2744,24 @@ class StoreController extends ChangeNotifier {
   /// session (best-effort).
   static bool _remoteAliasesTried = false;
 
+  /// Tests seulement : rend l'unique tentative ci-dessus (indicateur
+  /// partagé par tous les contrôleurs d'un même fichier de tests).
+  @visibleForTesting
+  static void resetRemoteAliasesTriedForTest() => _remoteAliasesTried = false;
+
   /// §123 — charge les alias de la base (`game_aliases`, UNE requête
   /// `games/aliases/list-all`) dans la couche distante du nettoyage des
   /// titres ([TitleCleaning.setRemoteAliases]) : les titres recalculés par
   /// le panneau retirent alors les mêmes alias que Sentinelle (« GTA 5 »).
   /// Fire-and-forget à la fin du sync du catalogue ; un échec laisse les
   /// seuls alias codés en dur (comportement antérieur).
+  ///
+  /// Route admin : sans jeton utilisable, rien n'est tenté (avant, le 401 du
+  /// démarrage sur l'écran de connexion épuisait l'unique tentative) ;
+  /// relancé à la connexion ([updateAdminToken]).
   Future<void> _loadRemoteAliasesForTitles() async {
     if (_remoteAliasesTried || sync == null) return;
+    if (!sync!.hasUsableAdminToken) return;
     _remoteAliasesTried = true;
     try {
       final all = await sync!.fetchGameAliasesAll();
@@ -3560,6 +3599,12 @@ class StoreController extends ChangeNotifier {
     // Armé après le calcul du budget ; reste null si le prologue lève avant
     // (le finally doit alors simplement sauter le cancel).
     Timer? watchdog;
+    // Session au départ de la passe : un refus (401, ou jeton absent) ne
+    // remonte qu'à la FIN de la passe (Future.wait attend les lectures
+    // PostgREST) ; si une connexion a eu lieu entre-temps (session restaurée
+    // pendant la synchro du démarrage, reconnexion), il concerne l'ancienne
+    // session et ne doit pas fermer la nouvelle.
+    final int sessionEpoch = _sessionEpoch;
     try {
       if (skipAlreadyLoaded) {
         // « Skip si chargé ET frais » : un dataset périmé (> 2 min) reste dans
@@ -3628,8 +3673,9 @@ class StoreController extends ChangeNotifier {
     } catch (e) {
       if (_isAuthError(e)) {
         // 401 détecté pendant une lecture service_role (suggestions) → même
-        // traitement que pour les écritures : logout forcé.
-        onAuthError?.call();
+        // traitement que pour les écritures : logout forcé — sauf si la
+        // session a changé depuis le départ de la passe (voir plus haut).
+        if (sessionEpoch == _sessionEpoch) onAuthError?.call();
       } else {
         // Timeout du budget global, coupure réseau OU exception du prologue
         // (curseur/localStorage) → erreur visible ; badge hors-ligne si
@@ -4321,7 +4367,8 @@ class StoreController extends ChangeNotifier {
         notifyListeners();
       }
     } on AdminAuthException {
-      // 401 pendant une lecture service_role → logout forcé (comme partout).
+      // 401 (ou jeton expiré) → logout forcé, comme partout, et ARRÊT de ce
+      // polling ([_endSession]) sans attendre le démontage de l'écran.
       onAuthError?.call();
     } catch (e) {
       if (_isNetworkError(e)) {
@@ -4966,11 +5013,14 @@ class StoreController extends ChangeNotifier {
       // dashboard ; les menus lourds (Sentinelle, Scruteur…) déclenchent
       // le leur à l'ouverture via ensureDatasets.
       if (!hadToken) {
+        _sessionEpoch++; // nouvelle session
         ensureDatasets(dashboardDatasets);
         // Badge de sync totale (I-002) : une demande « chaude » sans ack
         // d'une session précédente doit être visible dès l'ouverture du
         // panneau — one-shot best-effort, ne bloque pas le login.
         unawaited(_initSyncStatusBadge());
+        // Alias de la base : non tentés au démarrage sans jeton.
+        unawaited(_loadRemoteAliasesForTitles());
       }
     } else {
       sync!.setAdminToken('');

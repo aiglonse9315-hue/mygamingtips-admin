@@ -32,6 +32,8 @@ import 'package:mgt_admin/domain/moderation_actions.dart';
 import 'package:mgt_admin/domain/write_outcome.dart';
 import 'package:mgt_admin/state/store_controller.dart';
 
+import 'support/http_fixtures.dart' show testJwt;
+
 const String _uuid = '11111111-2222-4333-8444-555555555555';
 const String _gameId = '22222222-3333-4444-8555-666666666666';
 const String _kBannedKey = 'mgt_admin_banned';
@@ -68,7 +70,7 @@ class _FakeSync extends SupabaseSync {
         supabaseUrl: 'https://exemple.invalid',
         anonKey: 'anon',
         catalogEndpoint: 'https://exemple.invalid/functions/v1/admin-catalog',
-        adminToken: 'jeton',
+        adminToken: testJwt(),
         retryDelays: const <Duration>[Duration.zero, Duration.zero],
       );
 
@@ -672,7 +674,7 @@ void main() {
         final _FakeSync sync = _FakeSync()
           ..serverBanned = <BannedUser>[_serverBanned()];
         final StoreController c = await _production(sync);
-        c.updateAdminToken('a.b.c'); // connexion : datasets du tableau de bord
+        c.updateAdminToken(testJwt()); // connexion : datasets du tableau de bord
         await _settle();
         expect(c.bannedEntry(_uuid), isNotNull);
         c.updateAdminToken(null);
@@ -681,7 +683,7 @@ void main() {
         // Reconnexion dans la même page, moins de 2 min après : la liste
         // vidée doit être RELUE (essai local du 28/09/2026 : elle restait
         // vide car le jeu de données passait encore pour « frais »).
-        c.updateAdminToken('d.e.f');
+        c.updateAdminToken(testJwt());
         await _settle();
         expect(c.bannedEntry(_uuid), isNotNull);
       });

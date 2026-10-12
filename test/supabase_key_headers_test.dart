@@ -27,11 +27,15 @@ const Map<String, String> _cles = <String, String>{
   'ancienne clé anon': _legacyAnon,
 };
 
+/// Jeton admin de test (JWT à échéance future : sans lui, aucun appel à
+/// admin-catalog ne part).
+final String _jeton = testJwt();
+
 SupabaseSync _sync(String key) => SupabaseSync(
   supabaseUrl: 'https://exemple.invalid',
   anonKey: key,
   catalogEndpoint: 'https://exemple.invalid/functions/v1/admin-catalog',
-  adminToken: 'jeton',
+  adminToken: _jeton,
   retryDelays: const [Duration.zero, Duration.zero],
 );
 
@@ -145,7 +149,7 @@ void main() {
         await appel((SupabaseSync s) => s.deleteGame('g1'));
         final http.Request r = seen.single;
         expect(isRoute(r, 'games/delete'), isTrue);
-        expect(r.headers['X-Admin-Token'], 'jeton');
+        expect(r.headers['X-Admin-Token'], _jeton);
         expect(r.headers['Content-Type'], startsWith('application/json'));
         _expectCleDansApikeySeulement(r, cle.value);
       });

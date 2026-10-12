@@ -18,7 +18,7 @@ SupabaseSync fakeSync() => SupabaseSync(
   supabaseUrl: 'https://exemple.invalid',
   anonKey: 'anon',
   catalogEndpoint: 'https://exemple.invalid/functions/v1/admin-catalog',
-  adminToken: 'jeton',
+  adminToken: testJwt(),
   retryDelays: const [Duration.zero, Duration.zero],
 );
 

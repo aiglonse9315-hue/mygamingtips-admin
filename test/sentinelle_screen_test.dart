@@ -29,6 +29,8 @@ import 'package:mgt_admin/state/store_controller.dart';
 import 'package:mgt_admin/ui/screens/sentinelle_screen.dart';
 import 'package:provider/provider.dart';
 
+import 'support/http_fixtures.dart' show testJwt;
+
 const String _gameId = '22222222-3333-4444-8555-666666666666';
 
 class _Sync extends SupabaseSync {
@@ -37,7 +39,7 @@ class _Sync extends SupabaseSync {
         supabaseUrl: 'https://exemple.invalid',
         anonKey: 'anon',
         catalogEndpoint: 'https://exemple.invalid/functions/v1/admin-catalog',
-        adminToken: 'jeton',
+        adminToken: testJwt(),
         retryDelays: const <Duration>[Duration.zero, Duration.zero],
       );
 

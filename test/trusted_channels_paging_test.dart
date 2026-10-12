@@ -415,7 +415,7 @@ void main() {
       supabaseUrl: 'https://exemple.invalid',
       anonKey: 'anon',
       catalogEndpoint: 'https://exemple.invalid/functions/v1/admin-catalog',
-      adminToken: 'jeton',
+      adminToken: testJwt(),
     );
 
     test('fetchTrustedChannelsPage : route, corps page/games_per_page/search '

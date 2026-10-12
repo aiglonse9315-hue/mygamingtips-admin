@@ -187,6 +187,12 @@ class SupabaseSync {
   /// Met à jour le jeton admin (appelé après un login réussi).
   void setAdminToken(String token) => adminToken = token;
 
+  /// Jeton admin utilisable : JWT lisible dont l'`exp` est dans le futur
+  /// ([isJwtUsable]). Sans lui, aucun appel à admin-catalog ne part (journal
+  /// du 12/10/2026 : 401 en série d'un vieil onglet, appels du démarrage
+  /// avant la connexion).
+  bool get hasUsableAdminToken => isJwtUsable(adminToken);
+
   // ===========================================================================
   // RETRY ANTI MICRO-COUPURES (10/09/2026)
   // ===========================================================================
@@ -667,22 +673,33 @@ class SupabaseSync {
   ///     « Réponse illisible du serveur (HTTP <code>). » (issue inconnue).
   /// Le `fresh_token` (sliding session) est toujours retiré des données et
   /// transmis à [onTokenRefreshed] seulement si c'est un JWT lisible dont
-  /// l'`exp` est dans le futur ([isJwtUsable]) ; sinon le jeton courant
-  /// reste.
+  /// l'`exp` est dans le futur ([isJwtUsable]) ET si le jeton courant est
+  /// encore celui envoyé (sinon : fin de session, déconnexion ou autre compte
+  /// connecté pendant la requête — relecture du 12/10/2026) ; sinon le jeton
+  /// courant reste.
   /// Rend aussi le nombre de tentatives (rejeu visible, [PostResult]).
+  /// Jeton vide, illisible ou expiré ([hasUsableAdminToken]) →
+  /// [AdminAuthException] SANS requête (même suite qu'un 401), vérifié à
+  /// CHAQUE tentative : un rejeu (5xx, coupure) ne repart pas avec un jeton
+  /// vidé entre-temps (fin de session, déconnexion).
   Future<PostResult> _postWithMeta(
     String route,
     Map<String, dynamic> body,
   ) async {
-    final (http.Response res, int attempts) = await _withRetryCounted(
-      () => http
+    String sentToken = '';
+    final (http.Response res, int attempts) = await _withRetryCounted(() {
+      if (!hasUsableAdminToken) {
+        throw const AdminAuthException('Session expirée');
+      }
+      sentToken = adminToken;
+      return http
           .post(
             Uri.parse('$catalogEndpoint/$route'),
             headers: _adminHeaders,
             body: jsonEncode(body),
           )
-          .timeout(requestTimeout),
-    );
+          .timeout(requestTimeout);
+    });
     Map<String, dynamic>? data;
     try {
       final Object? d = jsonDecode(res.body);
@@ -725,7 +742,7 @@ class SupabaseSync {
     // au payload lisible dont l'`exp` est dans le futur ([isJwtUsable]) —
     // un jeton sans échéance ne remplace jamais le jeton courant.
     final Object? fresh = data['fresh_token'];
-    if (fresh is String && isJwtUsable(fresh)) {
+    if (fresh is String && isJwtUsable(fresh) && adminToken == sentToken) {
       onTokenRefreshed?.call(fresh);
     }
     // Retire le fresh_token des données pour ne pas polluer les modèles.

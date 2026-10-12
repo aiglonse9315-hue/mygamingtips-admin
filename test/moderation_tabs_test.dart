@@ -25,6 +25,7 @@ import 'package:mgt_admin/ui/screens/moderation/refusals_tab.dart';
 import 'package:mgt_admin/ui/screens/moderation/review_queue_tab.dart';
 import 'package:mgt_admin/ui/screens/moderation/settings_tab.dart';
 
+import 'support/http_fixtures.dart' show testJwt;
 import 'support/widget_fixtures.dart';
 
 const String _uuid = '11111111-2222-4333-8444-555555555555';
@@ -51,7 +52,7 @@ class _FakeSync extends SupabaseSync {
         supabaseUrl: 'https://exemple.invalid',
         anonKey: 'anon',
         catalogEndpoint: 'https://exemple.invalid/functions/v1/admin-catalog',
-        adminToken: 'jeton',
+        adminToken: testJwt(),
         retryDelays: const <Duration>[Duration.zero, Duration.zero],
       );
 
