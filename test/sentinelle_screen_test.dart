@@ -32,7 +32,7 @@ import 'package:provider/provider.dart';
 const String _gameId = '22222222-3333-4444-8555-666666666666';
 
 class _Sync extends SupabaseSync {
-  _Sync(this.analyzed)
+  _Sync(this.analyzed, [this.gamesToCreate = const <Suggestion>[]])
     : super(
         supabaseUrl: 'https://exemple.invalid',
         anonKey: 'anon',
@@ -42,6 +42,16 @@ class _Sync extends SupabaseSync {
       );
 
   List<Suggestion> analyzed;
+
+  /// Lignes « Jeux à créer » (mode `games-to-create`).
+  final List<Suggestion> gamesToCreate;
+
+  @override
+  Future<({List<Suggestion> items, DateTime? maxUpdatedAt})>
+  fetchGamesToCreate({int page = 0, int pageSize = 500, String? since}) async => (
+    items: page == 0 ? List<Suggestion>.of(gamesToCreate) : <Suggestion>[],
+    maxUpdatedAt: null,
+  );
 
   /// Lots `suggestions/accept-batch` reçus (ids) ; chaque lot attend que le
   /// test complète [pending].
@@ -123,6 +133,7 @@ Suggestion _analyzed(
   String verdict = 'recommended',
   double confidence = 0.9,
   Map<String, Object?>? revue,
+  bool needsGameCreation = false,
 }) {
   _seq++;
   return Suggestion(
@@ -141,6 +152,7 @@ Suggestion _analyzed(
       'suggested_game': 'Jeu neutre',
       'suggested_category': 'video',
       'revue_p5': ?revue,
+      if (needsGameCreation) 'needs_game_creation': true,
     }),
   );
 }
@@ -148,9 +160,11 @@ Suggestion _analyzed(
 /// Monte l'écran sur un contrôleur dont la liste « analysées » vaut [rows].
 Future<StoreController> _mount(
   WidgetTester tester,
-  List<Suggestion> rows,
-) async {
-  tester.view.physicalSize = const Size(2400, 4000);
+  List<Suggestion> rows, {
+  List<Suggestion> gamesToCreate = const <Suggestion>[],
+  Size size = const Size(2400, 4000),
+}) async {
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
   browserLocalStorage.clear();
@@ -165,7 +179,7 @@ Future<StoreController> _mount(
           bannedSeed: '[]',
           plusSeed: '[]',
         ),
-        sync: _Sync(rows),
+        sync: _Sync(rows, gamesToCreate),
       );
       await store.ensureDatasets(<SyncDataset>{
         SyncDataset.sentinelleAnalyzed,
@@ -452,6 +466,55 @@ void main() {
     // Sélection de « 99% sûr » gardée (sa ligne cochée), celle de
     // « Attente » vidée.
     expect(find.text('Valider sélection (1)'), findsOneWidget);
+
+    await _unmount(tester);
+  });
+
+  testWidgets('écran étroit (1 136 px de contenu = écran de 1 366 px moins le '
+      'menu de 230 px) : aucun débordement dans les 4 tableaux ni dans les '
+      'en-têtes, lignes cochées comprises', (WidgetTester tester) async {
+    // Un débordement (RenderFlex overflowed) fait échouer le test.
+    await _mount(
+      tester,
+      <Suggestion>[
+        _analyzed(
+          'https://www.youtube.com/watch?v=SSSSSSSSSS1',
+          'Sure 1',
+          confidence: 1.0,
+        ),
+        _analyzed('https://www.youtube.com/watch?v=AAAAAAAAAA1', 'Wait 1'),
+        _analyzed(
+          'https://www.jeuxvideo.com/news/1.htm',
+          'Verify 1',
+          verdict: 'caution',
+          confidence: 0.5,
+        ),
+      ],
+      gamesToCreate: <Suggestion>[
+        _analyzed(
+          'https://www.youtube.com/watch?v=GGGGGGGGGG1',
+          'Gtc 1',
+          confidence: 1.0,
+          needsGameCreation: true,
+        ),
+      ],
+      size: const Size(1136, 5000),
+    );
+    expect(find.text('Gtc 1'), findsWidgets);
+    expect(find.text('Verify 1'), findsWidgets);
+    for (final ValueKey<String> key in <ValueKey<String>>[_kSure, _kWait]) {
+      await tester.tap(
+        find
+            .descendant(
+              of: find.byKey(key),
+              matching: find.byIcon(Icons.check_box_outline_blank_rounded),
+            )
+            .at(1),
+      );
+      await tester.pump();
+    }
+    expect(find.text('Valider sélection (1)'), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
 
     await _unmount(tester);
   });

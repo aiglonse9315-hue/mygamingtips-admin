@@ -843,7 +843,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<ContentCategory>(
-                value: _category,
+                initialValue: _category,
                 decoration: const InputDecoration(labelText: 'Catégorie'),
                 items: ContentCategory.values
                     .map((c) => DropdownMenuItem(
@@ -930,7 +930,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
               const SizedBox(height: 12),
               // Jeu (modifiable en édition pour déplacer le contenu).
               DropdownButtonFormField<String>(
-                value: _gameId,
+                initialValue: _gameId,
                 decoration: const InputDecoration(labelText: 'Jeu'),
                 items: games
                     .map((g) => DropdownMenuItem(
@@ -943,7 +943,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
               const SizedBox(height: 12),
               // Langue de la vidéo (12 langues + Aucune).
               DropdownButtonFormField<String>(
-                value: _videoLanguage,
+                initialValue: _videoLanguage,
                 decoration: const InputDecoration(labelText: 'Langue vidéo'),
                 items: [
                   // Option « Aucune » = null (langue non définie).
@@ -962,7 +962,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
               ),
             ] else ...[
               DropdownButtonFormField<String>(
-                value: _gameId,
+                initialValue: _gameId,
                 decoration: const InputDecoration(labelText: 'Jeu *'),
                 items: games
                     .map((g) => DropdownMenuItem(
@@ -974,7 +974,7 @@ class _ContentEditDialogState extends State<ContentEditDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<ContentCategory>(
-                value: _category,
+                initialValue: _category,
                 decoration: const InputDecoration(labelText: 'Catégorie *'),
                 items: ContentCategory.values
                     .map((c) => DropdownMenuItem(

@@ -489,7 +489,7 @@ class _SparkleState extends State<_Sparkle> with SingleTickerProviderStateMixin 
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: _ctrl,
-      builder: (_, __) {
+      builder: (_, _) {
         return Opacity(
           opacity: 0.3 + (_ctrl.value * 0.7),
           child: Transform.scale(

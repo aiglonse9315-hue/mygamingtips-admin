@@ -183,7 +183,7 @@ class _SuggestionsScreenState extends State<SuggestionsScreen> {
                 const SizedBox(width: 8),
                 Text(
                   'Page ${_currentPage + 1} / $totalPages'
-                  ' (${startIndex + 1}-${endIndex} sur ${list.length})',
+                  ' (${startIndex + 1}-$endIndex sur ${list.length})',
                   style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(width: 8),

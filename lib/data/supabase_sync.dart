@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
 import '../domain/ids.dart';
@@ -462,7 +463,7 @@ class SupabaseSync {
       'mode': mode,
       'page': page,
       'pageSize': pageSize,
-      if (since != null) 'since': since,
+      'since': ?since,
     });
     final List<dynamic> rows = data['suggestions'] as List? ?? [];
     return (items: mapSuggestionRows(rows), maxUpdatedAt: _maxUpdatedAt(rows));
@@ -999,7 +1000,7 @@ class SupabaseSync {
     Map<String, String> translations,
   ) async {
     try {
-      print(
+      debugPrint(
         '[Sync] updateGameTranslations: gameId=$gameId, '
         '${translations.length} langues',
       );
@@ -1007,12 +1008,12 @@ class SupabaseSync {
         'game_id': gameId,
         'translations': translations,
       });
-      print('[Sync] updateGameTranslations succès: ${data['ok']}');
+      debugPrint('[Sync] updateGameTranslations succès: ${data['ok']}');
       return true;
     } on AdminAuthException {
       rethrow;
     } catch (e) {
-      print('[Sync] updateGameTranslations ERREUR: $e');
+      debugPrint('[Sync] updateGameTranslations ERREUR: $e');
       return false;
     }
   }
@@ -1087,7 +1088,7 @@ class SupabaseSync {
       // Langue du contenu : pour les liens du Scruteur (catégorie 'links'),
       // transmet la langue détectée de la page web. L'EF v46 l'insère dans
       // contents.video_language. Les vidéos YouTube ne l'envoient pas (null).
-      if (videoLanguage != null) 'video_language': videoLanguage,
+      'video_language': ?videoLanguage,
     });
   }
 
@@ -1538,7 +1539,7 @@ class SupabaseSync {
       final Map<String, dynamic> data = await _post('cache-ops/list', {
         'page': page,
         'pageSize': pageSize,
-        if (since != null) 'since': since,
+        'since': ?since,
       });
       final List<dynamic> ops = data['ops'] as List? ?? [];
       for (final o in ops) {

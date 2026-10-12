@@ -1715,7 +1715,6 @@ class StoreController extends ChangeNotifier {
     // ── Phase 1 : résolution locale des jeux/catégories (aucune écriture
     //    distante sauf création de jeu, rare) — même logique qu'acceptOneClick.
     final payload = <Map<String, dynamic>>[];
-    final byId = <String, Suggestion>{for (final s in items) s.id: s};
     // D3.4 — couples (jeu résolu, alias candidat) des items COCHÉS, pour la
     // création best-effort post-validation (phase 4).
     final aliasCandidates = <String, (Game, AiAliasCandidate)>{};
@@ -1810,7 +1809,7 @@ class StoreController extends ChangeNotifier {
         for (final f in failed) {
           final fid = (f as Map)['id']?.toString();
           if (fid != null) failedIds.add(fid);
-          firstError ??= (f as Map)['error']?.toString();
+          firstError ??= f['error']?.toString();
         }
         onProgress?.call(validated, payload.length);
       } catch (e) {

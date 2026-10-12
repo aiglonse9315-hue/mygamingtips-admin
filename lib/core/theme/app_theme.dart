@@ -132,6 +132,36 @@ class AdminTheme {
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(foregroundColor: accent),
       ),
+      // Ascenseurs (demande du propriétaire, 12/10/2026) : le curseur
+      // occupe TOUTE la largeur de sa colonne (aucune marge latérale) pour
+      // être facile à attraper — avant : curseur de 8 px dans une colonne
+      // plus large. Colonne et curseur toujours visibles, curseur plus clair
+      // au survol et pendant le glisser.
+      scrollbarTheme: ScrollbarThemeData(
+        thickness: const WidgetStatePropertyAll<double>(kScrollbarThickness),
+        crossAxisMargin: 0,
+        radius: const Radius.circular(kScrollbarThickness / 2),
+        interactive: true,
+        thumbVisibility: const WidgetStatePropertyAll<bool>(true),
+        trackVisibility: const WidgetStatePropertyAll<bool>(true),
+        trackColor: WidgetStatePropertyAll<Color>(surfaceAlt),
+        trackBorderColor: const WidgetStatePropertyAll<Color>(
+          Colors.transparent,
+        ),
+        thumbColor: WidgetStateProperty.resolveWith<Color>((
+          Set<WidgetState> states,
+        ) {
+          if (states.contains(WidgetState.dragged)) return accent;
+          if (states.contains(WidgetState.hovered)) {
+            return dark ? const Color(0xFF6B7598) : const Color(0xFF8A93A8);
+          }
+          return dark ? const Color(0xFF4A5270) : const Color(0xFFB4BBCB);
+        }),
+      ),
     );
   }
+
+  /// Largeur des ascenseurs : celle de la colonne ET du curseur (marge
+  /// latérale nulle).
+  static const double kScrollbarThickness = 14;
 }

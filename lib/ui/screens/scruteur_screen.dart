@@ -310,7 +310,7 @@ class _ScruteurScreenState extends State<ScruteurScreen> {
                   const Text('Jeu cible :'),
                   const SizedBox(height: 8),
                   DropdownButtonFormField<String>(
-                    value: selectedGameId,
+                    initialValue: selectedGameId,
                     isExpanded: true,
                     decoration: const InputDecoration(
                         border: OutlineInputBorder()),

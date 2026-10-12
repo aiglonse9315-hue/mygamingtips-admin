@@ -275,7 +275,7 @@ class _SuggestionReviewDialogState extends State<SuggestionReviewDialog> {
               children: [
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    value: _gameId,
+                    initialValue: _gameId,
                     decoration: const InputDecoration(labelText: 'Jeu cible *'),
                     items: games
                         .map((g) =>

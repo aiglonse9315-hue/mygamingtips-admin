@@ -10,8 +10,10 @@
 # dépendances conformes au pubspec.lock (--enforce-lockfile), tests VM
 # (flutter test) AVANT la construction : un test en échec bloque la
 # publication (deploy dépend de build ; l'ancien panneau reste en ligne).
-# flutter analyze n'est PAS lancé ici (constats d'information existants) :
-# vérification locale avant chaque synchronisation.
+# Nettoyage du 12/10/2026 : `flutter analyze --no-fatal-infos` AVANT les
+# tests — toute ERREUR ou tout AVERTISSEMENT bloque la publication ; les
+# constats d'INFORMATION restants (dart:html de la connexion, migration
+# prévue) n'en bloquent pas.
 # Permissions par job (moindre privilège) : build sans écriture ni OIDC.
 # Revue P4b-3 (SEC-P4b3-08) : chaque action est ÉPINGLÉE par SHA de commit
 # (étiquette en commentaire) — une étiquette déplacée chez l'éditeur ne
@@ -55,6 +57,9 @@ jobs:
 
       - name: Récupération des dépendances
         run: flutter pub get --enforce-lockfile
+
+      - name: Analyse (erreurs et avertissements bloquants)
+        run: flutter analyze --no-fatal-infos
 
       - name: Tests (VM)
         run: flutter test

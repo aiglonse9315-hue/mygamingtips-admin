@@ -791,7 +791,7 @@ class _PlusAccordionState extends State<_PlusAccordion> {
 
 /// Dialog d'ajout manuel d'un utilisateur Plus.
 class AddPlusUserDialog extends StatefulWidget {
-  const AddPlusUserDialog();
+  const AddPlusUserDialog({super.key});
 
   @override
   State<AddPlusUserDialog> createState() => _AddPlusUserDialogState();
@@ -909,7 +909,7 @@ class _AddPlusUserDialogState extends State<AddPlusUserDialog> {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
-              value: _plan,
+              initialValue: _plan,
               decoration: const InputDecoration(
                 labelText: 'Formule *',
                 prefixIcon: Icon(Icons.bolt_rounded),

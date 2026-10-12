@@ -323,7 +323,8 @@ class _SentinelleScreenState extends State<SentinelleScreen> {
     );
     if (confirmed != true) return;
     final unlocked = await store.unlockStuckSuggestions();
-    if (!mounted) return;
+    // Nettoyage (12/10) : c'est le contexte REÇU qui sert ensuite.
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -1973,8 +1974,12 @@ class _TrustedTableState extends State<_TrustedTable> {
                 onChanged: (checked) =>
                     widget.onAliasCandidateChanged(s.id, checked),
               ),
-              Row(
-                mainAxisSize: MainAxisSize.min,
+              // Nettoyage (12/10) : Wrap — « 1 clic » + lien + rejet
+              // passent sur 2 lignes au lieu de déborder (55 à 126 px de
+              // trop mesurés de 1 920 à 1 280 px de large : la croix de rejet
+              // était coupée au bord droit du tableau).
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   FilledButton.icon(
                     onPressed: () => store.acceptOneClick(
@@ -2319,8 +2324,10 @@ class _ToVerifyTableState extends State<_ToVerifyTable> {
             !widget.aliasUncheckedIds.contains(s.id),
         onChanged: (checked) => widget.onAliasCandidateChanged(s.id, checked),
       ),
-      Row(
-        mainAxisSize: MainAxisSize.min,
+      // Nettoyage (12/10) : Wrap — les boutons passent à la ligne au lieu
+      // de déborder (jusqu'à 29 px de trop sous ~1 160 px de large).
+      Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           IconButton(
             tooltip: 'Vérifier le lien',
@@ -3081,8 +3088,10 @@ class _GamesToCreateTableState extends State<_GamesToCreateTable> {
                 ),
               ),
               // Actions : Créer + Ajouter, Voir le lien, Supprimer.
-              Row(
-                mainAxisSize: MainAxisSize.min,
+              // Nettoyage (12/10) : Wrap — passent à la ligne au lieu de
+              // déborder (37 à 83 px de trop sous ~1 320 px de large).
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   FilledButton.icon(
                     onPressed: () => store.acceptGameToCreate(
