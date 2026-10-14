@@ -4688,11 +4688,24 @@ class StoreController extends ChangeNotifier {
     unawaited(_loadRemoteAliasesForTitles());
   }
 
+  /// Vrai dès qu'une synchro COMPLÈTE des contenus a réussi dans cette
+  /// session : la liste en mémoire est alors complète, et le curseur peut
+  /// servir aux synchros incrémentales suivantes de la session.
+  bool _contentsCompleteThisSession = false;
+
   /// Dataset `contents` : full (count HEAD + pages ∥) ou incrémental
   /// (`updated_at >= curseur`, upsert par id + retraits via cache_ops).
+  /// L'incrémental n'est permis que si la liste locale est COMPLÈTE : synchro
+  /// complète faite dans cette session, ou cache persisté complet (marqueur
+  /// du [Store]). Sinon — catalogue trop gros pour le localStorage — le
+  /// curseur d'une session précédente ne rapporterait que les contenus
+  /// modifiés depuis, sur une liste vide (incident du 14/10 : un seul contenu
+  /// affiché).
   Future<void> _syncContents({required bool forceFull}) async {
     const int pageSize = 1000;
-    final String? cursor = forceFull
+    final bool localComplet =
+        _contentsCompleteThisSession || _store.contentsCacheComplete;
+    final String? cursor = forceFull || !localComplet
         ? null
         : _validCursorFor(SyncDataset.contents);
     DateTime? maxUp;
@@ -4724,6 +4737,7 @@ class StoreController extends ChangeNotifier {
       maxUp = r.maxUpdatedAt;
       final pendingContents = _contents.where((c) => !_isUuid(c.id)).toList();
       _contents = [...r.items, ...pendingContents];
+      _contentsCompleteThisSession = true;
       // Le snapshot complet reflète déjà tout le journal cache_ops → on
       // avance le curseur du journal pour ne pas rejouer d'anciens 'remove'
       // au prochain passage incrémental (sinon un contenu supprimé puis
@@ -4736,7 +4750,9 @@ class StoreController extends ChangeNotifier {
     }
     _saveCursorFor(SyncDataset.contents, maxUp);
     _markDatasetLoaded(SyncDataset.contents);
-    _store.saveContents(_contents);
+    // Liste COMPLÈTE ici (synchro complète, ou incrémental sur une liste
+    // complète) : marqueur posé seulement si elle a été persistée.
+    if (_store.saveContents(_contents)) _store.markContentsComplete();
   }
 
   /// Applique les retraits du journal cache_ops aux contenus locaux.

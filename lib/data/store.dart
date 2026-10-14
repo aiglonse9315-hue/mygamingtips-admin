@@ -21,11 +21,24 @@ class Store {
   static const String _kPlus = 'mgt_admin_plus';
   static const String _kInitialized = 'mgt_admin_initialized';
 
+  /// Marqueur : le cache contenus persisté est COMPLET (posé par la SEULE
+  /// synchro des contenus, quand sa liste complète a été persistée —
+  /// [markContentsComplete] ; retiré par tout [saveContents] qui échoue ou
+  /// renonce). Sans lui, un curseur `contents`
+  /// persisté ne vaut rien pour la session suivante (incident du 14/10 : un
+  /// catalogue trop gros pour le localStorage, un curseur de moins de 24 h →
+  /// la synchro incrémentale ne rapportait que les contenus récents).
+  static const String _kContentsComplete = 'mgt_admin_contents_complet';
+
   final String gamesSeed;
   final String contentsSeed;
   final String suggestionsSeed;
   final String bannedSeed;
   final String plusSeed;
+
+  /// Seuil au-delà duquel le cache contenus n'est PAS persisté (réglable
+  /// pour les tests ; voir [_maxContentsCacheBytes]).
+  final int maxContentsCacheBytes;
 
   Store({
     required this.gamesSeed,
@@ -33,6 +46,7 @@ class Store {
     required this.suggestionsSeed,
     required this.bannedSeed,
     required this.plusSeed,
+    this.maxContentsCacheBytes = _maxContentsCacheBytes,
   });
 
   /// Initialise le localStorage au 1er lancement à partir des seeds.
@@ -71,29 +85,65 @@ class Store {
   /// du navigateur (~5 Mo) : l'écriture levait une QuotaExceededError qui
   /// remontait jusqu'à `syncError` (« Sync partielle — contenus »). Le cache
   /// est un simple accélérateur : ne pas le persister n'empêche pas la sync
-  /// (la prochaine session refera une full sync).
+  /// (la prochaine session refait une full sync — garantie par le marqueur
+  /// [_kContentsComplete], lu par [contentsCacheComplete]).
   static const int _maxContentsCacheBytes = 3500000;
+
+  /// Vrai si le cache contenus persisté est complet : seul cas où un curseur
+  /// `contents` persisté peut servir à une synchro incrémentale au démarrage.
+  bool get contentsCacheComplete =>
+      browserLocalStorage[_kContentsComplete] == 'true';
+
+  /// Pose le marqueur de cache complet. Appelé par la synchro des contenus
+  /// JUSTE APRÈS un [saveContents] réussi de sa liste complète (jamais par un
+  /// autre enregistrement : une liste partielle — ex. purge des données de
+  /// démo au démarrage, cache absent — ne doit pas passer pour complète).
+  void markContentsComplete() {
+    try {
+      browserLocalStorage[_kContentsComplete] = 'true';
+    } catch (_) {
+      // Quota plein : sans marqueur, la session suivante refait une synchro
+      // complète (sûr).
+    }
+  }
 
   /// Persiste le catalogue contenus, de façon TOLÉRANTE : si la sérialisation
   /// dépasse ~3,5 Mo, on n'écrit rien ; si le navigateur refuse l'écriture
-  /// (QuotaExceededError ou autre), on avale l'erreur. Ne lève JAMAIS.
-  void saveContents(List<Content> contents) {
+  /// (QuotaExceededError ou autre), on avale l'erreur. Ne lève JAMAIS. Rend
+  /// true si le cache est persisté ; sinon le marqueur ET l'ancien cache
+  /// (périmé, et qui occupe le quota) sont retirés. Ne pose JAMAIS le
+  /// marqueur (voir [markContentsComplete]).
+  bool saveContents(List<Content> contents) {
     final String json =
         jsonEncode(contents.map((c) => c.toJson()).toList());
-    if (json.length > _maxContentsCacheBytes) {
+    if (json.length > maxContentsCacheBytes) {
       debugPrint(
         '[Store] cache contenus non persisté (trop volumineux : '
-        '${json.length} caractères > $_maxContentsCacheBytes) — la prochaine '
+        '${json.length} caractères > $maxContentsCacheBytes) — la prochaine '
         'session refera une synchronisation complète.',
       );
-      return;
+      _oublierCacheContenus();
+      return false;
     }
     try {
       browserLocalStorage[_kContents] = json;
+      return true;
     } catch (e) {
       // QuotaExceededError (localStorage plein) ou refus du navigateur :
       // non bloquant, le cache sera simplement absent au prochain démarrage.
       debugPrint('[Store] cache contenus non persisté (quota) : $e');
+      _oublierCacheContenus();
+      return false;
+    }
+  }
+
+  /// Retire le marqueur et l'ancien cache contenus (jamais d'exception).
+  void _oublierCacheContenus() {
+    try {
+      browserLocalStorage.remove(_kContentsComplete);
+      browserLocalStorage.remove(_kContents);
+    } catch (_) {
+      // Stockage indisponible : rien à retirer.
     }
   }
 

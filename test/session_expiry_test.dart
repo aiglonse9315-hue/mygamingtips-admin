@@ -95,6 +95,9 @@ Store _store() => Store(
 /// Store dont le curseur des contenus est récent : synchro incrémentale,
 /// donc relecture du journal cache_ops (route admin) — les « paires » du
 /// journal.
+/// Curseur `contents` de moins de 24 h ET cache des contenus marqué complet
+/// (incident du 14/10 : sans ce marqueur, le démarrage refait une synchro
+/// complète au lieu de l'incrémental voulu ici).
 Store _storeWithContentsCursor() {
   final Store store = _store();
   store.saveCursor(
@@ -102,6 +105,7 @@ Store _storeWithContentsCursor() {
     '2026-10-12T00:00:00.000Z',
     DateTime.now().toUtc(),
   );
+  store.markContentsComplete();
   return store;
 }
 
