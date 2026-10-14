@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import 'auth_service.dart';
+import 'login_messages.dart' show kMessageSessionExpiree;
 
 /// Contrôleur d'authentification admin (Provider).
 ///
@@ -11,6 +14,11 @@ import 'auth_service.dart';
 /// Le jeton JWT est vérifié côté client : son expiration (`exp`) est contrôlée
 /// au restore et un timer auto-logout déconnecte automatiquement à l'expiration
 /// (même sans activité de l'utilisateur).
+///
+/// P4d L3 (D14) : plus aucun verrou local (le serveur fait foi : 429). Seul
+/// garde-fou client : UNE connexion à la fois — un 2e appel pendant qu'une
+/// requête est en vol (double-clic, Entrée répétée) reçoit le résultat de
+/// la première, sans 2e requête ni 2e essai compté par le serveur.
 class AuthController extends ChangeNotifier {
   AuthController(this._service) {
     // Connexion du callback d'expiration : force le logout + notification UI.
@@ -21,6 +29,9 @@ class AuthController extends ChangeNotifier {
 
   bool _loading = false;
   String? _error;
+
+  /// Connexion en vol (anti double-clic), null sinon.
+  Future<bool>? _enCours;
 
   /// Vrai uniquement si un jeton valide (non expiré) est présent.
   bool get isAuthenticated => _service.isAuthenticated;
@@ -43,8 +54,12 @@ class AuthController extends ChangeNotifier {
   /// Journal d'audit (consultable côté client pour transparence).
   List<AuthLogEntry> get auditLog => _service.log;
 
-  /// Appelé quand le timer d'auto-logout se déclenche (jeton expiré).
+  /// Appelé quand le timer d'auto-logout se déclenche (jeton expiré : `exp`
+  /// atteint sans jeton frais, ou fin de la session d'un administrateur
+  /// humain, que le serveur coupe 12 h après la connexion — D2). L'écran de
+  /// connexion qui réapparaît dit pourquoi.
   void _onTokenExpired() {
+    _error = kMessageSessionExpiree;
     notifyListeners();
   }
 
@@ -55,8 +70,23 @@ class AuthController extends ChangeNotifier {
   }
 
   /// Connexion admin : transmet les credentials au backend (jamais vérifiés
-  /// localement). Renvoie true en cas de succès.
+  /// localement). Renvoie true en cas de succès. Une connexion déjà en vol
+  /// est rendue telle quelle (anti double-clic : aucune 2e requête).
   Future<bool> login({
+    required String username,
+    required String password,
+  }) {
+    final Future<bool>? enCours = _enCours;
+    if (enCours != null) return enCours;
+    // Connexion inscrite AVANT de démarrer : un appel reçu pendant la partie
+    // synchrone (notification des écouteurs) reçoit déjà ce résultat.
+    final Completer<bool> resultat = Completer<bool>();
+    _enCours = resultat.future;
+    resultat.complete(_login(username: username, password: password));
+    return resultat.future;
+  }
+
+  Future<bool> _login({
     required String username,
     required String password,
   }) async {
@@ -76,6 +106,7 @@ class AuthController extends ChangeNotifier {
       _error = e.toString();
     } finally {
       _loading = false;
+      _enCours = null; // toujours après une attente : l'inscription a eu lieu
       notifyListeners();
     }
     return isAuthenticated;

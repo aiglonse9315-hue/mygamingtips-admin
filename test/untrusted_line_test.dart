@@ -2,8 +2,8 @@
 // SEC-P4b3-02) : « Comptes à bannir », « Abonnements » et « Suggestions »
 // affichent désormais `display_name` et `shared_text` par `UntrustedLine`,
 // dans le même montage que ces écrans (Row min > Flexible > ligne + badge).
-// Les écrans eux-mêmes lisent Provider / AuthController (dart:html) et ne se
-// montent pas en VM : ce test vérifie le widget dans ce montage.
+// Les écrans eux-mêmes lisent Provider / AuthController (qui dépendait de
+// dart:html jusqu'à P4d L3) : ce test vérifie le widget dans ce montage.
 // Aucune dépendance dart:html ; caractères spéciaux construits par
 // String.fromCharCode.
 

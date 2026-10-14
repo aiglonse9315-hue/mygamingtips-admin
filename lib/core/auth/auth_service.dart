@@ -1,11 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:html' as html;
 
 import 'package:http/http.dart' as http;
 
+import '../../data/local_storage.dart';
 import '../../data/supabase_key_headers.dart';
 import '../../domain/jwt_payload.dart';
+import 'login_messages.dart';
 
 /// Service d'authentification du panneau admin.
 ///
@@ -15,15 +16,26 @@ import '../../domain/jwt_payload.dart';
 /// renvoie (ou non) un jeton de session.
 ///
 /// Bonnes pratiques intégrées côté client :
-/// - **Limitation des tentatives** : blocage temporaire après N échecs
-///   (protection contre le brute-force, complémentaire du rate-limiting serveur).
+/// - **Aucun verrou local** (P4d L3, D14) : le serveur fait foi. Il compte
+///   les essais, bloque et répond 429 avec un message qui donne la durée ;
+///   le panneau l'affiche tel quel ([messageRefusConnexion]). L'ancien
+///   verrou recopiait les seuils du serveur dans ce code, publié dans le
+///   miroir PUBLIC du panneau. Seule protection gardée côté client : une
+///   connexion à la fois (`AuthController.login`, bouton désactivé pendant
+///   la requête).
+/// - **Messages distincts** selon la réponse (401, 429, 503, 400, réseau),
+///   classés par la fonction pure [messageRefusConnexion].
 /// - **Journalisation locale** des tentatives (horodatage, succès/échec),
 ///   consultable depuis la console navigateur pour audit.
 /// - **Stockage du jeton** : jamais les credentials, uniquement le jeton de
 ///   session (court terme, à valider côté serveur à chaque requête sensible).
 /// - **Vérification d'expiration JWT côté client** : le jeton est décodé au
 ///   restore et son `exp` est contrôlé. Un timer auto-logout déconnecte dès
-///   que le jeton expire (même sans activité).
+///   que le jeton expire (même sans activité). Le panneau ne suit QUE l'`exp`
+///   du jeton, jamais une durée codée : le serveur émet des jetons de 2 h,
+///   renouvelés à l'usage (`fresh_token`), et coupe la session d'un
+///   administrateur humain 12 h après la connexion en plafonnant l'`exp`
+///   (D2) — un jeton frais peut donc expirer AVANT `iat` + 2 h.
 ///
 /// **Mode aperçu local (démo)** : activé UNIQUEMENT via le flag de compilation
 /// `--dart-define=MGT_ADMIN_PREVIEW=true`. En production (sans ce flag), aucune
@@ -31,24 +43,17 @@ import '../../domain/jwt_payload.dart';
 /// identifiant : il délivre un jeton factice pour permettre de naviguer dans
 /// l'interface avec les données de démonstration, le temps de déployer
 /// l'Edge Function d'authentification (cf. GUIDE_DEPLOIEMENT.md §1.7bis).
+///
+/// Stockage par [browserLocalStorage] (`localStorage` du navigateur sur le
+/// web, table en mémoire en VM) : plus de `dart:html` ici, le service se
+/// teste en VM avec un client HTTP simulé ([client]).
 class AuthService {
-  AuthService({String? endpoint})
+  AuthService({String? endpoint, this.client})
       : endpoint = endpoint ?? _configuredEndpoint() {
-    // Restaure le verrou de sécurité au démarrage (persistant en localStorage).
-    final lockRaw = html.window.localStorage[_kLockUntil];
-    if (lockRaw != null) {
-      final lockTime = DateTime.tryParse(lockRaw);
-      if (lockTime != null && DateTime.now().isBefore(lockTime)) {
-        _lockedUntil = lockTime;
-      } else {
-        // Verrou expiré → on nettoie.
-        html.window.localStorage.remove(_kLockUntil);
-        html.window.localStorage.remove(_kFailCount);
-      }
-    }
-    final failRaw = html.window.localStorage[_kFailCount];
-    if (failRaw != null) {
-      _failedAttempts = int.tryParse(failRaw) ?? 0;
+    // P4d L3 (D14) : le verrou local est retiré ; les clés qu'il laissait
+    // dans le navigateur (compteur d'échecs, fin de blocage) sont effacées.
+    for (final String cle in _kAnciennesClesVerrou) {
+      browserLocalStorage.remove(cle);
     }
   }
 
@@ -72,11 +77,20 @@ class AuthService {
   /// en dur avec des credentials.
   final String endpoint;
 
+  /// Client HTTP (tests : client simulé) ; null → client par défaut du
+  /// paquet `http` (navigateur sur le web).
+  final http.Client? client;
+
   static const String _kToken = 'mgt_admin_token';
-  static const String _kLockUntil = 'mgt_admin_lock_until';
-  static const String _kFailCount = 'mgt_admin_fail_count';
-  static const int _maxAttempts = 3;
-  static const Duration _lockoutDuration = Duration(minutes: 5);
+
+  /// Clés de l'ancien verrou local (avant P4d L3), effacées au démarrage.
+  static const List<String> _kAnciennesClesVerrou = <String>[
+    'mgt_admin_lock_until',
+    'mgt_admin_fail_count',
+  ];
+
+  /// Délai d'attente de la réponse d'admin-login.
+  static const Duration _kDelaiConnexion = Duration(seconds: 10);
 
   String? _token;
   String? get token => _token;
@@ -103,10 +117,6 @@ class AuthService {
     return !_isTokenExpired(_token!);
   }
 
-  // --- Limitation des tentatives ---
-  int _failedAttempts = 0;
-  DateTime? _lockedUntil;
-
   /// Liste des événements d'authentification (journal local d'audit).
   final List<AuthLogEntry> _log = <AuthLogEntry>[];
   List<AuthLogEntry> get log => List<AuthLogEntry>.unmodifiable(_log);
@@ -119,14 +129,8 @@ class AuthService {
   /// ⚠️ Vérifie l'expiration du JWT : un jeton expiré est immédiatement
   /// purgé du localStorage (l'utilisateur devra se reconnecter).
   void restore() {
-    final stored = html.window.localStorage[_kToken];
+    final stored = browserLocalStorage[_kToken];
     if (stored == null || stored.isEmpty) {
-      _token = null;
-      return;
-    }
-    // Si le compte est actuellement bloqué (trop d'échecs), on purge le token.
-    if (_lockedUntil != null && DateTime.now().isBefore(_lockedUntil!)) {
-      html.window.localStorage.remove(_kToken);
       _token = null;
       return;
     }
@@ -137,7 +141,7 @@ class AuthService {
     }
     // Vérifie l'expiration : si expiré, on purge (pas de session fantôme).
     if (_isTokenExpired(stored)) {
-      html.window.localStorage.remove(_kToken);
+      browserLocalStorage.remove(_kToken);
       _token = null;
       return;
     }
@@ -147,17 +151,18 @@ class AuthService {
     _scheduleAutoLogout(stored);
   }
 
-  /// Temps restant de blocage (null si non bloqué).
-  Duration? get lockRemaining {
-    if (_lockedUntil == null) return null;
-    final remaining = _lockedUntil!.difference(DateTime.now());
-    return remaining.isNegative ? null : remaining;
+  /// Ajoute une entrée au journal local d'audit.
+  void _noter(bool success, String detail) {
+    _log.add(
+        AuthLogEntry(at: DateTime.now(), success: success, detail: detail));
   }
 
   /// Tente de connecter. Renvoie le résultat (succès + message éventuel).
   ///
   /// [username] / [password] sont transmis au backend ; aucune comparaison
-  /// locale n'est effectuée.
+  /// locale n'est effectuée. Chaque appel aux deux champs remplis envoie UNE
+  /// requête : aucun compteur ni blocage local (le serveur fait foi : 429).
+  /// Un champ vide n'envoie rien ([kMessageChampsRequis]).
   Future<AuthResult> login({
     required String username,
     required String password,
@@ -165,102 +170,106 @@ class AuthService {
     // 0) Mode aperçu local (démo) : activé UNIQUEMENT au build via dart-define.
     if (previewMode) {
       _token = 'preview-token-${DateTime.now().millisecondsSinceEpoch}';
-      html.window.localStorage[_kToken] = _token!;
-      _log.add(AuthLogEntry(
-          at: DateTime.now(),
-          success: true,
-          detail: 'connexion en mode aperçu local (démo)'));
+      browserLocalStorage[_kToken] = _token!;
+      _noter(true, 'connexion en mode aperçu local (démo)');
       return const AuthResult(success: true);
     }
 
-    // 1) Blocage temporaire si trop d'échecs récents.
-    if (_lockedUntil != null && DateTime.now().isBefore(_lockedUntil!)) {
-      final remaining = _lockedUntil!.difference(DateTime.now());
-      _log.add(AuthLogEntry(
-          at: DateTime.now(),
-          success: false,
-          detail: 'refusé (compte bloqué, ${remaining.inSeconds}s restantes)',
-      ));
-      return AuthResult(
-        success: false,
-        message: 'Trop de tentatives. Réessayez dans '
-            '${remaining.inSeconds} secondes.',
-      );
+    // 1) Panneau construit sans adresse d'authentification (main.dart passe
+    //    alors un endpoint vide) : aucune requête.
+    if (endpoint.isEmpty) {
+      _noter(false, 'endpoint d\'authentification non configuré');
+      return const AuthResult(
+          success: false, message: kMessageConfigurationRequise);
     }
 
+    // 2) Champ vide (P4d L3, constat B01) : aucune requête. Sinon le serveur
+    //    répond 400 (« Requête refusée par le serveur. », qui fait penser à
+    //    une panne) et note une requête invalide pour un simple oubli
+    //    (Entrée appuyée avant le remplissage automatique, par exemple).
+    //    Un identifiant fait d'espaces compte comme vide ; le mot de passe
+    //    n'est jamais retouché (seule la chaîne vide l'arrête) ; un
+    //    identifiant non vide part tel quel.
+    if (username.trim().isEmpty || password.isEmpty) {
+      _noter(false, 'champ vide (rien envoyé)');
+      return const AuthResult(success: false, message: kMessageChampsRequis);
+    }
+
+    // 3) Appel au backend de vérification.
+    final http.Response response;
     try {
-      // 2) Appel au backend de vérification.
+      final Uri uri = Uri.parse(endpoint);
       final Map<String, String> headers = {
         'Content-Type': 'application/json',
         ...supabaseKeyHeaders(anonKey),
       };
-      final response = await http.post(
-        Uri.parse(endpoint),
-        headers: headers,
-        body: jsonEncode({'username': username, 'password': password}),
-      ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final body = jsonDecode(response.body) as Map<String, dynamic>;
-        final token = body['token'] as String?;
-        if (token != null && token.isNotEmpty) {
-          _token = token;
-          html.window.localStorage[_kToken] = token;
-          // Capture le privilège owner : 1) depuis la réponse de login
-          // (`is_owner`), 2) confirmé depuis le payload JWT (source de
-          // vérité partagée avec les fresh_token de la sliding session).
-          _isOwner = body['is_owner'] == true;
-          _username = username;
-          _applyClaimsFromToken(token);
-          // Réinitialise le compteur d'échecs après succès.
-          _failedAttempts = 0;
-          _lockedUntil = null;
-          html.window.localStorage.remove(_kLockUntil);
-          html.window.localStorage.remove(_kFailCount);
-          _log.add(AuthLogEntry(
-              at: DateTime.now(), success: true, detail: 'connexion réussie'));
-          _scheduleAutoLogout(token);
-          return const AuthResult(success: true);
-        }
-      }
-
-      // 3) Échec : incrémenter le compteur (brute-force protection).
-      _failedAttempts += 1;
-      html.window.localStorage[_kFailCount] = _failedAttempts.toString();
-      if (_failedAttempts >= _maxAttempts) {
-        _lockedUntil = DateTime.now().add(_lockoutDuration);
-        // Persiste le verrou pour qu'il survive aux rafraîchissements.
-        html.window.localStorage[_kLockUntil] =
-            _lockedUntil!.toIso8601String();
-        _log.add(AuthLogEntry(
-            at: DateTime.now(),
-            success: false,
-            detail: 'blocage déclenché ($_failedAttempts échecs)'));
-      }
-      _log.add(AuthLogEntry(
-          at: DateTime.now(), success: false, detail: 'identifiants invalides'));
-
-      // Message adaptatif avec compte à rebours.
-      final remaining = _lockedUntil?.difference(DateTime.now());
-      return AuthResult(
-          success: false,
-          message: _failedAttempts >= _maxAttempts
-              ? (remaining != null && remaining.inMinutes > 0
-                  ? 'Trop de tentatives. Compte bloqué pendant ${remaining.inMinutes} min ${remaining.inSeconds % 60} s.'
-                  : 'Trop de tentatives. Compte bloqué pendant ${remaining?.inSeconds ?? 300} secondes.')
-              : 'Identifiants incorrects. (${_maxAttempts - _failedAttempts} tentative(s) restante(s))');
+      final String body =
+          jsonEncode({'username': username, 'password': password});
+      final http.Client? injecte = client;
+      response = await (injecte != null
+              ? injecte.post(uri, headers: headers, body: body)
+              : http.post(uri, headers: headers, body: body))
+          .timeout(_kDelaiConnexion);
     } on TimeoutException {
-      _log.add(AuthLogEntry(
-          at: DateTime.now(), success: false, detail: 'timeout backend'));
+      _noter(false, 'délai dépassé');
       return const AuthResult(
-          success: false, message: 'Le serveur ne répond pas. Réessayez.');
+          success: false, message: kMessageServeurInjoignable);
+    } on http.ClientException catch (e) {
+      // Réseau coupé, DNS, CORS refusé par le navigateur : aucune réponse.
+      _noter(false, 'serveur injoignable: ${e.message}');
+      return const AuthResult(
+          success: false, message: kMessageServeurInjoignable);
     } catch (e) {
-      _log.add(AuthLogEntry(
-          at: DateTime.now(), success: false, detail: 'erreur: $e'));
+      // Adresse illisible ou autre erreur de configuration.
+      _noter(false, 'erreur: $e');
       return const AuthResult(
-          success: false,
-          message: 'Configuration serveur requise pour l\'authentification.');
+          success: false, message: kMessageConfigurationRequise);
     }
+
+    // 4) Corps décodé en UTF-8 quel que soit l'en-tête (le message d'un 429
+    //    porte des accents ; un octet invalide ne lève pas).
+    final String corps = utf8.decode(response.bodyBytes, allowMalformed: true);
+    if (response.statusCode == 200) {
+      final SuccesConnexion? succes = lireSuccesConnexion(corps);
+      if (succes != null) {
+        // Le panneau ne suit que l'`exp` du jeton : un jeton inutilisable
+        // n'ouvre pas de session (sinon : connexion « réussie » suivie
+        // d'une déconnexion immédiate, sans message). `exp` lisible mais
+        // passé → horloge de l'appareil en avance ; illisible → réponse
+        // inattendue.
+        if (_isTokenExpired(succes.token)) {
+          final bool expLisible =
+              decodeJwtPayload(succes.token)?['exp'] is num;
+          _noter(false, expLisible
+              ? 'jeton reçu déjà expiré (horloge locale ?)'
+              : 'jeton reçu illisible ou sans échéance');
+          return AuthResult(
+            success: false,
+            message: expLisible
+                ? kMessageJetonDejaExpire
+                : kMessageReponseInattendue,
+          );
+        }
+        _token = succes.token;
+        browserLocalStorage[_kToken] = succes.token;
+        // Capture le privilège owner : 1) depuis la réponse de login
+        // (`is_owner`), 2) confirmé depuis le payload JWT (source de
+        // vérité partagée avec les fresh_token de la sliding session).
+        _isOwner = succes.isOwner;
+        _username = username;
+        _applyClaimsFromToken(succes.token);
+        _noter(true, 'connexion réussie');
+        _scheduleAutoLogout(succes.token);
+        return const AuthResult(success: true);
+      }
+    }
+
+    // 5) Refus : message selon le statut (401, 429 du serveur, 503, 400…).
+    _noter(false, 'refus HTTP ${response.statusCode}');
+    return AuthResult(
+      success: false,
+      message: messageRefusConnexion(response.statusCode, corps),
+    );
   }
 
   void logout() {
@@ -269,19 +278,21 @@ class AuthService {
     _username = null;
     _expiryTimer?.cancel();
     _expiryTimer = null;
-    html.window.localStorage.remove(_kToken);
-    _failedAttempts = 0;
-    _lockedUntil = null;
+    browserLocalStorage.remove(_kToken);
   }
 
   /// Remplace le token courant par un nouveau token frais (sliding session).
   ///
   /// Appelé automatiquement après chaque écriture réussie : l'Edge Function
-  /// renvoie un `fresh_token` qui prolonge la session de 15 min. Le timer
-  /// d'auto-logout est reprogrammé en conséquence.
+  /// renvoie un `fresh_token`, nouveau jeton de 2 h (session glissante).
+  /// Pour la session d'un administrateur humain, le serveur plafonne son
+  /// `exp` 12 h après la connexion (D2) : le dernier jeton frais d'une
+  /// telle session expire donc AVANT `iat` + 2 h.
+  /// Le timer d'auto-logout est reprogrammé sur l'`exp` du nouveau jeton,
+  /// seule échéance suivie par le panneau.
   void refreshToken(String freshToken) {
     _token = freshToken;
-    html.window.localStorage[_kToken] = freshToken;
+    browserLocalStorage[_kToken] = freshToken;
     // Les fresh_token portent aussi username/is_owner : on relit les claims
     // pour que le privilège owner reste exact après chaque rotation.
     _applyClaimsFromToken(freshToken);

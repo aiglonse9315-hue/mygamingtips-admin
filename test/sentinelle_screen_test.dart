@@ -7,8 +7,10 @@
 //
 // Possible en VM depuis que `SuggestionReviewDialog` vit dans
 // `ui/widgets/suggestion_review_dialog.dart` (l'écran n'importe plus
-// `suggestions_screen.dart`, qui dépend de `dart:html` par
-// `core/auth/auth_controller.dart`). Contrôleur de PRODUCTION monté sur un
+// `suggestions_screen.dart`, qui dépendait alors de `dart:html` par
+// `core/auth/auth_controller.dart` — plus le cas depuis P4d L3, le
+// service d'authentification passant par `browserLocalStorage`).
+// Contrôleur de PRODUCTION monté sur un
 // `SupabaseSync` factice (données neutres, aucun réseau : toute autre
 // requête reçoit une réponse vide d'un MockClient).
 

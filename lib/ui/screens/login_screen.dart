@@ -34,17 +34,18 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+  /// Envoie les identifiants. Pas de verrou local (P4d L3, D14) : le
+  /// serveur fait foi et son message (429 avec la durée, 503, 400…) est
+  /// exposé par `auth.error`. Un champ vide n'envoie rien : le service rend
+  /// un message local fixe, exposé de la même façon. Anti double-clic :
+  /// bouton et champs désactivés pendant la requête, et le contrôleur ne
+  /// lance qu'une connexion à la fois.
   Future<void> _submit() async {
     final AuthController auth = context.read<AuthController>();
+    if (auth.isLoading) return;
     final bool ok = await auth.login(
         username: _user.text, password: _pass.text);
-    if (ok) {
-      widget.onSuccess();
-    } else {
-      // Force un rebuild pour afficher le compte à rebours si verrouillé.
-      if (mounted) setState(() {});
-    }
-    // Le message d'erreur est exposé via auth.error (géré par le contrôleur).
+    if (ok) widget.onSuccess();
   }
 
   @override

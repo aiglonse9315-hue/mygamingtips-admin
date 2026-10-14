@@ -17,6 +17,7 @@ import '../domain/models/game_alias.dart';
 import '../domain/models/log_entry.dart';
 import '../domain/models/moderation.dart';
 import '../domain/models/ready_games.dart';
+import '../domain/models/security_attempt.dart';
 import '../domain/models/suggestion.dart';
 import '../domain/models/sync_status.dart';
 import '../domain/models/trusted_channel.dart';
@@ -152,8 +153,9 @@ class SupabaseSync {
   final String catalogEndpoint;
 
   /// Callback invoqué quand l'Edge Function renvoie un `fresh_token`
-  /// (sliding session). Le client remplace son token courant pour prolonger
-  /// la session de 15 min à chaque écriture réussie.
+  /// (sliding session). Le client remplace son token courant : jeton valable
+  /// 2 h, renouvelé à chaque appel réussi ; une session humaine reste coupée
+  /// par le serveur 12 h après la connexion (P4d, D2).
   void Function(String freshToken)? onTokenRefreshed;
 
   /// Jeton JWT admin (obtenu via admin-login, mis à jour après login).
@@ -737,7 +739,8 @@ class SupabaseSync {
       );
     }
     // Sliding session : si la réponse contient un fresh_token, on notifie
-    // le client pour qu'il remplace son token (prolongation 15 min).
+    // le client pour qu'il remplace son token (2 h glissantes ; session
+    // humaine coupée par le serveur 12 h après la connexion, P4d D2).
     // v2 (S-15) puis revue P4b-3 (SEC-P4b3-07) : seulement si c'est un JWT
     // au payload lisible dont l'`exp` est dans le futur ([isJwtUsable]) —
     // un jeton sans échéance ne remplace jamais le jeton courant.
@@ -1589,36 +1592,61 @@ class SupabaseSync {
   /// [page] : index de la page (0-based).
   /// [pageSize] : lignes par page (≤ 500 côté serveur — borné ici par sécurité).
   /// [source] : `all` | `auth` (connexions) | `actions`.
+  /// [masquer] (P4d L3) : vrai → `masquer: true`, filtre « activité
+  /// normale » fait par le SERVEUR (sa règle n'est jamais dans le panneau) ;
+  /// faux → clé absente (corps d'avant L3).
   ///
-  /// Retourne les entrées de la page + le total serveur (pour la pagination).
+  /// Retourne une [LogPage] : entrées, total serveur (lignes VISIBLES, pour
+  /// la pagination), `masquees` (0 si absent) et `filtre_applique` (faux si
+  /// absent : le filtre n'a pas tourné, tout est affiché). Liste `logs`
+  /// absente → [AdminApiException] « Réponse illisible du serveur. » (jamais
+  /// un journal vide par erreur).
   /// Lève [AdminForbiddenException] (403) si le compte n'est pas le compte
   /// principal, [AdminAuthException] (401) si la session a expiré.
-  Future<({List<LogEntry> items, int total})> fetchLogs({
+  Future<LogPage> fetchLogs({
     int page = 0,
     int pageSize = 100,
     String source = 'all',
+    bool masquer = false,
   }) async {
     final Map<String, dynamic> data = await _post('logs/list', {
       'page': page,
       'pageSize': pageSize.clamp(1, 500),
       'source': source,
+      if (masquer) 'masquer': true,
     });
-    final List<dynamic> rows = data['logs'] as List? ?? [];
-    return (
-      items: rows
-          .whereType<Map<String, dynamic>>()
-          .map(LogEntry.fromJson)
-          .toList(),
-      total: (data['total'] as num?)?.toInt() ?? rows.length,
-    );
+    if (data['logs'] is! List) throw _unreadable();
+    return LogPage.fromJson(data);
+  }
+
+  /// Page du journal des TENTATIVES (route EF `logs/attempts`, P4d L2 —
+  /// compte principal seul) : accès refusés au serveur d'administration,
+  /// libellés français rendus par le serveur, plus récentes en premier.
+  ///
+  /// [pageSize] borné à 1-500 (comme le serveur). Liste `tentatives` absente
+  /// → [AdminApiException] « Réponse illisible du serveur. ».
+  /// Lève [AdminForbiddenException] (403) si le compte n'est pas le compte
+  /// principal, [AdminAuthException] (401) si la session a expiré.
+  Future<SecurityAttemptPage> fetchSecurityAttempts({
+    int page = 0,
+    int pageSize = 100,
+  }) async {
+    final Map<String, dynamic> data = await _post('logs/attempts', {
+      'page': page,
+      'pageSize': pageSize.clamp(1, 500),
+    });
+    if (data['tentatives'] is! List) throw _unreadable();
+    return SecurityAttemptPage.fromJson(data);
   }
 
   // ===========================================================================
-  // ARCHIVES MENSUELLES DU JOURNAL (routes EF logs/archives/* — owner-only)
+  // ARCHIVES DU JOURNAL (routes EF logs/archives/* — owner-only)
   // ===========================================================================
   // En fin de mois, le serveur déplace les logs du mois écoulé dans une table
-  // d'archive. Ces routes (réservées au compte principal, comme logs/list)
-  // permettent de lister, télécharger et supprimer ces archives.
+  // d'archive ; il regroupe et purge lui-même les plus anciennes. Ces routes
+  // (réservées au compte principal, comme logs/list) permettent de lister et
+  // de télécharger ces archives. La suppression manuelle est RETIRÉE (P4d,
+  // D7 : `logs/archive/delete` répond 410) — plus aucun appel ici.
 
   /// Liste les archives mensuelles du journal d'activité.
   ///
@@ -1635,7 +1663,10 @@ class SupabaseSync {
   }
 
   /// Télécharge le contenu COMPLET d'une archive (toutes ses lignes,
-  /// sous forme de [LogEntry] — même shape que `logs/list`).
+  /// sous forme de [LogEntry]) : les 5 colonnes historiques, plus les
+  /// colonnes v2 quand la route les rend (archive créée depuis 0098) ;
+  /// colonne absente (archive d'avant 0098, juillet à septembre 2026) →
+  /// null, par la lecture tolérante de [LogEntry.fromJson].
   Future<List<LogEntry>> downloadLogArchive(String table) async {
     final Map<String, dynamic> data = await _post('logs/archive/download', {
       'table': table,
@@ -1645,12 +1676,6 @@ class SupabaseSync {
         .whereType<Map<String, dynamic>>()
         .map(LogEntry.fromJson)
         .toList();
-  }
-
-  /// Supprime DÉFINITIVEMENT une archive (action IRRÉVERSIBLE côté serveur).
-  /// L'UI doit exiger une confirmation explicite avant cet appel.
-  Future<void> deleteLogArchive(String table) async {
-    await _post('logs/archive/delete', {'table': table});
   }
 
   // ===========================================================================

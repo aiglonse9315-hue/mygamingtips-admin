@@ -7,12 +7,12 @@
   },
 
   "supabase_edge_function": {
-    "_comment": "Déployer une Edge Function (Deno) nommée 'admin-login' qui vérifie les identifiants et renvoie un jeton. Source : supabase/functions/admin-login/ du dépôt principal (index.ts, login_body.ts, rate_limit.ts) ; l'ancienne copie admin/supabase/admin_login_function.ts est retirée (04/10/2026).",
+    "_comment": "Déployer une Edge Function (Deno) nommée 'admin-login' qui vérifie les identifiants et renvoie un jeton. Source : supabase/functions/admin-login/ du dépôt principal ; depuis la v28 (14/10/2026) elle se déploie avec index.ts, login_body.ts, ../_shared/service_key.ts et ../_shared/journal_securite.ts (rate_limit.ts n'est plus importé). L'ancienne copie admin/supabase/admin_login_function.ts est retirée (04/10/2026).",
     "name": "admin-login",
     "method": "POST",
     "expected_body": { "username": "string", "password": "string" },
     "response_success": { "token": "jwt_court_terme_signe_serveur" },
-    "response_failure": "HTTP 401 (identifiants), 429 (trop de tentatives), 503 (service indisponible)"
+    "response_failure": "HTTP 400 (requête invalide), 401 (identifiants), 429 (trop de tentatives : message avec la durée + en-tête Retry-After), 503 (service indisponible) — le panneau affiche un message distinct pour chacun"
   },
 
   "credentials_storage": {
@@ -31,11 +31,11 @@
 
   "security_best_practices": [
     "Hash bcrypt (cost >= 10) du mot de passe — jamais de MD5/SHA1.",
-    "Rate-limiting côté Edge Function (ex. 5 tentatives / IP / 2 min).",
-    "Limitation des tentatives côté client (déjà implémentée dans AuthService).",
+    "Rate-limiting côté Edge Function (seuils tenus par le serveur, jamais recopiés dans le panneau).",
+    "Aucun verrou côté client (retiré en P4d L3) : le serveur fait foi (429) ; le panneau n'envoie qu'une connexion à la fois.",
     "Journalisation serveur de chaque tentative (IP, horodatage, succès/échec) via table 'admin_auth_logs'.",
-    "Jetons JWT courts (ex. 15 min), signés avec le JWT secret Supabase.",
-    "Verrouillage de compte après N échecs (côté serveur, plus robuste que le client).",
+    "Jetons JWT de 2 h signés côté serveur (secret dédié), renouvelés à l'usage (fresh_token) ; session d'un administrateur humain coupée 12 h après la connexion (exp plafonné par le serveur, le panneau ne suit que exp).",
+    "Verrouillage temporaire après des échecs répétés (côté serveur, plus robuste que le client).",
     "HTTPS obligatoire (Supabase fournit le certificat).",
     "Rotation régulière du mot de passe admin.",
     "2FA / TOTP recommandé pour le compte admin (extension possible)."
